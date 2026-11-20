@@ -1,0 +1,41 @@
+services:
+  caliper:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - caliper_data:/data
+    command:
+      - "--addr=0.0.0.0:8080"
+      - "--data-dir=/data"
+      - "--console-dist=/app/console-dist"
+      - "--alert-interval=30s"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mock-api:
+    build: .
+    entrypoint: ["/usr/local/bin/mock-api"]
+    command: ["--addr=0.0.0.0:8090"]
+    ports:
+      - "8090:8090"
+
+  caliper-seed:
+    build: .
+    depends_on:
+      caliper:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        caliper-symbols upload --server http://caliper:8080 --app-id dev.caliper.demo --platform android --version 1.1.0 --build 110 --git-sha 1100002abcdef --kind r8_mapping --file /app/demo-symbols/atlas-android-1.1.0-110.r8.txt &&
+        caliper-symbols upload --server http://caliper:8080 --app-id dev.caliper.demo --platform android --version 1.1.0 --build 110 --git-sha 1100002abcdef --kind hermes_sourcemap --file /app/demo-symbols/atlas-rn-1.1.0-110.sourcemap.json &&
+        caliper-symbols upload --server http://caliper:8080 --app-id dev.caliper.demo --platform ios --version 1.1.0 --build 110 --git-sha 1100002abcdef --kind dsym --file /app/demo-symbols/atlas-ios-1.1.0-110.dsym.json &&
+        seed-replay --target http://caliper:8080 --events 30000 --verify=true
+    restart: "no"
+
+volumes:
+  caliper_data:

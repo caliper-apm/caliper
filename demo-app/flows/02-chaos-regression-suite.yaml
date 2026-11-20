@@ -1,0 +1,14 @@
+appId: dev.caliper.demo
+name: Atlas Reader Chaos Lab Regression Suite
+---
+- launchApp:
+    clearState: false
+- tapOn: "Chaos Lab"
+- tapOn: "Inject Scroll Jank Stall"
+- scroll:
+    direction: DOWN
+- tapOn: "Inject JS LongTask Storm"
+- tapOn: "Enable Slow API & 502 Chaos"
+- tapOn: "Refresh Feed"
+- tapOn: "Trigger Symbolicated Crash Sample"
+- assertVisible: "Telemetry Flushed"

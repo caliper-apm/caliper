@@ -1,0 +1,16 @@
+[
+  {
+    "address": "0x10004200",
+    "size": 128,
+    "symbol": "ImageDecoder.decodeFrame(_:)",
+    "file": "Sources/AtlasDemo/ImageDecoder.swift",
+    "line": 84
+  },
+  {
+    "address": "0x10008000",
+    "size": 96,
+    "symbol": "HomeFeedController.scrollViewDidScroll(_:)",
+    "file": "Sources/AtlasDemo/HomeFeedController.swift",
+    "line": 112
+  }
+]

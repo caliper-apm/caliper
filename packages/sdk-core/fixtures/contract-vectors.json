@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "description": "Shared language-neutral golden contract test vectors for Android (Kotlin), iOS (Swift), React Native (TypeScript), and Server (Go).",
+  "deterministic_sampling_fnv1a32": [
+    {
+      "install_seed": "00000000-0000-4000-8000-000000000001",
+      "policy_id": "fluency_v1",
+      "expected_hash_u32": 245132696,
+      "expected_bucket_ppm": 132696,
+      "admitted_at_100000_ppm": false,
+      "admitted_at_132696_ppm": false,
+      "admitted_at_132697_ppm": true
+    },
+    {
+      "install_seed": "11111111-1111-4111-8111-111111111111",
+      "policy_id": "fluency_v1",
+      "expected_hash_u32": 3931717151,
+      "expected_bucket_ppm": 717151,
+      "admitted_at_500000_ppm": false,
+      "admitted_at_717152_ppm": true
+    },
+    {
+      "install_seed": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "policy_id": "resource_v1",
+      "expected_hash_u32": 1330532230,
+      "expected_bucket_ppm": 532230,
+      "admitted_at_30000_ppm": false,
+      "admitted_at_600000_ppm": true
+    },
+    {
+      "install_seed": "9f8e7d6c-5b4a-4321-8765-0123456789ab",
+      "policy_id": "network_v1",
+      "expected_hash_u32": 3967436213,
+      "expected_bucket_ppm": 436213,
+      "admitted_at_436213_ppm": false,
+      "admitted_at_436214_ppm": true
+    }
+  ],
+  "duration_histogram_bounds_ms": [
+    16, 33, 50, 100, 250, 500, 750, 1000, 1500, 2000,
+    3000, 5000, 8000, 10000, 15000, 30000, 60000, 120000
+  ],
+  "histogram_quantile_cases": [
+    {
+      "name": "valid_p50_and_p90",
+      "counts": [0, 0, 0, 10, 20, 30, 20, 10, 5, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      "expected_sample_size": 100,
+      "expected_p50_interval_ms": [250, 500],
+      "expected_p90_interval_ms": [750, 1000],
+      "expected_missing_reason": null
+    },
+    {
+      "name": "p90_lands_in_overflow_bucket_must_be_unknown",
+      "counts": [0, 0, 0, 0, 0, 50, 30, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15],
+      "expected_sample_size": 100,
+      "expected_p50_interval_ms": [250, 500],
+      "expected_p90_interval_ms": null,
+      "expected_p90_missing_reason": "histogram_overflow"
+    },
+    {
+      "name": "empty_histogram_never_zero",
+      "counts": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      "expected_sample_size": 0,
+      "expected_p50_interval_ms": null,
+      "expected_p90_interval_ms": null,
+      "expected_missing_reason": "no_observations"
+    }
+  ],
+  "fluency_window_cases": [
+    {
+      "name": "zero_frames_must_be_unknown_never_smooth",
+      "frame_count": 0,
+      "jank_frame_count": 0,
+      "expected_jank_ratio": null,
+      "expected_severity": "unknown"
+    },
+    {
+      "name": "valid_zero_jank_with_observed_frames",
+      "frame_count": 600,
+      "jank_frame_count": 0,
+      "expected_jank_ratio": 0.0,
+      "expected_severity": "healthy"
+    }
+  ],
+  "sliding_quota_24h_cases": [
+    {
+      "name": "allows_up_to_cap_then_drops",
+      "window_ms": 86400000,
+      "cap": 2,
+      "timestamps_ms": [1000, 2000, 3000, 86401000],
+      "expected_admitted": [true, true, false, true]
+    }
+  ]
+}

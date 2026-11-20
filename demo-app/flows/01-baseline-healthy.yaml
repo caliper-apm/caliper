@@ -1,0 +1,14 @@
+appId: dev.caliper.demo
+name: Atlas Reader Baseline Healthy Flow
+---
+- launchApp:
+    clearState: false
+- assertVisible: "Atlas Reader"
+- scrollUntilVisible:
+    element: "Atlas Field Report #15"
+    direction: DOWN
+    speed: 40
+- tapOn: "Streaming Reader"
+- assertVisible: "Understanding Frame Budgets"
+- tapOn: "Media Gallery"
+- assertVisible: "High-Resolution Architecture Series"

@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cleanroom-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Clean-Room & Secret Guard
+        run: ./scripts/cleanroom-guard.sh
+
+  server-and-cli-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Server vet, race test, and build
+        working-directory: server
+        run: |
+          go vet ./...
+          go test -race -v ./...
+          go build -o bin/caliper ./cmd/caliper
+          go build -o bin/seed-replay ./cmd/seed-replay
+      - name: Build cli-symbols
+        working-directory: packages/cli-symbols
+        run: |
+          go vet ./...
+          go build -o bin/caliper-symbols .
+      - name: Test mock-api and run live Chaos Lab E2E
+        run: |
+          (cd demo-app/mock-api && go vet ./... && go test -race -v ./...)
+          ./demo-app/chaos-lab/run-chaos-e2e.sh
+
+  sdk-react-native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Run TS golden contract tests
+        working-directory: packages/sdk-react-native
+        run: node --test tests/*.test.ts
+
+  console-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install, test, typecheck, and build Console
+        working-directory: console
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npx tsc --noEmit
+          npm run build
+
+  sdk-ios-swift:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Swift Package golden contract tests
+        working-directory: packages/sdk-ios
+        run: swift test
+
+  sdk-android-kotlin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Run Kotlin core golden contract tests
+        working-directory: packages/sdk-android
+        run: gradle test

@@ -1,0 +1,8 @@
+# {"id":"com.android.tools.r8.mapping","version":"2.2"}
+com.caliper.demo.feed.FeedImageDecoder -> a.b.c:
+    # {"id":"sourceFile","fileName":"FeedImageDecoder.kt"}
+    10:15:void decodeSync(byte[]):90:95 -> a
+    20:24:void allocateBitmapBuffer(int):140:144 -> b
+com.caliper.demo.feed.HomeFeedController -> a.b.d:
+    # {"id":"sourceFile","fileName":"HomeFeedController.kt"}
+    30:35:void onBindCard(int):60:65 -> a

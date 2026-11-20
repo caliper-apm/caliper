@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "demo_app": "Atlas Reader (Hybrid Native-First + React Native)",
+  "scenarios": [
+    {
+      "id": "startup_stall",
+      "title": "Cold Start Native & JS Stall",
+      "layer": "native+rn",
+      "description": "Injects a 450ms main-thread sync block in Native init and 300ms RN first-frame delay.",
+      "expected_signal": "startup (3-stage P90 spike in native_init_ms & first_frame_ms)"
+    },
+    {
+      "id": "scroll_jank",
+      "title": "Native Feed Scroll Jank + Main-Thread Stall Stack",
+      "layer": "native",
+      "description": "Triggers synchronous bitmap decoding during list scroll on Android/iOS native Feed.",
+      "expected_signal": "fluency_window (jank_rate > 8%, same-window stall stack auto-symbolicated to FeedImageDecoder)"
+    },
+    {
+      "id": "js_longtask_storm",
+      "title": "RN Streaming Reader JS LongTask Storm",
+      "layer": "react-native",
+      "description": "Executes heavy synchronous markdown/JSON parsing on the Hermes JS thread.",
+      "expected_signal": "js_longtask_window (total_blocking_ms spike linked by window_id)"
+    },
+    {
+      "id": "memory_retention_leak",
+      "title": "Native/JS Callback Retention Leak",
+      "layer": "native+rn",
+      "description": "Retains large decoded image buffers & uncleaned JS callbacks across screen navigations.",
+      "expected_signal": "resource_window (android_pss_kib / ios_phys_footprint_kib P90 growth)"
+    },
+    {
+      "id": "crash_and_anr",
+      "title": "Obfuscated Native Crash, JS Error & ANR",
+      "layer": "native+rn",
+      "description": "Emits obfuscated Android R8, iOS address, and Hermes JS bundle crashes with breadcrumbs.",
+      "expected_signal": "crash / anr (auto-symbolicated to exact source file & line via uploaded build symbols)"
+    },
+    {
+      "id": "network_degradation",
+      "title": "Slow TLS / HTTP 502 Storm",
+      "layer": "native",
+      "description": "Configures mock-api chaos (latency + 502 errors) and records both API denominator & transport stages.",
+      "expected_signal": "network_summary + network_transport (success rate drop + TLS/TTFB waterfall spike + alert webhook)"
+    }
+  ]
+}

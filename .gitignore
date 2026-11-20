@@ -1,0 +1,63 @@
+# Local clean-room denylist (never commit personal/private keywords)
+.cleanroom.denylist.local
+
+# OS & Editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local data & runtime state
+.data/
+*.duckdb
+*.duckdb.wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+.env
+.env.local
+.env.*.local
+
+# Go
+/server/bin/
+*.exe
+*.test
+*.out
+coverage.txt
+
+# Rust (optional symbolic helper)
+target/
+
+# Node / Web / React Native
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Android / Gradle
+.gradle/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+*.keystore
+*.jks
+
+# iOS / Xcode / SPM
+.build/
+.swiftpm/
+DerivedData/
+Pods/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.ipa
+*.dSYM.zip
+*.dSYM/
+
+# Symbol artifacts & local benchmarks
+.symbols/
+.benchmarks/

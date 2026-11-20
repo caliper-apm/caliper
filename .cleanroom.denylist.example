@@ -1,0 +1,9 @@
+# Copy this file to `.cleanroom.denylist.local` (which is gitignored) and add
+# one case-insensitive regex or literal per line for any private/employer brand
+# names, internal hostnames, cloud project IDs, or API path prefixes that must
+# NEVER appear in this public open-source repository.
+#
+# Examples (replace with your own local entries in .cleanroom.denylist.local):
+# internal-company-name
+# internal-corp\.example\.com
+# my-gcp-project-id

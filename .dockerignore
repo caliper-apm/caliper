@@ -1,0 +1,13 @@
+.git
+.github
+.data
+.cleanroom.denylist.local
+node_modules
+console/node_modules
+console/dist
+server/bin
+.build
+.gradle
+build
+*.log
+.DS_Store
