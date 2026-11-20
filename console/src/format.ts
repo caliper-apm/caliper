@@ -15,14 +15,17 @@ const MISSING_LABELS: Record<string, string> = {
   candidate_missing_denominator: 'Candidate missing denom',
   baseline_incompatible_algorithm: 'Baseline mixed algo',
   candidate_incompatible_algorithm: 'Candidate mixed algo',
+  statistically_insignificant: 'Not statistically significant (p ≥ 0.01)',
 };
 
 const METRIC_LABELS: Record<string, string> = {
   startup_cold_p50_ms: 'Cold Start P50',
   startup_cold_p90_ms: 'Cold Start P90',
   fluency_jank_rate_pct: 'Fluency Jank Rate',
+  scene_fluency_jank_rate_pct: 'Scene Jank Rate',
   resource_cpu_avg_pct: 'Avg Process CPU',
   resource_memory_peak_p90_mib: 'Peak Memory P90',
+  scene_memory_peak_p90_mib: 'Scene Peak Memory P90',
   network_api_success_rate_pct: 'API Success Rate',
   network_api_p90_ms: 'API Duration P90',
 };
@@ -76,4 +79,17 @@ export function formatDelta(delta: number | null, unit: string, relPct: number |
 export function formatTime(ms?: number): string {
   if (!ms) return '—';
   return new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+export function formatPValue(p?: number): string {
+  if (p === undefined || p === null || !Number.isFinite(p)) return '—';
+  if (p < 0.0001) return 'p < 0.0001';
+  return `p = ${p.toFixed(4)}`;
+}
+
+export function statTestLabel(test?: string): string {
+  if (test === 'two_proportion_z') return '2-Prop Z-test';
+  if (test === 'histogram_ks') return 'Histogram KS';
+  if (test === 'threshold_only') return 'Threshold gate';
+  return '—';
 }

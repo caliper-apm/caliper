@@ -16,6 +16,7 @@ import (
 
 	"github.com/caliper-apm/caliper/server/internal/alerts"
 	"github.com/caliper-apm/caliper/server/internal/analytics"
+	"github.com/caliper-apm/caliper/server/internal/auth"
 	"github.com/caliper-apm/caliper/server/internal/protocol"
 	"github.com/caliper-apm/caliper/server/internal/storage"
 	"github.com/caliper-apm/caliper/server/internal/symbolicator"
@@ -24,26 +25,32 @@ import (
 // Config controls collector HTTP security and operational boundaries.
 type Config struct {
 	APIKey         string
+	Authorizer     *auth.Authorizer
 	MaxPayloadSize int64
 	ConsoleDistDir string
 }
 
-// Handler serves ingestion, policy, release registration, symbolication, alerts, and Zero-Lie analytics endpoints.
+// Handler serves ingestion, policy, release registration, symbolication, alerts, RBAC, and Zero-Lie analytics endpoints.
 type Handler struct {
 	store        storage.AnalyticsStore
 	meta         storage.MetaStore
 	engine       *analytics.Engine
 	symbolicator *symbolicator.Service
 	alerts       *alerts.Engine
+	authz        *auth.Authorizer
 	cfg          Config
 	startedAt    time.Time
 	mux          *http.ServeMux
 }
 
-// NewHandler wires all v0.1 REST endpoints onto a clean stdlib ServeMux.
+// NewHandler wires all v0.1 + v0.5 REST endpoints onto a clean stdlib ServeMux.
 func NewHandler(store storage.AnalyticsStore, meta storage.MetaStore, cfg Config) *Handler {
 	if cfg.MaxPayloadSize <= 0 {
 		cfg.MaxPayloadSize = protocol.MaxPayloadBytes
+	}
+	authz := cfg.Authorizer
+	if authz == nil {
+		authz = auth.NewSingleAPIKey(cfg.APIKey)
 	}
 	eng := analytics.New(store)
 	h := &Handler{
@@ -52,6 +59,7 @@ func NewHandler(store storage.AnalyticsStore, meta storage.MetaStore, cfg Config
 		engine:       eng,
 		symbolicator: symbolicator.NewService(meta),
 		alerts:       alerts.NewEngine(store, meta, eng, alerts.NewWebhookDispatcher(5*time.Second)),
+		authz:        authz,
 		cfg:          cfg,
 		startedAt:    time.Now().UTC(),
 		mux:          http.NewServeMux(),
@@ -69,7 +77,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, X-Caliper-Key")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, X-Caliper-Key, Authorization")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -80,26 +88,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /healthz", h.handleHealth)
-	h.mux.HandleFunc("POST /v1/ingest", h.withAPIKey(h.handleIngest))
+	h.mux.HandleFunc("GET /v1/auth/whoami", h.handleWhoAmI)
+	h.mux.HandleFunc("POST /v1/ingest", h.withPerm(auth.PermIngest, h.handleIngest))
 	h.mux.HandleFunc("GET /v1/policy", h.handleGetPolicy)
-	h.mux.HandleFunc("POST /v1/releases/register", h.withAPIKey(h.handleRegisterRelease))
-	h.mux.HandleFunc("GET /v1/releases", h.handleListReleases)
-	h.mux.HandleFunc("POST /v1/symbols/upload", h.withAPIKey(h.handleUploadSymbol))
-	h.mux.HandleFunc("GET /v1/symbols", h.handleListSymbols)
-	h.mux.HandleFunc("POST /v1/symbols/resolve", h.handleResolveSymbols)
-	h.mux.HandleFunc("GET /v1/alerts/rules", h.handleListAlertRules)
-	h.mux.HandleFunc("POST /v1/alerts/rules", h.withAPIKey(h.handleUpsertAlertRule))
-	h.mux.HandleFunc("GET /v1/alerts/incidents", h.handleListAlertIncidents)
-	h.mux.HandleFunc("POST /v1/alerts/evaluate", h.withAPIKey(h.handleEvaluateAlerts))
-	h.mux.HandleFunc("POST /v1/alerts/rules/{rule_id}/evaluate", h.withAPIKey(h.handleEvaluateSingleAlert))
-	h.mux.HandleFunc("GET /v1/analytics/overview", h.handleOverview)
-	h.mux.HandleFunc("POST /v1/analytics/compare", h.handleCompare)
-	h.mux.HandleFunc("GET /v1/analytics/startup", h.handleStartup)
-	h.mux.HandleFunc("GET /v1/analytics/fluency", h.handleFluency)
-	h.mux.HandleFunc("GET /v1/analytics/resources", h.handleResources)
-	h.mux.HandleFunc("GET /v1/analytics/network", h.handleNetwork)
-	h.mux.HandleFunc("GET /v1/stability/issues", h.handleIssues)
-	h.mux.HandleFunc("GET /v1/stability/issues/{fingerprint}", h.handleIssueDetail)
+	h.mux.HandleFunc("POST /v1/releases/register", h.withPerm(auth.PermWriteRelease, h.handleRegisterRelease))
+	h.mux.HandleFunc("GET /v1/releases", h.withPerm(auth.PermReadAnalytics, h.handleListReleases))
+	h.mux.HandleFunc("POST /v1/symbols/upload", h.withPerm(auth.PermWriteRelease, h.handleUploadSymbol))
+	h.mux.HandleFunc("GET /v1/symbols", h.withPerm(auth.PermReadAnalytics, h.handleListSymbols))
+	h.mux.HandleFunc("POST /v1/symbols/resolve", h.withPerm(auth.PermReadAnalytics, h.handleResolveSymbols))
+	h.mux.HandleFunc("GET /v1/alerts/rules", h.withPerm(auth.PermReadAnalytics, h.handleListAlertRules))
+	h.mux.HandleFunc("POST /v1/alerts/rules", h.withPerm(auth.PermManageAlerts, h.handleUpsertAlertRule))
+	h.mux.HandleFunc("GET /v1/alerts/incidents", h.withPerm(auth.PermReadAnalytics, h.handleListAlertIncidents))
+	h.mux.HandleFunc("POST /v1/alerts/evaluate", h.withPerm(auth.PermManageAlerts, h.handleEvaluateAlerts))
+	h.mux.HandleFunc("POST /v1/alerts/rules/{rule_id}/evaluate", h.withPerm(auth.PermManageAlerts, h.handleEvaluateSingleAlert))
+	h.mux.HandleFunc("GET /v1/analytics/overview", h.withPerm(auth.PermReadAnalytics, h.handleOverview))
+	h.mux.HandleFunc("POST /v1/analytics/compare", h.withPerm(auth.PermReadAnalytics, h.handleCompare))
+	h.mux.HandleFunc("POST /v1/analytics/regressions/scan", h.withPerm(auth.PermReadAnalytics, h.handleScanRegressions))
+	h.mux.HandleFunc("GET /v1/analytics/startup", h.withPerm(auth.PermReadAnalytics, h.handleStartup))
+	h.mux.HandleFunc("GET /v1/analytics/fluency", h.withPerm(auth.PermReadAnalytics, h.handleFluency))
+	h.mux.HandleFunc("GET /v1/analytics/resources", h.withPerm(auth.PermReadAnalytics, h.handleResources))
+	h.mux.HandleFunc("GET /v1/analytics/network", h.withPerm(auth.PermReadAnalytics, h.handleNetwork))
+	h.mux.HandleFunc("GET /v1/stability/issues", h.withPerm(auth.PermReadAnalytics, h.handleIssues))
+	h.mux.HandleFunc("GET /v1/stability/issues/{fingerprint}", h.withPerm(auth.PermReadAnalytics, h.handleIssueDetail))
+	h.mux.HandleFunc("GET /v1/sessions/lookup", h.handleSessionLookup)
+	h.mux.HandleFunc("GET /v1/audit/logs", h.withPerm(auth.PermReadAuditLogs, h.handleListAuditLogs))
 	if h.cfg.ConsoleDistDir != "" {
 		h.mux.HandleFunc("GET /", h.handleConsoleStatic)
 	}
@@ -146,14 +158,24 @@ func (h *Handler) handleConsoleStatic(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, indexPath)
 }
 
-func (h *Handler) withAPIKey(next http.HandlerFunc) http.HandlerFunc {
+func (h *Handler) withPerm(perm auth.Permission, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.cfg.APIKey != "" && r.Header.Get("X-Caliper-Key") != h.cfg.APIKey {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid X-Caliper-Key")
+		appID := r.URL.Query().Get("app_id")
+		if _, status, code, msg := h.authz.Authorize(r, perm, appID); status != 0 {
+			writeError(w, status, code, msg)
 			return
 		}
 		next(w, r)
 	}
+}
+
+func (h *Handler) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.authz.Authenticate(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "missing or invalid credentials")
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
 }
 
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -186,6 +208,10 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	var batch protocol.BatchEnvelope
 	if err := json.Unmarshal(raw, &batch); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if _, status, code, msg := h.authz.Authorize(r, auth.PermIngest, batch.Resource.AppID); status != 0 {
+		writeError(w, status, code, msg)
 		return
 	}
 	res, err := h.store.IngestBatch(r.Context(), &batch)
@@ -619,6 +645,117 @@ func (h *Handler) handleEvaluateSingleAlert(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, outcome)
+}
+
+func (h *Handler) handleScanRegressions(w http.ResponseWriter, r *http.Request) {
+	var req analytics.CompareRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if req.Platform != "android" && req.Platform != "ios" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "platform must be android or ios")
+		return
+	}
+	if req.BaselineVersion == "" || req.CandidateVersion == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "baseline_version and candidate_version are required")
+		return
+	}
+	if _, status, code, msg := h.authz.Authorize(r, auth.PermReadAnalytics, req.AppID); status != 0 {
+		writeError(w, status, code, msg)
+		return
+	}
+	rep, err := h.engine.ScanRegressions(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "scan_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+
+func (h *Handler) handleSessionLookup(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	appID := strings.TrimSpace(q.Get("app_id"))
+	principal, status, code, msg := h.authz.Authorize(r, auth.PermSessionLookup, appID)
+	if status != 0 {
+		writeError(w, status, code, msg)
+		return
+	}
+
+	installHash := strings.TrimSpace(q.Get("install_hash"))
+	userHash := strings.TrimSpace(q.Get("user_hash"))
+	reason := strings.TrimSpace(q.Get("reason"))
+	if installHash == "" && userHash == "" {
+		writeError(w, http.StatusBadRequest, "missing_target", "install_hash or user_hash is required")
+		return
+	}
+	if len(reason) < 4 {
+		writeError(w, http.StatusBadRequest, "missing_audit_reason", "a non-empty audit reason (e.g. ticket ID, min 4 chars) is strictly required for session lookup")
+		return
+	}
+	limit := 100
+	if rawLimit := q.Get("limit"); rawLimit != "" {
+		if n, err := strconv.Atoi(rawLimit); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+
+	events, err := h.store.QuerySessionTimeline(r.Context(), storage.SessionLookupFilter{
+		AppID:       appID,
+		Platform:    strings.TrimSpace(q.Get("platform")),
+		InstallHash: installHash,
+		UserHash:    userHash,
+		Limit:       limit,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "lookup_failed", err.Error())
+		return
+	}
+
+	targetType := "install_hash"
+	targetHash := installHash
+	if userHash != "" {
+		targetType = "user_hash"
+		targetHash = userHash
+	}
+	auditEntry := storage.AuditLogEntry{
+		TimestampMS: time.Now().UTC().UnixMilli(),
+		Actor:       principal.Actor,
+		Role:        string(principal.Role),
+		Action:      "session_lookup",
+		TargetType:  targetType,
+		TargetHash:  targetHash,
+		Reason:      reason,
+		RemoteIP:    r.RemoteAddr,
+		ResultCount: len(events),
+	}
+	if err := h.meta.AppendAuditLog(r.Context(), auditEntry); err != nil {
+		writeError(w, http.StatusInternalServerError, "audit_log_failed", "refusing to return session lookup without persisted audit entry: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"target_type": targetType,
+		"target_hash": targetHash,
+		"reason":      reason,
+		"actor":       principal.Actor,
+		"events":      events,
+	})
+}
+
+func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
+		if n, err := strconv.Atoi(rawLimit); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	logs, err := h.meta.ListAuditLogs(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"audit_logs": logs})
 }
 
 func openBoundedBody(r *http.Request, maxBytes int64) (io.Reader, func(), error) {

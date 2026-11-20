@@ -1,0 +1,67 @@
+name: "Caliper APM Release & Symbol Upload"
+description: "Automatically registers build metadata and uploads R8, dSYM, Breakpad, or Hermes SourceMap symbols to Caliper APM."
+author: "Caliper APM"
+
+inputs:
+  server-url:
+    description: "Caliper APM server base URL (e.g. https://apm.example.com)"
+    required: true
+  api-key:
+    description: "Caliper API key (operator or admin role)"
+    required: false
+    default: ""
+  app-id:
+    description: "Application bundle/package ID"
+    required: true
+  platform:
+    description: "Target platform: android or ios"
+    required: true
+  env:
+    description: "Environment: prod, staging, or dev"
+    required: false
+    default: "prod"
+  app-version:
+    description: "Semantic application version (e.g. 1.1.0)"
+    required: true
+  build-number:
+    description: "Monotonic build number / versionCode (e.g. 110)"
+    required: true
+  git-sha:
+    description: "Git commit SHA (defaults to GITHUB_SHA)"
+    required: false
+    default: ""
+  kind:
+    description: "Symbol bundle kind: r8_mapping | dsym | hermes_sourcemap | breakpad"
+    required: true
+  symbol-file:
+    description: "Path to the symbol file to upload"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Go 1.23 for caliper-symbols
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.23"
+
+    - name: Upload symbol bundle & register release
+      shell: bash
+      env:
+        CALIPER_API_KEY: ${{ inputs.api-key }}
+        CALIPER_GIT_SHA: ${{ inputs.git-sha || github.sha }}
+      run: |
+        set -euo pipefail
+        CLI_BIN="$(mktemp -d)/caliper-symbols"
+        (cd "${{ github.action_path }}/../cli-symbols" && go build -o "$CLI_BIN" .)
+        "$CLI_BIN" upload \
+          --server "${{ inputs.server-url }}" \
+          --api-key "$CALIPER_API_KEY" \
+          --app-id "${{ inputs.app-id }}" \
+          --platform "${{ inputs.platform }}" \
+          --env "${{ inputs.env }}" \
+          --version "${{ inputs.app-version }}" \
+          --build "${{ inputs.build-number }}" \
+          --git-sha "${CALIPER_GIT_SHA:0:12}" \
+          --kind "${{ inputs.kind }}" \
+          --file "${{ inputs.symbol-file }}"

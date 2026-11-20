@@ -344,19 +344,25 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 	}
 	bP50 := contract.QuantileDuration(baseSt.TotalHist, 0.50, minSamples)
 	cP50 := contract.QuantileDuration(candSt.TotalHist, 0.50, minSamples)
-	metrics = append(metrics, contract.CompareValues(
-		"startup_cold_p50_ms", "ms", "lower_is_better",
-		bP50.Value, bP50.SampleSize, bP50.MissingReason,
-		cP50.Value, cP50.SampleSize, cP50.MissingReason,
-		minSamples, 50.0,
+	metrics = append(metrics, enrichWithHistogramStats(
+		contract.CompareValues(
+			"startup_cold_p50_ms", "ms", "lower_is_better",
+			bP50.Value, bP50.SampleSize, bP50.MissingReason,
+			cP50.Value, cP50.SampleSize, cP50.MissingReason,
+			minSamples, 50.0,
+		),
+		baseSt.TotalHist, candSt.TotalHist, bP50, cP50, DefaultSignificanceAlpha,
 	))
 	bP90 := contract.QuantileDuration(baseSt.TotalHist, 0.90, minSamples)
 	cP90 := contract.QuantileDuration(candSt.TotalHist, 0.90, minSamples)
-	metrics = append(metrics, contract.CompareValues(
-		"startup_cold_p90_ms", "ms", "lower_is_better",
-		bP90.Value, bP90.SampleSize, bP90.MissingReason,
-		cP90.Value, cP90.SampleSize, cP90.MissingReason,
-		minSamples, 100.0,
+	metrics = append(metrics, enrichWithHistogramStats(
+		contract.CompareValues(
+			"startup_cold_p90_ms", "ms", "lower_is_better",
+			bP90.Value, bP90.SampleSize, bP90.MissingReason,
+			cP90.Value, cP90.SampleSize, cP90.MissingReason,
+			minSamples, 100.0,
+		),
+		baseSt.TotalHist, candSt.TotalHist, bP90, cP90, DefaultSignificanceAlpha,
 	))
 
 	// 2. Fluency jank rate (only across identical algorithms!)
@@ -368,17 +374,24 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 	if err != nil {
 		return CompareReport{}, err
 	}
-	bJank, bFlN, bAlgo, bFlMiss := aggregateSingleAlgorithmFluency(baseFl)
-	cJank, cFlN, cAlgo, cFlMiss := aggregateSingleAlgorithmFluency(candFl)
-	if bFlMiss == "" && cFlMiss == "" && bAlgo != cAlgo {
+	bFlStat := aggregateSingleAlgorithmFluency(baseFl)
+	cFlStat := aggregateSingleAlgorithmFluency(candFl)
+	cFlMiss := cFlStat.missingReason
+	if bFlStat.missingReason == "" && cFlMiss == "" && bFlStat.algorithm != cFlStat.algorithm {
 		cFlMiss = contract.MissingIncompatibleAlgo
 	}
-	metrics = append(metrics, contract.CompareValues(
+	flCmp := contract.CompareValues(
 		"fluency_jank_rate_pct", "%", "lower_is_better",
-		bJank, bFlN, bFlMiss,
-		cJank, cFlN, cFlMiss,
+		bFlStat.jankRatePct, bFlStat.validWindows, bFlStat.missingReason,
+		cFlStat.jankRatePct, cFlStat.validWindows, cFlMiss,
 		minSamples, 0.5,
-	))
+	)
+	if flCmp.Status != "gated" {
+		flCmp = enrichWithProportionStats(
+			flCmp, bFlStat.jankFrames, bFlStat.totalFrames, cFlStat.jankFrames, cFlStat.totalFrames, DefaultSignificanceAlpha,
+		)
+	}
+	metrics = append(metrics, flCmp)
 
 	// 3. Resources: Avg CPU & Peak Memory P90
 	baseRes, err := e.store.QueryResources(ctx, baseFilter)
@@ -391,19 +404,25 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 	}
 	bCPU, bMemHist, bResN := mergeResources(baseRes)
 	cCPU, cMemHist, cResN := mergeResources(candRes)
-	metrics = append(metrics, contract.CompareValues(
+	cpuCmp := contract.CompareValues(
 		"resource_cpu_avg_pct", "%", "lower_is_better",
 		bCPU, bResN, missingIfZero(bResN),
 		cCPU, cResN, missingIfZero(cResN),
 		minSamples, 2.0,
-	))
+	)
+	cpuCmp.StatTest = "threshold_only"
+	metrics = append(metrics, cpuCmp)
+
 	bMemP90 := contract.QuantileMemoryMiB(bMemHist, 0.90, minSamples)
 	cMemP90 := contract.QuantileMemoryMiB(cMemHist, 0.90, minSamples)
-	metrics = append(metrics, contract.CompareValues(
-		"resource_memory_peak_p90_mib", "MiB", "lower_is_better",
-		bMemP90.Value, bMemP90.SampleSize, bMemP90.MissingReason,
-		cMemP90.Value, cMemP90.SampleSize, cMemP90.MissingReason,
-		minSamples, 16.0,
+	metrics = append(metrics, enrichWithHistogramStats(
+		contract.CompareValues(
+			"resource_memory_peak_p90_mib", "MiB", "lower_is_better",
+			bMemP90.Value, bMemP90.SampleSize, bMemP90.MissingReason,
+			cMemP90.Value, cMemP90.SampleSize, cMemP90.MissingReason,
+			minSamples, 16.0,
+		),
+		bMemHist, cMemHist, bMemP90, cMemP90, DefaultSignificanceAlpha,
 	))
 
 	// 4. Network logical API success rate & P90
@@ -417,19 +436,32 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 	}
 	bNetRate, bNetMiss := networkSuccessRate(baseNet)
 	cNetRate, cNetMiss := networkSuccessRate(candNet)
-	metrics = append(metrics, contract.CompareValues(
+	netRateCmp := contract.CompareValues(
 		"network_api_success_rate_pct", "%", "higher_is_better",
 		bNetRate, baseNet.TotalCalls, bNetMiss,
 		cNetRate, candNet.TotalCalls, cNetMiss,
 		minSamples, 0.5,
-	))
+	)
+	if netRateCmp.Status != "gated" {
+		netRateCmp = enrichWithProportionStats(
+			netRateCmp,
+			baseNet.TotalCalls-baseNet.FailureCounts.Total(), baseNet.TotalCalls,
+			candNet.TotalCalls-candNet.FailureCounts.Total(), candNet.TotalCalls,
+			DefaultSignificanceAlpha,
+		)
+	}
+	metrics = append(metrics, netRateCmp)
+
 	bNetP90 := contract.QuantileDuration(baseNet.DurationHist, 0.90, minSamples)
 	cNetP90 := contract.QuantileDuration(candNet.DurationHist, 0.90, minSamples)
-	metrics = append(metrics, contract.CompareValues(
-		"network_api_p90_ms", "ms", "lower_is_better",
-		bNetP90.Value, bNetP90.SampleSize, bNetP90.MissingReason,
-		cNetP90.Value, cNetP90.SampleSize, cNetP90.MissingReason,
-		minSamples, 50.0,
+	metrics = append(metrics, enrichWithHistogramStats(
+		contract.CompareValues(
+			"network_api_p90_ms", "ms", "lower_is_better",
+			bNetP90.Value, bNetP90.SampleSize, bNetP90.MissingReason,
+			cNetP90.Value, cNetP90.SampleSize, cNetP90.MissingReason,
+			minSamples, 50.0,
+		),
+		baseNet.DurationHist, candNet.DurationHist, bNetP90, cNetP90, DefaultSignificanceAlpha,
 	))
 
 	regressed, improved, gated := 0, 0, 0
@@ -464,9 +496,18 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 	}, nil
 }
 
-func aggregateSingleAlgorithmFluency(rows []storage.FluencyAggregate) (*float64, int64, string, string) {
+type fluencyAggStat struct {
+	jankRatePct   *float64
+	validWindows  int64
+	totalFrames   int64
+	jankFrames    int64
+	algorithm     string
+	missingReason string
+}
+
+func aggregateSingleAlgorithmFluency(rows []storage.FluencyAggregate) fluencyAggStat {
 	if len(rows) == 0 {
-		return nil, 0, "", contract.MissingNoObservations
+		return fluencyAggStat{missingReason: contract.MissingNoObservations}
 	}
 	algos := map[string]struct{}{}
 	var singleAlgo string
@@ -481,13 +522,19 @@ func aggregateSingleAlgorithmFluency(rows []storage.FluencyAggregate) (*float64,
 		}
 	}
 	if validWindows == 0 || totalFrames == 0 {
-		return nil, 0, "", contract.MissingNoObservations
+		return fluencyAggStat{missingReason: contract.MissingNoObservations}
 	}
 	if len(algos) > 1 {
-		return nil, validWindows, "", contract.MissingIncompatibleAlgo
+		return fluencyAggStat{validWindows: validWindows, missingReason: contract.MissingIncompatibleAlgo}
 	}
 	pct := (float64(jankFrames) / float64(totalFrames)) * 100.0
-	return &pct, validWindows, singleAlgo, ""
+	return fluencyAggStat{
+		jankRatePct:  &pct,
+		validWindows: validWindows,
+		totalFrames:  totalFrames,
+		jankFrames:   jankFrames,
+		algorithm:    singleAlgo,
+	}
 }
 
 func mergeResources(rows []storage.ResourceAggregate) (*float64, contract.Histogram, int64) {

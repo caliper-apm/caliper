@@ -155,6 +155,46 @@ type Stats struct {
 	IssueCount   int    `json:"issue_count"`
 }
 
+// SessionTimelineEvent is a bounded chronological summary record for audited UID/install troubleshooting.
+type SessionTimelineEvent struct {
+	EventID      string `json:"event_id"`
+	OccurredAtMS int64  `json:"occurred_at_ms"`
+	AppID        string `json:"app_id"`
+	Platform     string `json:"platform"`
+	Env          string `json:"env"`
+	AppVersion   string `json:"app_version"`
+	BuildNumber  string `json:"build_number"`
+	Adapter      string `json:"adapter,omitempty"`
+	InstallHash  string `json:"install_hash"`
+	UserHash     string `json:"user_hash,omitempty"`
+	Kind         string `json:"kind"`
+	Scene        string `json:"scene,omitempty"`
+	Summary      string `json:"summary"`
+}
+
+// SessionLookupFilter scopes an audited user/install timeline lookup.
+type SessionLookupFilter struct {
+	AppID       string
+	Platform    string
+	InstallHash string
+	UserHash    string
+	Limit       int
+}
+
+// AuditLogEntry records an immutable security audit event (e.g. audited UID/session lookup).
+type AuditLogEntry struct {
+	AuditID     string `json:"audit_id"`
+	TimestampMS int64  `json:"timestamp_ms"`
+	Actor       string `json:"actor"`
+	Role        string `json:"role"`
+	Action      string `json:"action"`      // session_lookup | policy_update | alert_upsert
+	TargetType  string `json:"target_type"` // install_hash | user_hash | rule | policy
+	TargetHash  string `json:"target_hash"`
+	Reason      string `json:"reason"`
+	RemoteIP    string `json:"remote_ip,omitempty"`
+	ResultCount int    `json:"result_count"`
+}
+
 // AnalyticsStore is the pluggable OLAP ingestion and query interface.
 type AnalyticsStore interface {
 	IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) (IngestResult, error)
@@ -164,6 +204,7 @@ type AnalyticsStore interface {
 	QueryNetwork(ctx context.Context, f QueryFilter) (NetworkAggregate, error)
 	QueryIssues(ctx context.Context, f QueryFilter, limit int) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, fingerprint string, f QueryFilter) (*IssueSummary, bool, error)
+	QuerySessionTimeline(ctx context.Context, f SessionLookupFilter) ([]SessionTimelineEvent, error)
 	Stats(ctx context.Context) Stats
 	Close() error
 }
@@ -238,4 +279,6 @@ type MetaStore interface {
 	ListAlertRules(ctx context.Context, appID, platform string) ([]AlertRule, error)
 	SaveAlertIncident(ctx context.Context, inc AlertIncident) error
 	ListAlertIncidents(ctx context.Context, ruleID string) ([]AlertIncident, error)
+	AppendAuditLog(ctx context.Context, entry AuditLogEntry) error
+	ListAuditLogs(ctx context.Context, limit int) ([]AuditLogEntry, error)
 }

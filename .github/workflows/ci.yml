@@ -83,3 +83,21 @@ jobs:
       - name: Run Kotlin core golden contract tests
         working-directory: packages/sdk-android
         run: gradle test
+
+  ci-build-plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test Gradle symbols plugin (Kotlin)
+        working-directory: packages/gradle-plugin
+        run: gradle test
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+      - name: Test Fastlane symbols plugin (Ruby)
+        run: ruby packages/fastlane-plugin/test/uploader_test.rb

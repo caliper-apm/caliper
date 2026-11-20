@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api } from '../api.ts';
 import { formatTime, formatValue } from '../format.ts';
-import type { AlertIncident, AlertRule, Platform, ReleaseRecord, SymbolRecord } from '../types.ts';
+import type { AlertIncident, AlertRule, AuditLogEntry, Platform, ReleaseRecord, SessionLookupResponse, SymbolRecord } from '../types.ts';
 
 interface Props {
   platform: Platform;
@@ -14,6 +14,11 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
   const [symbols, setSymbols] = useState<SymbolRecord[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [incidents, setIncidents] = useState<AlertIncident[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [lookupType, setLookupType] = useState<'user_hash' | 'install_hash'>('user_hash');
+  const [lookupHash, setLookupHash] = useState('0000111122223333');
+  const [lookupReason, setLookupReason] = useState('');
+  const [lookupResult, setLookupResult] = useState<SessionLookupResponse | null>(null);
   const [statusMsg, setStatusMsg] = useState('');
   const [error, setError] = useState('');
 
@@ -34,16 +39,40 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
       api.symbols(platform),
       api.alertRules(platform),
       api.alertIncidents(),
+      api.auditLogs(apiKey || undefined).catch(() => ({ audit_logs: [] as AuditLogEntry[] })),
     ])
-      .then(([symRes, ruleRes, incRes]) => {
+      .then(([symRes, ruleRes, incRes, auditRes]) => {
         if (!active) return;
         setSymbols(symRes.symbols ?? []);
         setRules(ruleRes.rules ?? []);
         setIncidents(incRes.incidents ?? []);
+        setAuditLogs(auditRes.audit_logs ?? []);
       })
       .catch(err => { if (active) setError(String(err)); });
     return () => { active = false; };
   }, [platform, refreshTick]);
+
+  async function runSessionLookup(e: FormEvent) {
+    e.preventDefault();
+    setError('');
+    setStatusMsg('');
+    try {
+      const res = await api.lookupSession(
+        {
+          userHash: lookupType === 'user_hash' ? lookupHash.trim() : undefined,
+          installHash: lookupType === 'install_hash' ? lookupHash.trim() : undefined,
+          reason: lookupReason.trim(),
+          platform,
+        },
+        apiKey || undefined,
+      );
+      setLookupResult(res);
+      setStatusMsg(`Audited lookup recorded for ${res.target_type}=${res.target_hash} (${res.events.length} events)`);
+      onMutated();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
 
   async function saveRule(e: FormEvent) {
     e.preventDefault();
@@ -218,6 +247,77 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
                 );
               })}
               {rules.length === 0 && <tr><td colSpan={4} className="empty">No alert rules configured yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h2 className="card-title">Audited UID / Session Timeline Lookup</h2>
+            <p className="card-sub">
+              Non-PII hex hash lookup · requires operator/admin role + mandatory ticket/reason · fail-closed immutable audit log
+            </p>
+          </div>
+          <span className="badge amber">Audit Enforced</span>
+        </div>
+        <form onSubmit={runSessionLookup} style={{ marginBottom: 14 }}>
+          <div className="form-grid">
+            <label className="field">Target Type
+              <select value={lookupType} onChange={e => setLookupType(e.target.value as 'user_hash' | 'install_hash')}>
+                <option value="user_hash">user_hash (client-hashed UID)</option>
+                <option value="install_hash">install_hash</option>
+              </select>
+            </label>
+            <label className="field">Target Hex Hash (16–64 chars)
+              <input value={lookupHash} onChange={e => setLookupHash(e.target.value)} placeholder="0000111122223333" required />
+            </label>
+            <label className="field">Audit Reason / Ticket ID (required)
+              <input value={lookupReason} onChange={e => setLookupReason(e.target.value)} placeholder="INC-1042 user freeze triage" required />
+            </label>
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <button className="btn primary" type="submit">Run Audited Lookup</button>
+          </div>
+        </form>
+
+        {lookupResult && (
+          <div className="table-wrap" style={{ marginBottom: 16 }}>
+            <table>
+              <thead><tr><th>Timestamp</th><th>Build</th><th>Kind</th><th>Scene</th><th>Summary</th></tr></thead>
+              <tbody>
+                {lookupResult.events.map(ev => (
+                  <tr key={ev.event_id}>
+                    <td className="mono">{formatTime(ev.occurred_at_ms)}</td>
+                    <td className="mono">v{ev.app_version} ({ev.build_number})</td>
+                    <td><span className="badge blue">{ev.kind}</span></td>
+                    <td className="mono">{ev.scene || '—'}</td>
+                    <td className="mono">{ev.summary}</td>
+                  </tr>
+                ))}
+                {lookupResult.events.length === 0 && <tr><td colSpan={5} className="empty">No matching events for this hash on {platform}.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <h3 style={{ margin: '12px 0 8px', fontSize: 13 }}>Immutable Security Audit Trail ({auditLogs.length})</h3>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Actor / Role</th><th>Action</th><th>Target</th><th>Reason</th><th>Rows</th></tr></thead>
+            <tbody>
+              {auditLogs.map(a => (
+                <tr key={a.audit_id}>
+                  <td className="mono">{formatTime(a.timestamp_ms)}</td>
+                  <td><strong>{a.actor}</strong> <span className="badge slate">{a.role}</span></td>
+                  <td className="mono">{a.action}</td>
+                  <td className="mono">{a.target_type}:{a.target_hash}</td>
+                  <td>{a.reason}</td>
+                  <td className="mono">{a.result_count}</td>
+                </tr>
+              ))}
+              {auditLogs.length === 0 && <tr><td colSpan={6} className="empty">No audit log entries recorded yet (or admin key required).</td></tr>}
             </tbody>
           </table>
         </div>

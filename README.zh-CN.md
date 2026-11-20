@@ -59,6 +59,16 @@ docker compose up --build
 
 ---
 
+## 生产级集群与工程化能力（v0.5）
+
+详见 [`docs/roadmap-v0.5.md`](docs/roadmap-v0.5.md)：
+- **ClickHouse 生产存储后端**：零 CGO 原生 HTTP 协议驱动（`--storage-driver=clickhouse`），基于分区 `ReplacingMergeTree` 与 `sumForEach` 向量化直方图合并，支持 `docker compose --profile cluster up` 一键拉起集群模式。
+- **统计显著性回归检测引擎**：比例指标采用双比例 Z 检验 + Wilson 95% 置信区间，耗时/内存直方图采用双样本 Kolmogorov-Smirnov（KS）检验，内置 `POST /v1/analytics/regressions/scan` 分场景自动归因排序。
+- **RBAC 权限控制与强制审计的 UID/Session 排查**：支持 `--auth-config` 四级角色（`ingest_only` / `viewer` / `operator` / `admin`）与 App 作用域隔离；单用户问题排查（`GET /v1/sessions/lookup`）仅接受非 PII 十六进制哈希且强制填写工单原因，Fail-Closed 写入不可篡改审计日志（`GET /v1/audit/logs`）。
+- **零手工运维 CI 构建插件**：内置 Android Gradle 插件（`packages/gradle-plugin`，`io.caliper.apm.symbols`）、iOS Fastlane 插件（`packages/fastlane-plugin`）与复合 GitHub Action（`packages/github-action`）。
+
+---
+
 ## 开源协议
 
 基于 [Apache License 2.0](LICENSE) 开源。

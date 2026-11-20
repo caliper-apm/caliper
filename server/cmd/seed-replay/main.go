@@ -68,6 +68,12 @@ func main() {
 				if seq%3 == 0 {
 					adapter = "react-native"
 				}
+				installHash := fmt.Sprintf("%016x", rng.Uint64())
+				userHash := ""
+				if batchesSent%10 == 0 {
+					// Deterministic non-PII sample user_hash for testing Audited Session Lookup out of the box.
+					userHash = "0000111122223333"
+				}
 				env := protocol.BatchEnvelope{
 					SchemaVersion: 1,
 					SentAtMS:      baseTime.UnixMilli(),
@@ -82,7 +88,8 @@ func main() {
 						Adapter:     adapter,
 						SDKName:     "caliper-" + platform,
 						SDKVersion:  "0.1.0",
-						InstallHash: fmt.Sprintf("%016x", rng.Uint64()),
+						InstallHash: installHash,
+						UserHash:    userHash,
 					},
 					Events: batchEvents,
 				}

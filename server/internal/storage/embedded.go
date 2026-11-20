@@ -76,31 +76,41 @@ type EmbeddedStore struct {
 	policies       map[string]SamplingPolicy
 	symbols        map[string]SymbolRecord
 	symbolBytes    map[string][]byte // in-memory fallback when dataDir == ""
-	alertRules     map[string]AlertRule
-	alertIncidents map[string]AlertIncident
-	startups       map[rollupKey]*StartupAggregate
-	fluencies      map[rollupKey]*FluencyAggregate
-	resources      map[rollupKey]*ResourceAggregate
-	networks       map[rollupKey]*NetworkAggregate
-	issues         map[string]*issueBucket // key: app|platform|env|fingerprint
+	alertRules       map[string]AlertRule
+	alertIncidents   map[string]AlertIncident
+	auditLogs        []AuditLogEntry
+	installTimelines map[string][]SessionTimelineEvent
+	userTimelines    map[string][]SessionTimelineEvent
+	startups         map[rollupKey]*StartupAggregate
+	fluencies        map[rollupKey]*FluencyAggregate
+	resources        map[rollupKey]*ResourceAggregate
+	networks         map[rollupKey]*NetworkAggregate
+	issues           map[string]*issueBucket // key: app|platform|env|fingerprint
 }
+
+const (
+	maxTimelineEventsPerHash = 200
+	maxTrackedTimelineHashes = 10000
+)
 
 // OpenEmbedded opens or initializes an embedded store in dataDir (empty dataDir = memory-only).
 func OpenEmbedded(dataDir string) (*EmbeddedStore, error) {
 	s := &EmbeddedStore{
-		dataDir:        dataDir,
-		seenEvents:     make(map[string]struct{}, 16384),
-		releases:       make(map[string]ReleaseRecord),
-		policies:       make(map[string]SamplingPolicy),
-		symbols:        make(map[string]SymbolRecord),
-		symbolBytes:    make(map[string][]byte),
-		alertRules:     make(map[string]AlertRule),
-		alertIncidents: make(map[string]AlertIncident),
-		startups:       make(map[rollupKey]*StartupAggregate),
-		fluencies:      make(map[rollupKey]*FluencyAggregate),
-		resources:      make(map[rollupKey]*ResourceAggregate),
-		networks:       make(map[rollupKey]*NetworkAggregate),
-		issues:         make(map[string]*issueBucket),
+		dataDir:          dataDir,
+		seenEvents:       make(map[string]struct{}, 16384),
+		releases:         make(map[string]ReleaseRecord),
+		policies:         make(map[string]SamplingPolicy),
+		symbols:          make(map[string]SymbolRecord),
+		symbolBytes:      make(map[string][]byte),
+		alertRules:       make(map[string]AlertRule),
+		alertIncidents:   make(map[string]AlertIncident),
+		installTimelines: make(map[string][]SessionTimelineEvent),
+		userTimelines:    make(map[string][]SessionTimelineEvent),
+		startups:         make(map[rollupKey]*StartupAggregate),
+		fluencies:        make(map[rollupKey]*FluencyAggregate),
+		resources:        make(map[rollupKey]*ResourceAggregate),
+		networks:         make(map[rollupKey]*NetworkAggregate),
+		issues:           make(map[string]*issueBucket),
 	}
 
 	if dataDir != "" {
@@ -108,6 +118,9 @@ func OpenEmbedded(dataDir string) (*EmbeddedStore, error) {
 			return nil, fmt.Errorf("create data dir: %w", err)
 		}
 		if err := s.loadMetaLocked(); err != nil {
+			return nil, err
+		}
+		if err := s.loadAuditLogsLocked(); err != nil {
 			return nil, err
 		}
 		if err := s.replayWALLocked(); err != nil {
@@ -343,6 +356,8 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		rec.EventCount++
 		s.releases[rKey] = rec
 	}
+
+	s.indexTimelineLocked(r, e, adapter, scene, parsed)
 
 	baseKey := rollupKey{
 		AppID:       r.AppID,
@@ -1111,6 +1126,193 @@ func (s *EmbeddedStore) Stats(_ context.Context) Stats {
 		ReleaseCount: len(s.releases),
 		IssueCount:   len(s.issues),
 	}
+}
+
+// SummarizeEvent creates a concise, non-PII diagnostic summary for session timeline views.
+func SummarizeEvent(kind string, parsed any) string {
+	switch p := parsed.(type) {
+	case protocol.StartupPayload:
+		return fmt.Sprintf("cold_start=%.0fms result=%s", p.TotalDurationMS, p.Result)
+	case protocol.StabilityPayload:
+		return fmt.Sprintf("%s fatal=%v title=%s", kind, p.Fatal, p.Title)
+	case protocol.FluencyWindowPayload:
+		return fmt.Sprintf("frames=%d jank=%d algo=%s", p.FrameCount, p.JankFrameCount, p.Algorithm)
+	case protocol.ResourceWindowPayload:
+		return fmt.Sprintf("cpu=%.1f%% mem_peak=%.1fMiB (%s)", p.CPUPct, p.MemoryPeakKiB/1024.0, p.MemoryKind)
+	case protocol.JSLongTaskPayload:
+		return fmt.Sprintf("longtasks=%d blocking=%.0fms max=%.0fms", p.LongTaskCount, p.TotalBlockingMS, p.MaxTaskMS)
+	case protocol.NetworkSummaryPayload:
+		return fmt.Sprintf("calls=%d failed=%d", p.CallCount, p.FailureCounts.Total())
+	case protocol.NetworkTransportPayload:
+		return fmt.Sprintf("%s %s status=%d total=%.0fms result=%s", p.Method, p.Operation, p.StatusCode, p.TotalMS, p.Result)
+	case protocol.CustomScenePayload:
+		return fmt.Sprintf("journey=%s status=%s", p.JourneyName, p.Status)
+	default:
+		return kind
+	}
+}
+
+func (s *EmbeddedStore) indexTimelineLocked(r protocol.Resource, e protocol.Event, adapter, scene string, parsed any) {
+	item := SessionTimelineEvent{
+		EventID:      e.EventID,
+		OccurredAtMS: e.OccurredAtMS,
+		AppID:        r.AppID,
+		Platform:     r.Platform,
+		Env:          r.Env,
+		AppVersion:   r.AppVersion,
+		BuildNumber:  r.BuildNumber,
+		Adapter:      adapter,
+		InstallHash:  r.InstallHash,
+		UserHash:     r.UserHash,
+		Kind:         e.Kind,
+		Scene:        scene,
+		Summary:      SummarizeEvent(e.Kind, parsed),
+	}
+	appendBoundedTimeline(s.installTimelines, r.Platform+"|"+r.InstallHash, item)
+	if r.UserHash != "" {
+		appendBoundedTimeline(s.userTimelines, r.Platform+"|"+r.UserHash, item)
+	}
+}
+
+func appendBoundedTimeline(index map[string][]SessionTimelineEvent, key string, item SessionTimelineEvent) {
+	if key == "" {
+		return
+	}
+	list, exists := index[key]
+	if !exists && len(index) >= maxTrackedTimelineHashes {
+		return
+	}
+	list = append(list, item)
+	if len(list) > maxTimelineEventsPerHash {
+		list = list[len(list)-maxTimelineEventsPerHash:]
+	}
+	index[key] = list
+}
+
+func (s *EmbeddedStore) QuerySessionTimeline(_ context.Context, f SessionLookupFilter) ([]SessionTimelineEvent, error) {
+	if f.InstallHash == "" && f.UserHash == "" {
+		return nil, errors.New("install_hash or user_hash is required")
+	}
+	limit := f.Limit
+	if limit <= 0 || limit > maxTimelineEventsPerHash {
+		limit = 100
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	platforms := []string{"android", "ios"}
+	if f.Platform != "" {
+		platforms = []string{f.Platform}
+	}
+
+	var source []SessionTimelineEvent
+	for _, plat := range platforms {
+		if f.UserHash != "" {
+			source = append(source, s.userTimelines[plat+"|"+f.UserHash]...)
+		} else {
+			source = append(source, s.installTimelines[plat+"|"+f.InstallHash]...)
+		}
+	}
+
+	out := make([]SessionTimelineEvent, 0, len(source))
+	for _, ev := range source {
+		if f.AppID != "" && ev.AppID != f.AppID {
+			continue
+		}
+		if f.Platform != "" && ev.Platform != f.Platform {
+			continue
+		}
+		if f.InstallHash != "" && ev.InstallHash != f.InstallHash {
+			continue
+		}
+		if f.UserHash != "" && ev.UserHash != f.UserHash {
+			continue
+		}
+		out = append(out, ev)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].OccurredAtMS != out[j].OccurredAtMS {
+			return out[i].OccurredAtMS > out[j].OccurredAtMS
+		}
+		return out[i].EventID < out[j].EventID
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *EmbeddedStore) loadAuditLogsLocked() error {
+	path := filepath.Join(s.dataDir, "audit.wal.jsonl")
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open audit log: %w", err)
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var entry AuditLogEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		s.auditLogs = append(s.auditLogs, entry)
+	}
+	return scanner.Err()
+}
+
+func (s *EmbeddedStore) AppendAuditLog(_ context.Context, entry AuditLogEntry) error {
+	if entry.Action == "" || entry.Actor == "" || entry.Reason == "" {
+		return errors.New("audit log requires action, actor, and reason")
+	}
+	if entry.TimestampMS == 0 {
+		entry.TimestampMS = time.Now().UTC().UnixMilli()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry.AuditID == "" {
+		entry.AuditID = fmt.Sprintf("aud-%d-%d", entry.TimestampMS, len(s.auditLogs)+1)
+	}
+	s.auditLogs = append(s.auditLogs, entry)
+	if s.dataDir != "" {
+		f, err := os.OpenFile(filepath.Join(s.dataDir, "audit.wal.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return fmt.Errorf("append audit log: %w", err)
+		}
+		defer f.Close()
+		raw, err := json.Marshal(entry)
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(append(raw, '\n')); err != nil {
+			return fmt.Errorf("write audit entry: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *EmbeddedStore) ListAuditLogs(_ context.Context, limit int) ([]AuditLogEntry, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := len(s.auditLogs)
+	if n == 0 {
+		return []AuditLogEntry{}, nil
+	}
+	out := make([]AuditLogEntry, 0, min(n, limit))
+	for i := n - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, s.auditLogs[i])
+	}
+	return out, nil
 }
 
 func releaseMapKey(appID, platform, env, ver, build string) string {

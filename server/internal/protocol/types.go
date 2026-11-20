@@ -56,6 +56,7 @@ type Resource struct {
 	SDKName     string `json:"sdk_name"`
 	SDKVersion  string `json:"sdk_version"`
 	InstallHash string `json:"install_hash"`
+	UserHash    string `json:"user_hash,omitempty"` // optional client-hashed UID (never raw PII)
 	OSVersion   string `json:"os_version,omitempty"`
 	DeviceModel string `json:"device_model,omitempty"`
 }
@@ -239,6 +240,9 @@ func (r *Resource) Validate() error {
 	}
 	if !reInstall.MatchString(r.InstallHash) {
 		return errors.New("install_hash must be 16-64 lowercase hex characters")
+	}
+	if r.UserHash != "" && !reInstall.MatchString(r.UserHash) {
+		return errors.New("user_hash must be 16-64 lowercase hex characters (never raw PII)")
 	}
 	return nil
 }

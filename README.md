@@ -133,6 +133,16 @@ Full details & physical-device Release gates: [`benchmarks/REPORT.md`](benchmark
 
 ---
 
+## Production Cluster & CI Plugins (v0.5)
+
+See [`docs/roadmap-v0.5.md`](docs/roadmap-v0.5.md) for full details:
+- **ClickHouse OLAP Backend**: Zero-CGO ClickHouse HTTP engine (`--storage-driver=clickhouse --clickhouse-endpoint=http://clickhouse:8123`) with partitioned `ReplacingMergeTree` tables and vectorized `sumForEach` histogram merges (`docker compose --profile cluster up`).
+- **Statistical Regression Engine**: Two-proportion Z-test + Wilson 95% CIs for rate metrics, two-sample Histogram KS test for latency/memory quantiles, and automated per-scene regression scanner (`POST /v1/analytics/regressions/scan`).
+- **RBAC & Fail-Closed Audited Session Lookup**: Role-scoped API keys/Bearer tokens (`ingest_only`, `viewer`, `operator`, `admin` via `--auth-config`), non-PII hex `user_hash`/`install_hash` timeline lookup (`GET /v1/sessions/lookup?user_hash=...&reason=INC-123`) with immutable append-only audit trail (`GET /v1/audit/logs`).
+- **CI Build Plugins**: Android Gradle plugin (`packages/gradle-plugin`, ID `io.caliper.apm.symbols`), iOS Fastlane action (`packages/fastlane-plugin`), and composite GitHub Action (`packages/github-action`).
+
+---
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).

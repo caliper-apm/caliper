@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/caliper-apm/caliper/server/internal/auth"
 	"github.com/caliper-apm/caliper/server/internal/storage"
 )
 
@@ -172,5 +173,131 @@ func TestConsoleStaticServingAndSecurity(t *testing.T) {
 	h.handleConsoleStatic(rec, reqTrav)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 on traversal path, got %d", rec.Code)
+	}
+}
+
+func TestRBACAuditedSessionLookupAndAuditLogs(t *testing.T) {
+	store, err := storage.OpenEmbedded(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	authz, err := auth.NewRBAC([]auth.KeySpec{
+		{Key: "ingest-key", Actor: "sdk-client", Role: auth.RoleIngestOnly, AppIDs: []string{"dev.caliper.demo"}},
+		{Key: "viewer-key", Actor: "analyst-1", Role: auth.RoleViewer},
+		{Key: "operator-key", Actor: "oncall-1", Role: auth.RoleOperator},
+		{Key: "admin-key", Actor: "security-1", Role: auth.RoleAdmin},
+	})
+	if err != nil {
+		t.Fatalf("new rbac: %v", err)
+	}
+
+	h := NewHandler(store, store, Config{Authorizer: authz})
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	// 1. Ingest event with hashed user_hash using ingest-key
+	payload := `{
+	  "schema_version": 1,
+	  "sent_at_ms": 1763540000000,
+	  "resource": {
+	    "app_id": "dev.caliper.demo",
+	    "platform": "android",
+	    "env": "prod",
+	    "app_version": "1.1.0",
+	    "build_number": "110",
+	    "adapter": "native",
+	    "sdk_name": "caliper-android",
+	    "sdk_version": "0.5.0",
+	    "install_hash": "1111222233334444",
+	    "user_hash": "aaaabbbbccccdddd"
+	  },
+	  "events": [
+	    {
+	      "event_id": "rbac-evt-0001",
+	      "kind": "startup",
+	      "occurred_at_ms": 1763540000000,
+	      "contract_version": 1,
+	      "scene": "home_feed",
+	      "payload": {
+	        "total_duration_ms": 1450,
+	        "cold_start": true,
+	        "start_anchor": "process_start",
+	        "end_anchor": "first_content_frame",
+	        "result": "success"
+	      }
+	    }
+	  ]
+	}`
+	reqIng, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/ingest", bytes.NewBufferString(payload))
+	reqIng.Header.Set("Authorization", "Bearer ingest-key")
+	respIng, err := http.DefaultClient.Do(reqIng)
+	if err != nil || respIng.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202 ingest, got status=%d err=%v", respIng.StatusCode, err)
+	}
+	respIng.Body.Close()
+
+	// 2. Viewer is forbidden (403) from session lookup
+	reqViewer, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/sessions/lookup?user_hash=aaaabbbbccccdddd&reason=INC-42", nil)
+	reqViewer.Header.Set("Authorization", "Bearer viewer-key")
+	respViewer, _ := http.DefaultClient.Do(reqViewer)
+	respViewer.Body.Close()
+	if respViewer.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for viewer session lookup, got %d", respViewer.StatusCode)
+	}
+
+	// 3. Operator without audit reason is rejected (400)
+	reqNoReason, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/sessions/lookup?user_hash=aaaabbbbccccdddd", nil)
+	reqNoReason.Header.Set("Authorization", "Bearer operator-key")
+	respNoReason, _ := http.DefaultClient.Do(reqNoReason)
+	respNoReason.Body.Close()
+	if respNoReason.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 without reason, got %d", respNoReason.StatusCode)
+	}
+
+	// 4. Operator with ticket reason succeeds (200) and records audit entry
+	reqOp, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/sessions/lookup?user_hash=aaaabbbbccccdddd&reason=INC-4242-vip-freeze", nil)
+	reqOp.Header.Set("Authorization", "Bearer operator-key")
+	respOp, err := http.DefaultClient.Do(reqOp)
+	if err != nil || respOp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for operator lookup, got status=%d err=%v", respOp.StatusCode, err)
+	}
+	var lookupResp struct {
+		Actor  string                         `json:"actor"`
+		Events []storage.SessionTimelineEvent `json:"events"`
+	}
+	if err := json.NewDecoder(respOp.Body).Decode(&lookupResp); err != nil {
+		t.Fatalf("decode lookup: %v", err)
+	}
+	respOp.Body.Close()
+	if lookupResp.Actor != "oncall-1" || len(lookupResp.Events) != 1 || lookupResp.Events[0].EventID != "rbac-evt-0001" {
+		t.Fatalf("unexpected lookup response: %+v", lookupResp)
+	}
+
+	// 5. Operator is forbidden (403) from reading audit logs; Admin succeeds (200) and sees the exact entry
+	reqOpAudit, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/audit/logs", nil)
+	reqOpAudit.Header.Set("Authorization", "Bearer operator-key")
+	respOpAudit, _ := http.DefaultClient.Do(reqOpAudit)
+	respOpAudit.Body.Close()
+	if respOpAudit.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for operator reading audit logs, got %d", respOpAudit.StatusCode)
+	}
+
+	reqAdminAudit, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/audit/logs", nil)
+	reqAdminAudit.Header.Set("X-Caliper-Key", "admin-key")
+	respAdminAudit, err := http.DefaultClient.Do(reqAdminAudit)
+	if err != nil || respAdminAudit.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for admin audit logs, got status=%d err=%v", respAdminAudit.StatusCode, err)
+	}
+	var auditResp struct {
+		AuditLogs []storage.AuditLogEntry `json:"audit_logs"`
+	}
+	if err := json.NewDecoder(respAdminAudit.Body).Decode(&auditResp); err != nil {
+		t.Fatalf("decode audit logs: %v", err)
+	}
+	respAdminAudit.Body.Close()
+	if len(auditResp.AuditLogs) != 1 || auditResp.AuditLogs[0].Actor != "oncall-1" || auditResp.AuditLogs[0].Reason != "INC-4242-vip-freeze" || auditResp.AuditLogs[0].ResultCount != 1 {
+		t.Fatalf("unexpected audit log entry: %+v", auditResp.AuditLogs)
 	}
 }

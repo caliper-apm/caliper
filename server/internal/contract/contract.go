@@ -255,10 +255,15 @@ type MetricComparison struct {
 	BaselineN      int64    `json:"baseline_sample_size"`
 	CandidateValue *float64 `json:"candidate_value"`
 	CandidateN     int64    `json:"candidate_sample_size"`
-	AbsoluteDelta  *float64 `json:"absolute_delta"` // candidate - baseline (pp for percentages)
-	RelativePct    *float64 `json:"relative_pct"`   // nil when baseline == 0
-	Status         string   `json:"status"`         // "regressed" | "improved" | "neutral" | "gated"
-	GateReason     string   `json:"gate_reason,omitempty"`
+	AbsoluteDelta   *float64    `json:"absolute_delta"` // candidate - baseline (pp for percentages)
+	RelativePct     *float64    `json:"relative_pct"`   // nil when baseline == 0
+	Status          string      `json:"status"`         // "regressed" | "improved" | "neutral" | "gated"
+	GateReason      string      `json:"gate_reason,omitempty"`
+	StatTest        string      `json:"stat_test,omitempty"` // "two_proportion_z" | "histogram_ks" | "threshold_only"
+	PValue          *float64    `json:"p_value,omitempty"`
+	StatSignificant *bool       `json:"statistically_significant,omitempty"`
+	BaselineCI95    *[2]float64 `json:"baseline_ci95,omitempty"`
+	CandidateCI95   *[2]float64 `json:"candidate_ci95,omitempty"`
 }
 
 // CompareValues applies sample-size gating, zero-denominator protection, and regression classification.

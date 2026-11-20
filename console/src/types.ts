@@ -172,6 +172,66 @@ export interface MetricComparison {
   relative_pct: number | null;
   status: 'regressed' | 'improved' | 'neutral' | 'gated';
   gate_reason?: string;
+  stat_test?: 'two_proportion_z' | 'histogram_ks' | 'threshold_only';
+  p_value?: number;
+  statistically_significant?: boolean;
+  baseline_ci95?: [number, number];
+  candidate_ci95?: [number, number];
+}
+
+export interface RegressionFinding {
+  scope: string;
+  scene?: string;
+  algorithm?: string;
+  impact_score: number;
+  comparison: MetricComparison;
+}
+
+export interface RegressionScanReport {
+  platform: Platform;
+  baseline_version: string;
+  candidate_version: string;
+  alpha: number;
+  verdict: string;
+  regressed_count: number;
+  findings: RegressionFinding[];
+}
+
+export interface SessionTimelineEvent {
+  event_id: string;
+  occurred_at_ms: number;
+  app_id: string;
+  platform: Platform;
+  env: string;
+  app_version: string;
+  build_number: string;
+  adapter?: string;
+  install_hash: string;
+  user_hash?: string;
+  kind: string;
+  scene?: string;
+  summary: string;
+}
+
+export interface SessionLookupResponse {
+  target_type: 'install_hash' | 'user_hash';
+  target_hash: string;
+  reason: string;
+  actor: string;
+  events: SessionTimelineEvent[];
+}
+
+export interface AuditLogEntry {
+  audit_id: string;
+  timestamp_ms: number;
+  actor: string;
+  role: string;
+  action: string;
+  target_type: string;
+  target_hash: string;
+  reason: string;
+  remote_ip?: string;
+  result_count: number;
 }
 
 export interface CompareReport {

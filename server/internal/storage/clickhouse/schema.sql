@@ -1,0 +1,180 @@
+-- Caliper APM v0.5 Production ClickHouse Schema
+-- Uses ReplacingMergeTree for idempotent event_id deduplication and Array(UInt64)
+-- 19-bucket mergeable histograms aggregated natively with sumForEach().
+
+CREATE TABLE IF NOT EXISTS caliper_startup_events (
+    event_id            String,
+    ingested_at_ms      UInt64,
+    occurred_at_ms      UInt64,
+    day_utc             Date,
+    app_id              LowCardinality(String),
+    platform            LowCardinality(String),
+    env                 LowCardinality(String),
+    app_version         LowCardinality(String),
+    build_number        LowCardinality(String),
+    adapter             LowCardinality(String),
+    policy_id           LowCardinality(String),
+    contract_version    UInt16,
+    result              LowCardinality(String),
+    staged              UInt8,
+    total_buckets       Array(UInt64),
+    native_buckets      Array(UInt64),
+    runtime_buckets     Array(UInt64),
+    first_frame_buckets Array(UInt64)
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, platform, env, app_version, day_utc, event_id)
+TTL day_utc + INTERVAL 90 DAY;
+
+CREATE TABLE IF NOT EXISTS caliper_fluency_events (
+    event_id               String,
+    ingested_at_ms         UInt64,
+    occurred_at_ms         UInt64,
+    day_utc                Date,
+    app_id                 LowCardinality(String),
+    platform               LowCardinality(String),
+    env                    LowCardinality(String),
+    app_version            LowCardinality(String),
+    build_number           LowCardinality(String),
+    adapter                LowCardinality(String),
+    scene                  LowCardinality(String),
+    algorithm              LowCardinality(String),
+    policy_id              LowCardinality(String),
+    frame_count            UInt64,
+    jank_frame_count       UInt64,
+    severe_jank_frame_count UInt64,
+    is_valid_window        UInt8,
+    is_zero_frame_window   UInt8,
+    has_stall_stack        UInt8,
+    frame_buckets          Array(UInt64),
+    stall_stack            Array(String)
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, platform, env, app_version, scene, algorithm, day_utc, event_id)
+TTL day_utc + INTERVAL 90 DAY;
+
+CREATE TABLE IF NOT EXISTS caliper_resource_events (
+    event_id           String,
+    ingested_at_ms     UInt64,
+    occurred_at_ms     UInt64,
+    day_utc            Date,
+    app_id             LowCardinality(String),
+    platform           LowCardinality(String),
+    env                LowCardinality(String),
+    app_version        LowCardinality(String),
+    build_number       LowCardinality(String),
+    adapter            LowCardinality(String),
+    scene              LowCardinality(String),
+    policy_id          LowCardinality(String),
+    event_kind         LowCardinality(String),
+    memory_kind        LowCardinality(String),
+    cpu_pct            Float64,
+    memory_peak_buckets Array(UInt64),
+    js_longtask_count  UInt64,
+    js_blocking_ms     Float64,
+    js_max_task_ms     Float64
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, platform, env, app_version, scene, day_utc, event_id)
+TTL day_utc + INTERVAL 90 DAY;
+
+CREATE TABLE IF NOT EXISTS caliper_network_summary_events (
+    event_id         String,
+    ingested_at_ms   UInt64,
+    occurred_at_ms   UInt64,
+    day_utc          Date,
+    app_id           LowCardinality(String),
+    platform         LowCardinality(String),
+    env              LowCardinality(String),
+    app_version      LowCardinality(String),
+    build_number     LowCardinality(String),
+    adapter          LowCardinality(String),
+    scene            LowCardinality(String),
+    policy_id        LowCardinality(String),
+    call_count       UInt64,
+    fail_http        UInt64,
+    fail_business    UInt64,
+    fail_parse       UInt64,
+    fail_network     UInt64,
+    fail_timeout     UInt64,
+    duration_buckets Array(UInt64),
+    duration_sum_ms  Float64
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, platform, env, app_version, day_utc, event_id)
+TTL day_utc + INTERVAL 90 DAY;
+
+CREATE TABLE IF NOT EXISTS caliper_network_transport_events (
+    event_id          String,
+    ingested_at_ms    UInt64,
+    occurred_at_ms    UInt64,
+    day_utc           Date,
+    app_id            LowCardinality(String),
+    platform          LowCardinality(String),
+    env               LowCardinality(String),
+    app_version       LowCardinality(String),
+    build_number      LowCardinality(String),
+    adapter           LowCardinality(String),
+    scene             LowCardinality(String),
+    policy_id         LowCardinality(String),
+    operation         LowCardinality(String),
+    method            LowCardinality(String),
+    result            LowCardinality(String),
+    connection_reused UInt8,
+    dns_buckets       Array(UInt64),
+    tcp_buckets       Array(UInt64),
+    tls_buckets       Array(UInt64),
+    ttfb_buckets      Array(UInt64),
+    body_buckets      Array(UInt64),
+    total_buckets     Array(UInt64)
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, platform, env, app_version, operation, day_utc, event_id)
+TTL day_utc + INTERVAL 90 DAY;
+
+CREATE TABLE IF NOT EXISTS caliper_stability_events (
+    event_id         String,
+    ingested_at_ms   UInt64,
+    occurred_at_ms   UInt64,
+    day_utc          Date,
+    app_id           LowCardinality(String),
+    platform         LowCardinality(String),
+    env              LowCardinality(String),
+    app_version      LowCardinality(String),
+    build_number     LowCardinality(String),
+    adapter          LowCardinality(String),
+    install_hash     String,
+    user_hash        String,
+    fingerprint      String,
+    kind             LowCardinality(String),
+    title            String,
+    fatal            UInt8,
+    exception_type   String,
+    exit_reason      String,
+    frames_json      String,
+    breadcrumbs_json String
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, platform, env, fingerprint, day_utc, event_id)
+TTL day_utc + INTERVAL 180 DAY;
+
+CREATE TABLE IF NOT EXISTS caliper_session_timeline (
+    event_id       String,
+    ingested_at_ms UInt64,
+    occurred_at_ms UInt64,
+    day_utc        Date,
+    app_id         LowCardinality(String),
+    platform       LowCardinality(String),
+    env            LowCardinality(String),
+    app_version    LowCardinality(String),
+    build_number   LowCardinality(String),
+    adapter        LowCardinality(String),
+    install_hash   String,
+    user_hash      String,
+    kind           LowCardinality(String),
+    scene          LowCardinality(String),
+    summary        String
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, install_hash, user_hash, occurred_at_ms, event_id)
+TTL day_utc + INTERVAL 30 DAY;

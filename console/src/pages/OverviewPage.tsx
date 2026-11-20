@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.ts';
-import { formatDelta, formatQuantile, formatValue, metricLabel, missingLabel } from '../format.ts';
-import type { CompareReport, OverviewReport, Platform, ReleaseRecord } from '../types.ts';
+import { formatDelta, formatPValue, formatQuantile, formatValue, metricLabel, missingLabel, statTestLabel } from '../format.ts';
+import type { CompareReport, OverviewReport, Platform, RegressionScanReport, ReleaseRecord } from '../types.ts';
 
 interface Props {
   platform: Platform;
@@ -13,6 +13,7 @@ interface Props {
 export function OverviewPage({ platform, appVersion, releases, refreshTick }: Props) {
   const [overview, setOverview] = useState<OverviewReport | null>(null);
   const [compare, setCompare] = useState<CompareReport | null>(null);
+  const [scan, setScan] = useState<RegressionScanReport | null>(null);
   const [error, setError] = useState('');
 
   const uniqueVersions = Array.from(new Set(releases.map(r => r.app_version))).sort();
@@ -38,9 +39,20 @@ export function OverviewPage({ platform, appVersion, releases, refreshTick }: Pr
   useEffect(() => {
     if (!baseline || !candidate) return;
     let active = true;
-    api.compare(platform, baseline, candidate)
-      .then(data => { if (active) setCompare(data); })
-      .catch(() => { if (active) setCompare(null); });
+    Promise.all([
+      api.compare(platform, baseline, candidate),
+      api.scanRegressions(platform, baseline, candidate),
+    ])
+      .then(([cmpData, scanData]) => {
+        if (!active) return;
+        setCompare(cmpData);
+        setScan(scanData);
+      })
+      .catch(() => {
+        if (!active) return;
+        setCompare(null);
+        setScan(null);
+      });
     return () => { active = false; };
   }, [platform, baseline, candidate, refreshTick]);
 
@@ -128,6 +140,7 @@ export function OverviewPage({ platform, appVersion, releases, refreshTick }: Pr
                     <th>Baseline (v{compare.baseline_version})</th>
                     <th>Candidate (v{compare.candidate_version})</th>
                     <th>Delta</th>
+                    <th>Statistical Evidence</th>
                     <th>Status / Gate</th>
                   </tr>
                 </thead>
@@ -145,6 +158,13 @@ export function OverviewPage({ platform, appVersion, releases, refreshTick }: Pr
                       </td>
                       <td>{formatDelta(m.absolute_delta, m.unit, m.relative_pct)}</td>
                       <td>
+                        <div className="mono">{statTestLabel(m.stat_test)}</div>
+                        <div className="kpi-meta">
+                          {formatPValue(m.p_value)}
+                          {m.statistically_significant !== undefined && (m.statistically_significant ? ' · sig' : ' · n.s.')}
+                        </div>
+                      </td>
+                      <td>
                         <span className={`badge ${m.status === 'regressed' ? 'red' : m.status === 'improved' ? 'green' : m.status === 'gated' ? 'amber' : 'slate'}`}>
                           {m.status}
                         </span>
@@ -160,6 +180,45 @@ export function OverviewPage({ platform, appVersion, releases, refreshTick }: Pr
           <div className="empty">Ingest at least two releases on this platform to run gated release comparison.</div>
         )}
       </div>
+
+      {scan && scan.findings.length > 0 && (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">Automated Per-Scene Regression Scanner (α = {scan.alpha})</h2>
+              <p className="card-sub">
+                Statistically significant global &amp; per-scene regressions ranked by impact × confidence
+              </p>
+            </div>
+            <span className={`badge ${scan.regressed_count > 0 ? 'red' : 'green'}`}>
+              {scan.regressed_count} ranked regressions
+            </span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Scope</th><th>Metric</th><th>Delta</th><th>p-value</th><th>Impact Score</th><th>Status</th></tr>
+              </thead>
+              <tbody>
+                {scan.findings.slice(0, 12).map((f, idx) => (
+                  <tr key={`${f.scope}-${f.comparison.metric_id}-${idx}`}>
+                    <td className="mono"><strong>{f.scope}</strong></td>
+                    <td>{metricLabel(f.comparison.metric_id)}</td>
+                    <td>{formatDelta(f.comparison.absolute_delta, f.comparison.unit, f.comparison.relative_pct)}</td>
+                    <td className="mono">{formatPValue(f.comparison.p_value)}</td>
+                    <td className="mono">{f.impact_score.toFixed(1)}</td>
+                    <td>
+                      <span className={`badge ${f.comparison.status === 'regressed' ? 'red' : 'green'}`}>
+                        {f.comparison.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </>
   );
 }

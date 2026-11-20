@@ -40,6 +40,7 @@
         "sdk_name": { "type": "string", "minLength": 1, "maxLength": 64 },
         "sdk_version": { "type": "string", "minLength": 1, "maxLength": 32 },
         "install_hash": { "type": "string", "pattern": "^[a-f0-9]{16,64}$" },
+        "user_hash": { "type": "string", "pattern": "^[a-f0-9]{16,64}$" },
         "os_version": { "type": "string", "maxLength": 32 },
         "device_model": { "type": "string", "maxLength": 64 }
       }

@@ -1,6 +1,7 @@
 import type {
   AlertIncident,
   AlertRule,
+  AuditLogEntry,
   CompareReport,
   FluencySceneReport,
   HealthResponse,
@@ -8,8 +9,10 @@ import type {
   NetworkReport,
   OverviewReport,
   Platform,
+  RegressionScanReport,
   ReleaseRecord,
   ResourceSceneReport,
+  SessionLookupResponse,
   StartupReport,
   SymbolRecord,
 } from './types.ts';
@@ -54,6 +57,34 @@ export const api = {
         baseline_version: baseline,
         candidate_version: candidate,
       }),
+    }),
+
+  scanRegressions: (platform: Platform, baseline: string, candidate: string) =>
+    requestJson<RegressionScanReport>('/v1/analytics/regressions/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform,
+        env: 'prod',
+        baseline_version: baseline,
+        candidate_version: candidate,
+      }),
+    }),
+
+  lookupSession: (params: { installHash?: string; userHash?: string; reason: string; platform?: Platform }, apiKey?: string) =>
+    requestJson<SessionLookupResponse>(
+      `/v1/sessions/lookup${query({
+        install_hash: params.installHash,
+        user_hash: params.userHash,
+        reason: params.reason,
+        platform: params.platform,
+      })}`,
+      { headers: apiKey ? { 'X-Caliper-Key': apiKey } : undefined },
+    ),
+
+  auditLogs: (apiKey?: string) =>
+    requestJson<{ audit_logs: AuditLogEntry[] }>('/v1/audit/logs?limit=50', {
+      headers: apiKey ? { 'X-Caliper-Key': apiKey } : undefined,
     }),
 
   startup: (platform: Platform, appVersion?: string) =>
