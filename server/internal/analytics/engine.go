@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/caliper-apm/caliper/server/internal/contract"
+	"github.com/caliper-apm/caliper/server/internal/protocol"
 	"github.com/caliper-apm/caliper/server/internal/storage"
 )
 
@@ -26,11 +27,12 @@ type StartupReport struct {
 	AbortedCount    int64                   `json:"aborted_count"`
 	TimeoutCount    int64                   `json:"timeout_count"`
 	StagedCoverage  *float64                `json:"staged_coverage_pct"`
-	TotalP50        contract.QuantileResult `json:"total_p50_ms"`
-	TotalP90        contract.QuantileResult `json:"total_p90_ms"`
-	NativeInitP90   contract.QuantileResult `json:"native_init_p90_ms"`
-	RuntimeInitP90  contract.QuantileResult `json:"runtime_init_p90_ms"`
-	FirstFrameP90   contract.QuantileResult `json:"first_frame_p90_ms"`
+	TotalP50       contract.QuantileResult `json:"total_p50_ms"`
+	TotalP90       contract.QuantileResult `json:"total_p90_ms"`
+	NativeInitP90  contract.QuantileResult `json:"native_init_p90_ms"`
+	RuntimeInitP90 contract.QuantileResult `json:"runtime_init_p90_ms"`
+	FirstFrameP90  contract.QuantileResult `json:"first_frame_p90_ms"`
+	TotalBuckets   []HistogramBucket       `json:"total_buckets,omitempty"`
 }
 
 // FluencySceneReport exposes Zero-Lie frame smoothness per (scene, algorithm).
@@ -46,6 +48,7 @@ type FluencySceneReport struct {
 	Severity          string                  `json:"severity"`
 	MissingReason     string                  `json:"missing_reason,omitempty"`
 	FrameP90          contract.QuantileResult `json:"frame_p90_ms"`
+	FrameBuckets      []HistogramBucket       `json:"frame_buckets,omitempty"`
 	StallWindowCount  int64                   `json:"stall_window_count"`
 	SampleStallStacks [][]string              `json:"sample_stall_stacks,omitempty"`
 }
@@ -82,14 +85,16 @@ type TransportOpReport struct {
 
 // NetworkReport exposes logical API denominator metrics alongside sampled transport stages.
 type NetworkReport struct {
-	SummaryWindows int64                   `json:"summary_windows"`
-	TotalCalls     int64                   `json:"total_calls"`
-	FailedCalls    int64                   `json:"failed_calls"`
-	SuccessRatePct *float64                `json:"success_rate_pct"`
-	MissingReason  string                  `json:"missing_reason,omitempty"`
-	DurationP50    contract.QuantileResult `json:"duration_p50_ms"`
-	DurationP90    contract.QuantileResult `json:"duration_p90_ms"`
-	Operations     []TransportOpReport     `json:"operations"`
+	SummaryWindows   int64                         `json:"summary_windows"`
+	TotalCalls       int64                         `json:"total_calls"`
+	FailedCalls      int64                         `json:"failed_calls"`
+	FailureBreakdown protocol.NetworkFailureCounts `json:"failure_breakdown"`
+	SuccessRatePct   *float64                      `json:"success_rate_pct"`
+	MissingReason    string                        `json:"missing_reason,omitempty"`
+	DurationP50      contract.QuantileResult       `json:"duration_p50_ms"`
+	DurationP90      contract.QuantileResult       `json:"duration_p90_ms"`
+	DurationBuckets  []HistogramBucket             `json:"duration_buckets,omitempty"`
+	Operations       []TransportOpReport           `json:"operations"`
 }
 
 // OverviewReport combines the 5 mobile observability domains for a scope.
@@ -150,6 +155,7 @@ func (e *Engine) Startup(ctx context.Context, f storage.QueryFilter) (StartupRep
 		NativeInitP90:  contract.QuantileDuration(agg.NativeInitHist, 0.90, contract.DefaultDisplayMinSamples),
 		RuntimeInitP90: contract.QuantileDuration(agg.RuntimeHist, 0.90, contract.DefaultDisplayMinSamples),
 		FirstFrameP90:  contract.QuantileDuration(agg.FirstFrameHist, 0.90, contract.DefaultDisplayMinSamples),
+		TotalBuckets:   DurationBucketsSlice(agg.TotalHist),
 	}, nil
 }
 
@@ -169,6 +175,7 @@ func (e *Engine) Fluency(ctx context.Context, f storage.QueryFilter) ([]FluencyS
 			TotalFrames:       agg.TotalFrames,
 			JankFrames:        agg.JankFrames,
 			FrameP90:          contract.QuantileDuration(agg.FrameDurationHist, 0.90, contract.DefaultDisplayMinSamples),
+			FrameBuckets:      DurationBucketsSlice(agg.FrameDurationHist),
 			StallWindowCount:  agg.StallWindowCount,
 			SampleStallStacks: agg.SampleStallStacks,
 		}
@@ -230,12 +237,14 @@ func (e *Engine) Network(ctx context.Context, f storage.QueryFilter) (NetworkRep
 	}
 	failed := agg.FailureCounts.Total()
 	rep := NetworkReport{
-		SummaryWindows: agg.SummaryWindows,
-		TotalCalls:     agg.TotalCalls,
-		FailedCalls:    failed,
-		DurationP50:    contract.QuantileDuration(agg.DurationHist, 0.50, contract.DefaultDisplayMinSamples),
-		DurationP90:    contract.QuantileDuration(agg.DurationHist, 0.90, contract.DefaultDisplayMinSamples),
-		Operations:     make([]TransportOpReport, 0, len(agg.TransportSamples)),
+		SummaryWindows:   agg.SummaryWindows,
+		TotalCalls:       agg.TotalCalls,
+		FailedCalls:      failed,
+		FailureBreakdown: agg.FailureCounts,
+		DurationP50:      contract.QuantileDuration(agg.DurationHist, 0.50, contract.DefaultDisplayMinSamples),
+		DurationP90:      contract.QuantileDuration(agg.DurationHist, 0.90, contract.DefaultDisplayMinSamples),
+		DurationBuckets:  DurationBucketsSlice(agg.DurationHist),
+		Operations:       make([]TransportOpReport, 0, len(agg.TransportSamples)),
 	}
 	if agg.TotalCalls == 0 {
 		rep.MissingReason = contract.MissingDenominator

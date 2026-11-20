@@ -1383,6 +1383,179 @@ func issueMapKey(appID, platform, env, fingerprint string) string {
 	return appID + "|" + platform + "|" + env + "|" + fingerprint
 }
 
+func (s *EmbeddedStore) QueryDailyTrends(_ context.Context, f QueryFilter) ([]DailyTrendPoint, error) {
+	type dayAcc struct {
+		verCount   map[string]int64
+		startHist  contract.Histogram
+		startN     int64
+		flValidWin int64
+		flFrames   int64
+		flJank     int64
+		flAlgos    map[string]struct{}
+		resWin     int64
+		cpuSum     float64
+		memHist    contract.Histogram
+		netCalls   int64
+		netFails   int64
+		netHist    contract.Histogram
+		crashes    int64
+		anrs       int64
+		abnormals  int64
+	}
+	days := map[string]*dayAcc{}
+	getDay := func(d string) *dayAcc {
+		acc := days[d]
+		if acc == nil {
+			acc = &dayAcc{verCount: map[string]int64{}, flAlgos: map[string]struct{}{}}
+			days[d] = acc
+		}
+		return acc
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for k, agg := range s.startups {
+		if !matchesFilter(k, f) {
+			continue
+		}
+		acc := getDay(k.DayUTC)
+		acc.startHist.Add(agg.TotalHist)
+		acc.startN += agg.SuccessCount
+		acc.verCount[k.AppVersion] += agg.SuccessCount
+	}
+	for k, agg := range s.fluencies {
+		if !matchesFilter(k, f) {
+			continue
+		}
+		acc := getDay(k.DayUTC)
+		if agg.ValidWindows > 0 {
+			acc.flValidWin += agg.ValidWindows
+			acc.flFrames += agg.TotalFrames
+			acc.flJank += agg.JankFrames
+			acc.flAlgos[agg.Algorithm] = struct{}{}
+			acc.verCount[k.AppVersion] += agg.ValidWindows
+		}
+	}
+	for k, agg := range s.resources {
+		if !matchesFilter(k, f) {
+			continue
+		}
+		acc := getDay(k.DayUTC)
+		acc.resWin += agg.ResourceWindows
+		acc.cpuSum += agg.CPUPctSum
+		acc.memHist.Add(agg.MemoryPeakHistMiB)
+		acc.verCount[k.AppVersion] += agg.ResourceWindows
+	}
+	for k, agg := range s.networks {
+		if !matchesFilter(k, f) {
+			continue
+		}
+		acc := getDay(k.DayUTC)
+		acc.netCalls += agg.TotalCalls
+		acc.netFails += agg.FailureCounts.Total()
+		acc.netHist.Add(agg.DurationHist)
+		acc.verCount[k.AppVersion] += agg.SummaryWindows
+	}
+	for _, ib := range s.issues {
+		if f.AppID != "" && ib.AppID != f.AppID {
+			continue
+		}
+		if f.Platform != "" && ib.Platform != f.Platform {
+			continue
+		}
+		if f.Env != "" && ib.Env != f.Env {
+			continue
+		}
+		if f.AppVersion != "" {
+			matched := false
+			for rel := range ib.Releases {
+				if len(rel) >= len(f.AppVersion) && rel[:len(f.AppVersion)] == f.AppVersion {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				continue
+			}
+		}
+		for dayUTC, cnt := range ib.Days {
+			if f.StartDayUTC != "" && dayUTC < f.StartDayUTC {
+				continue
+			}
+			if f.EndDayUTC != "" && dayUTC > f.EndDayUTC {
+				continue
+			}
+			acc := getDay(dayUTC)
+			switch ib.Kind {
+			case protocol.KindCrash:
+				acc.crashes += cnt
+			case protocol.KindANR:
+				acc.anrs += cnt
+			case protocol.KindAbnormalExit:
+				acc.abnormals += cnt
+			}
+		}
+	}
+
+	dayKeys := make([]string, 0, len(days))
+	for d := range days {
+		dayKeys = append(dayKeys, d)
+	}
+	sort.Strings(dayKeys)
+
+	out := make([]DailyTrendPoint, 0, len(dayKeys))
+	for _, d := range dayKeys {
+		acc := days[d]
+		pt := DailyTrendPoint{
+			DayUTC:          d,
+			StartupSamples:  acc.startN,
+			FluencyWindows:  acc.flValidWin,
+			APICalls:        acc.netCalls,
+			ResourceWindows: acc.resWin,
+			CrashEvents:     acc.crashes,
+			ANREvents:       acc.anrs,
+			AbnormalExits:   acc.abnormals,
+		}
+		var maxVer string
+		var maxCnt int64
+		for v, c := range acc.verCount {
+			if c > maxCnt || (c == maxCnt && v > maxVer) {
+				maxVer = v
+				maxCnt = c
+			}
+		}
+		pt.DominantVersion = maxVer
+
+		if q50 := contract.QuantileDuration(acc.startHist, 0.50, contract.DefaultDisplayMinSamples); q50.Value != nil {
+			pt.StartupP50MS = q50.Value
+		}
+		if q90 := contract.QuantileDuration(acc.startHist, 0.90, contract.DefaultDisplayMinSamples); q90.Value != nil {
+			pt.StartupP90MS = q90.Value
+		}
+		if len(acc.flAlgos) == 1 && acc.flFrames > 0 && acc.flValidWin >= contract.DefaultDisplayMinSamples {
+			v := (float64(acc.flJank) / float64(acc.flFrames)) * 100.0
+			pt.JankRatePct = &v
+		}
+		if acc.netCalls >= contract.DefaultDisplayMinSamples {
+			sr := (float64(acc.netCalls-acc.netFails) / float64(acc.netCalls)) * 100.0
+			pt.APISuccessPct = &sr
+		}
+		if n90 := contract.QuantileDuration(acc.netHist, 0.90, contract.DefaultDisplayMinSamples); n90.Value != nil {
+			pt.APIP90MS = n90.Value
+		}
+		if acc.resWin >= contract.DefaultDisplayMinSamples {
+			cpu := acc.cpuSum / float64(acc.resWin)
+			pt.AvgCPUPct = &cpu
+		}
+		if m90 := contract.QuantileMemoryMiB(acc.memHist, 0.90, contract.DefaultDisplayMinSamples); m90.Value != nil {
+			pt.MemoryP90MiB = m90.Value
+		}
+		out = append(out, pt)
+	}
+	return out, nil
+}
+
 func (s *EmbeddedStore) QueryCPUProfiles(_ context.Context, f QueryFilter, runtime string, limit int) ([]CPUProfileRecord, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 25

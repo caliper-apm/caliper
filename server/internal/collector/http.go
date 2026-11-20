@@ -102,6 +102,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /v1/alerts/evaluate", h.withPerm(auth.PermManageAlerts, h.handleEvaluateAlerts))
 	h.mux.HandleFunc("POST /v1/alerts/rules/{rule_id}/evaluate", h.withPerm(auth.PermManageAlerts, h.handleEvaluateSingleAlert))
 	h.mux.HandleFunc("GET /v1/analytics/overview", h.withPerm(auth.PermReadAnalytics, h.handleOverview))
+	h.mux.HandleFunc("GET /v1/analytics/timeseries", h.withPerm(auth.PermReadAnalytics, h.handleTimeseries))
+	h.mux.HandleFunc("GET /v1/analytics/breakdown", h.withPerm(auth.PermReadAnalytics, h.handleBreakdown))
 	h.mux.HandleFunc("POST /v1/analytics/compare", h.withPerm(auth.PermReadAnalytics, h.handleCompare))
 	h.mux.HandleFunc("POST /v1/analytics/regressions/scan", h.withPerm(auth.PermReadAnalytics, h.handleScanRegressions))
 	h.mux.HandleFunc("GET /v1/analytics/startup", h.withPerm(auth.PermReadAnalytics, h.handleStartup))
@@ -396,6 +398,38 @@ func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rep)
+}
+
+func (h *Handler) handleTimeseries(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	points, err := h.engine.DailyTrends(r.Context(), f)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"points": points})
+}
+
+func (h *Handler) handleBreakdown(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	dim := strings.TrimSpace(r.URL.Query().Get("dimension"))
+	if dim == "" {
+		dim = "version"
+	}
+	slices, err := h.engine.Breakdown(r.Context(), h.meta, f, dim)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_dimension", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"dimension": dim, "slices": slices})
 }
 
 func (h *Handler) handleStartup(w http.ResponseWriter, r *http.Request) {

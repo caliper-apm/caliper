@@ -1,42 +1,107 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { ECBasicOption } from 'echarts/types/dist/shared';
 import { api } from '../api.ts';
-import { formatQuantile, formatValue } from '../format.ts';
-import type { FluencySceneReport, Platform, StartupReport } from '../types.ts';
+import { EChart } from '../components/EChart.tsx';
+import { formatQuantile, formatValue, missingLabel } from '../format.ts';
+import { t, type Lang } from '../i18n.ts';
+import type { DailyTrendPoint, FluencySceneReport, GlobalFilters, StartupReport } from '../types.ts';
 
 interface Props {
-  platform: Platform;
-  appVersion: string;
+  filters: GlobalFilters;
   refreshTick: number;
+  lang: Lang;
 }
 
-export function FluencyPage({ platform, appVersion, refreshTick }: Props) {
+export function FluencyPage({ filters, refreshTick, lang }: Props) {
   const [startup, setStartup] = useState<StartupReport | null>(null);
   const [scenes, setScenes] = useState<FluencySceneReport[]>([]);
-  const [selectedStack, setSelectedStack] = useState<{ scene: string; stacks: string[][] } | null>(null);
+  const [trends, setTrends] = useState<DailyTrendPoint[]>([]);
+  const [stallDrawer, setStallDrawer] = useState<FluencySceneReport | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     let active = true;
     setError('');
-    Promise.all([
-      api.startup(platform, appVersion || undefined),
-      api.fluency(platform, appVersion || undefined),
-    ])
-      .then(([st, fl]) => {
+    Promise.all([api.startup(filters), api.fluency(filters), api.timeseries(filters)])
+      .then(([st, fl, ts]) => {
         if (!active) return;
         setStartup(st);
         setScenes(fl.scenes ?? []);
+        setTrends(ts.points ?? []);
       })
       .catch(err => { if (active) setError(String(err)); });
     return () => { active = false; };
-  }, [platform, appVersion, refreshTick]);
+  }, [JSON.stringify(filters), refreshTick]);
 
-  const totalP50 = formatQuantile(startup?.total_p50_ms, 'ms');
-  const totalP90 = formatQuantile(startup?.total_p90_ms, 'ms');
-  const natVal = startup?.native_init_p90_ms.value ?? 0;
-  const rtVal = startup?.runtime_init_p90_ms.value ?? 0;
-  const ffVal = startup?.first_frame_p90_ms.value ?? 0;
-  const sumStages = Math.max(1, natVal + rtVal + ffVal);
+  const nat = startup?.native_init_p90_ms.value ?? 0;
+  const rt = startup?.runtime_init_p90_ms.value ?? 0;
+  const ff = startup?.first_frame_p90_ms.value ?? 0;
+  const stageTotal = Math.max(nat + rt + ff, 1);
+
+  const startupHistOption: ECBasicOption = useMemo(() => {
+    const buckets = (startup?.total_buckets ?? []).filter(b => b.count > 0 || (b.upper !== null && b.upper <= 5000));
+    return {
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      grid: { top: 24, right: 16, bottom: 42, left: 48 },
+      xAxis: {
+        type: 'category',
+        data: buckets.map(b => b.label),
+        axisLabel: { color: '#86909c', fontSize: 10, rotate: 28 },
+      },
+      yAxis: { type: 'value', name: lang === 'zh' ? '启动次数' : 'Starts', splitLine: { lineStyle: { color: '#f2f3f5' } } },
+      series: [
+        {
+          name: lang === 'zh' ? '样本数' : 'Samples',
+          type: 'bar',
+          barMaxWidth: 26,
+          data: buckets.map(b => ({
+            value: b.count,
+            itemStyle: {
+              color: b.lower >= 1500 ? '#f53f3f' : b.lower >= 750 ? '#ff7d00' : '#165dff',
+              borderRadius: [3, 3, 0, 0],
+            },
+          })),
+        },
+      ],
+    };
+  }, [startup, lang]);
+
+  const startupTrendOption: ECBasicOption = useMemo(() => ({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { top: 0, right: 10, textStyle: { fontSize: 11 } },
+    grid: { top: 30, right: 20, bottom: 26, left: 48 },
+    xAxis: { type: 'category', data: trends.map(p => p.day_utc.slice(5)), axisLabel: { color: '#86909c', fontSize: 11 } },
+    yAxis: { type: 'value', name: 'ms', splitLine: { lineStyle: { color: '#f2f3f5' } } },
+    series: [
+      { name: 'P90', type: 'line', smooth: 0.25, connectNulls: false, data: trends.map(p => p.startup_p90_ms), itemStyle: { color: '#165dff' }, areaStyle: { color: 'rgba(22,93,255,0.08)' } },
+      { name: 'P50', type: 'line', smooth: 0.25, connectNulls: false, data: trends.map(p => p.startup_p50_ms), itemStyle: { color: '#0fc6c2' } },
+    ],
+  }), [trends]);
+
+  const fluencyRankOption: ECBasicOption = useMemo(() => {
+    const sorted = [...scenes].sort((a, b) => (a.jank_rate_pct ?? -1) - (b.jank_rate_pct ?? -1));
+    return {
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      grid: { top: 14, right: 38, bottom: 24, left: 120 },
+      xAxis: { type: 'value', name: '%', splitLine: { lineStyle: { color: '#f2f3f5' } } },
+      yAxis: { type: 'category', data: sorted.map(s => s.scene), axisLabel: { color: '#4e5969', fontSize: 11 } },
+      series: [
+        {
+          name: lang === 'zh' ? '卡顿率 (%)' : 'Jank Rate (%)',
+          type: 'bar',
+          barMaxWidth: 20,
+          data: sorted.map(s => ({
+            value: s.jank_rate_pct !== null ? Number(s.jank_rate_pct.toFixed(2)) : 0,
+            itemStyle: {
+              color: s.severity === 'critical' ? '#f53f3f' : s.severity === 'degraded' ? '#ff7d00' : '#00b42a',
+              borderRadius: [0, 3, 3, 0],
+            },
+          })),
+          label: { show: true, position: 'right', formatter: '{c}%', fontSize: 11, color: '#4e5969' },
+        },
+      ],
+    };
+  }, [scenes, lang]);
 
   return (
     <>
@@ -45,53 +110,96 @@ export function FluencyPage({ platform, appVersion, refreshTick }: Props) {
       <div className="card">
         <div className="card-header">
           <div>
-            <h2 className="card-title">3-Stage Cold Start Breakdown ({platform.toUpperCase()})</h2>
+            <h2 className="card-title">{t(lang, 'startupStages')}</h2>
             <p className="card-sub">
-              Same-platform anchor only · stage conservation enforced · staged coverage:{' '}
-              {formatValue(startup?.staged_coverage_pct, '%')}
+              {lang === 'zh' ? '单时间锚点守恒校验 (Native Init + Runtime + First Content Frame ≤ Total)' : 'Single-anchor stage conservation (Native + Runtime + First Frame ≤ Total)'}
             </p>
           </div>
-          <div className="controls">
-            <span className="badge blue">P50 {totalP50.main}</span>
-            <span className="badge amber">P90 {totalP90.main}</span>
+          <span className="badge blue">
+            {startup?.success_count.toLocaleString('en-US') ?? 0} {lang === 'zh' ? '次成功启动' : 'starts'} · {lang === 'zh' ? '分阶段覆盖' : 'staged'} {formatValue(startup?.staged_coverage_pct, '%')}
+          </span>
+        </div>
+
+        <div className="kpi-grid-5" style={{ marginBottom: 14 }}>
+          <div className="kpi-card">
+            <div className="kpi-label">Total P50</div>
+            <div className="kpi-value">{formatQuantile(startup?.total_p50_ms, 'ms').main}</div>
+            <div className="kpi-meta">{formatQuantile(startup?.total_p50_ms, 'ms').sub}</div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-label">Total P90</div>
+            <div className="kpi-value">{formatQuantile(startup?.total_p90_ms, 'ms').main}</div>
+            <div className="kpi-meta">{formatQuantile(startup?.total_p90_ms, 'ms').sub}</div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-label">Native Init P90</div>
+            <div className="kpi-value">{formatQuantile(startup?.native_init_p90_ms, 'ms').main}</div>
+            <div className="kpi-meta">{lang === 'zh' ? '进程与原生底座初始化' : 'Native shell init'}</div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-label">Runtime / Bridge P90</div>
+            <div className="kpi-value">{formatQuantile(startup?.runtime_init_p90_ms, 'ms').main}</div>
+            <div className="kpi-meta">{lang === 'zh' ? '可选 RN / JS 引擎启动' : 'Optional RN runtime'}</div>
+          </div>
+          <div className="kpi-card">
+            <div className="kpi-label">First Content Frame P90</div>
+            <div className="kpi-value">{formatQuantile(startup?.first_frame_p90_ms, 'ms').main}</div>
+            <div className="kpi-meta">{lang === 'zh' ? '首帧业务内容渲染' : 'First content paint'}</div>
           </div>
         </div>
 
-        <div className="bar-track" style={{ height: 22 }}>
-          <div className="bar-seg" style={{ width: `${(natVal / sumStages) * 100}%`, background: '#2563eb' }} title={`Native Init P90: ${natVal} ms`} />
-          <div className="bar-seg" style={{ width: `${(rtVal / sumStages) * 100}%`, background: '#7c3aed' }} title={`Runtime Init P90: ${rtVal} ms`} />
-          <div className="bar-seg" style={{ width: `${(ffVal / sumStages) * 100}%`, background: '#0891b2' }} title={`First Frame P90: ${ffVal} ms`} />
+        <div className="bar-track" style={{ height: 18 }}>
+          <div className="bar-seg" style={{ width: `${(nat / stageTotal) * 100}%`, background: '#165dff' }} title={`Native Init: ${nat}ms`} />
+          <div className="bar-seg" style={{ width: `${(rt / stageTotal) * 100}%`, background: '#722ed1' }} title={`Runtime: ${rt}ms`} />
+          <div className="bar-seg" style={{ width: `${(ff / stageTotal) * 100}%`, background: '#00b42a' }} title={`First Frame: ${ff}ms`} />
         </div>
         <div className="legend">
-          <span className="legend-item"><i className="swatch" style={{ background: '#2563eb' }} />Native Init P90: <strong>{formatQuantile(startup?.native_init_p90_ms, 'ms').main}</strong></span>
-          <span className="legend-item"><i className="swatch" style={{ background: '#7c3aed' }} />Runtime / Bridge P90: <strong>{formatQuantile(startup?.runtime_init_p90_ms, 'ms').main}</strong></span>
-          <span className="legend-item"><i className="swatch" style={{ background: '#0891b2' }} />First Content Frame P90: <strong>{formatQuantile(startup?.first_frame_p90_ms, 'ms').main}</strong></span>
-          <span className="legend-item">Completed samples: <strong>{(startup?.success_count ?? 0).toLocaleString('en-US')}</strong></span>
+          <span className="legend-item"><span className="swatch" style={{ background: '#165dff' }} />Native Init ({Math.round(nat)} ms)</span>
+          <span className="legend-item"><span className="swatch" style={{ background: '#722ed1' }} />Runtime / Bridge ({Math.round(rt)} ms)</span>
+          <span className="legend-item"><span className="swatch" style={{ background: '#00b42a' }} />First Content Frame ({Math.round(ff)} ms)</span>
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <h2 className="card-title">Scene Fluency &amp; Same-Window Stall Stacks</h2>
-            <p className="card-sub">Algorithms strictly separated · zero-frame windows preserved separately (never reported as 0% jank)</p>
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{t(lang, 'startupDist')}</h2>
+              <p className="card-sub">{lang === 'zh' ? '固定边界可合并直方图（橙色 >750ms，红色 >1500ms 慢启动长尾）' : 'Fixed-bound mergeable duration histogram (>1500ms highlighted red)'}</p>
+            </div>
           </div>
+          <EChart option={startupHistOption} height={240} />
         </div>
 
-        {scenes.length === 0 ? (
-          <div className="empty">No fluency windows recorded for this scope.</div>
-        ) : (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{lang === 'zh' ? '冷启动 14 天走势 (P50 / P90)' : 'Daily Cold Start Trend (P50 / P90)'}</h2>
+              <p className="card-sub">{lang === 'zh' ? '基于真实直方图按日合并计算分位数，绝不平均日 P90' : 'Exact daily mergeable quantiles'}</p>
+            </div>
+          </div>
+          <EChart option={startupTrendOption} height={240} />
+        </div>
+      </div>
+
+      <div className="grid-3-2">
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{lang === 'zh' ? '分场景流畅度明细（按算法严格隔离）' : 'Per-Scene Fluency Breakdown (Algorithm-Isolated)'}</h2>
+              <p className="card-sub">{lang === 'zh' ? '零帧窗口永不计入流畅度分母 · 同窗主线程卡顿栈已自动符号化' : 'Zero-frame windows excluded · same-window stall stacks auto-symbolicated'}</p>
+            </div>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Scene</th>
-                  <th>Algorithm</th>
-                  <th>Valid / Zero-Frame Windows</th>
-                  <th>Total Frames</th>
-                  <th>Jank Rate</th>
-                  <th>Severity</th>
-                  <th>Stall Stacks</th>
+                  <th>{lang === 'zh' ? '场景' : 'Scene'}</th>
+                  <th>{lang === 'zh' ? '算法' : 'Algorithm'}</th>
+                  <th>{lang === 'zh' ? '有效 / 零帧窗口' : 'Valid / Zero'}</th>
+                  <th>{lang === 'zh' ? '卡顿率' : 'Jank Rate'}</th>
+                  <th>Frame P90</th>
+                  <th>{lang === 'zh' ? '卡顿栈' : 'Stall Stacks'}</th>
                 </tr>
               </thead>
               <tbody>
@@ -99,46 +207,56 @@ export function FluencyPage({ platform, appVersion, refreshTick }: Props) {
                   <tr key={`${s.scene}-${s.algorithm}`}>
                     <td><strong>{s.scene}</strong></td>
                     <td className="mono">{s.algorithm}</td>
-                    <td>{s.valid_windows.toLocaleString('en-US')} valid · <span style={{ color: 'var(--amber)' }}>{s.zero_frame_windows} zero-frame</span></td>
-                    <td>{s.total_frames.toLocaleString('en-US')}</td>
-                    <td><strong>{formatValue(s.jank_rate_pct, '%', s.missing_reason)}</strong></td>
+                    <td className="mono">{s.valid_windows} / <span style={{ color: 'var(--amber)' }}>{s.zero_frame_windows}</span></td>
                     <td>
                       <span className={`badge ${s.severity === 'critical' ? 'red' : s.severity === 'degraded' ? 'amber' : s.severity === 'healthy' ? 'green' : 'slate'}`}>
-                        {s.severity}
+                        {s.jank_rate_pct !== null ? `${s.jank_rate_pct.toFixed(2)}%` : missingLabel(s.missing_reason)}
                       </span>
                     </td>
+                    <td className="mono">{formatQuantile(s.frame_p90_ms, 'ms').main}</td>
                     <td>
-                      {s.sample_stall_stacks && s.sample_stall_stacks.length > 0 ? (
-                        <button className="btn" onClick={() => setSelectedStack({ scene: s.scene, stacks: s.sample_stall_stacks! })}>
-                          View {s.stall_window_count} stacks
+                      {(s.sample_stall_stacks?.length ?? 0) > 0 ? (
+                        <button className="btn" onClick={() => setStallDrawer(s)}>
+                          {lang === 'zh' ? `查看 (${s.stall_window_count})` : `Inspect (${s.stall_window_count})`}
                         </button>
-                      ) : (
-                        <span className="kpi-meta">—</span>
-                      )}
+                      ) : <span className="kpi-meta">—</span>}
                     </td>
                   </tr>
                 ))}
+                {scenes.length === 0 && <tr><td colSpan={6} className="empty">—</td></tr>}
               </tbody>
             </table>
           </div>
-        )}
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{t(lang, 'fluencyChart')}</h2>
+              <p className="card-sub">{lang === 'zh' ? '绿色 <3% 健康 · 橙色 3–10% 劣化 · 红色 ≥10% 严重' : 'Healthy <3% · Degraded 3-10% · Critical ≥10%'}</p>
+            </div>
+          </div>
+          {scenes.length > 0 ? <EChart option={fluencyRankOption} height={240} /> : <div className="empty">—</div>}
+        </div>
       </div>
 
-      {selectedStack && (
-        <div className="drawer-backdrop" onClick={() => setSelectedStack(null)}>
+      {stallDrawer && (
+        <div className="drawer-backdrop" onClick={() => setStallDrawer(null)}>
           <div className="drawer" onClick={e => e.stopPropagation()}>
             <div className="card-header" style={{ marginBottom: 0 }}>
               <div>
-                <h2 className="card-title">Same-Window Stall Stacks — {selectedStack.scene}</h2>
-                <p className="card-sub">Automatically retraced against uploaded build symbols</p>
+                <h2 className="card-title">{lang === 'zh' ? '同窗主线程卡顿栈' : 'Same-Window Stall Stacks'} · {stallDrawer.scene}</h2>
+                <div className="mono kpi-meta">{stallDrawer.algorithm} · {stallDrawer.stall_window_count} stall windows</div>
               </div>
-              <button className="btn" onClick={() => setSelectedStack(null)}>Close</button>
+              <button className="btn" onClick={() => setStallDrawer(null)}>{lang === 'zh' ? '关闭' : 'Close'}</button>
             </div>
-            {selectedStack.stacks.map((stack, idx) => (
-              <div key={idx}>
-                <div className="kpi-label" style={{ marginBottom: 6 }}>Sample Stall Window #{idx + 1}</div>
+            {(stallDrawer.sample_stall_stacks ?? []).map((stack, i) => (
+              <div key={i}>
+                <div className="kpi-meta" style={{ marginBottom: 6 }}>Sample #{i + 1}</div>
                 <div className="stack-box">
-                  {stack.map((line, li) => <div key={li} className="stack-inapp">#{li} {line}</div>)}
+                  {stack.map((line, j) => (
+                    <div key={j}><span style={{ color: '#6b7280' }}>#{j} </span><span className="stack-inapp">{line}</span></div>
+                  ))}
                 </div>
               </div>
             ))}

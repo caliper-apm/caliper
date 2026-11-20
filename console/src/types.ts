@@ -1,4 +1,66 @@
 export type Platform = 'android' | 'ios';
+export type EnvName = 'prod' | 'staging' | 'dev';
+export type AdapterFilter = '' | 'native' | 'react-native';
+
+export interface GlobalFilters {
+  platform: Platform;
+  env: EnvName;
+  appVersion: string;
+  adapter: AdapterFilter;
+  scene: string;
+  rangeDays: 0 | 7 | 14;
+  startDayUtc?: string;
+  endDayUtc?: string;
+}
+
+export interface HistogramBucket {
+  label: string;
+  lower: number;
+  upper: number | null;
+  count: number;
+}
+
+export interface DailyTrendPoint {
+  day_utc: string;
+  dominant_version?: string;
+  startup_p50_ms: number | null;
+  startup_p90_ms: number | null;
+  startup_samples: number;
+  jank_rate_pct: number | null;
+  fluency_windows: number;
+  api_success_rate_pct: number | null;
+  api_p90_ms: number | null;
+  api_calls: number;
+  avg_cpu_pct: number | null;
+  memory_p90_mib: number | null;
+  resource_windows: number;
+  crash_events: number;
+  anr_events: number;
+  abnormal_exit_events: number;
+}
+
+export interface DimensionSlice {
+  dimension: 'version' | 'adapter' | 'scene';
+  key: string;
+  startup_p90_ms: number | null;
+  startup_samples: number;
+  jank_rate_pct: number | null;
+  fluency_windows: number;
+  api_success_rate_pct: number | null;
+  api_p90_ms: number | null;
+  api_calls: number;
+  avg_cpu_pct: number | null;
+  memory_p90_mib: number | null;
+  issue_events: number;
+}
+
+export interface NetworkFailureCounts {
+  http?: number;
+  business?: number;
+  parse?: number;
+  network?: number;
+  timeout?: number;
+}
 
 export interface HealthResponse {
   status: string;
@@ -59,6 +121,7 @@ export interface StartupReport {
   native_init_p90_ms: QuantileResult;
   runtime_init_p90_ms: QuantileResult;
   first_frame_p90_ms: QuantileResult;
+  total_buckets?: HistogramBucket[];
 }
 
 export interface FluencySceneReport {
@@ -73,6 +136,7 @@ export interface FluencySceneReport {
   severity: string;
   missing_reason?: string;
   frame_p90_ms: QuantileResult;
+  frame_buckets?: HistogramBucket[];
   stall_window_count: number;
   sample_stall_stacks?: string[][];
 }
@@ -109,10 +173,12 @@ export interface NetworkReport {
   summary_windows: number;
   total_calls: number;
   failed_calls: number;
+  failure_breakdown?: NetworkFailureCounts;
   success_rate_pct: number | null;
   missing_reason?: string;
   duration_p50_ms: QuantileResult;
   duration_p90_ms: QuantileResult;
+  duration_buckets?: HistogramBucket[];
   operations: TransportOpReport[];
 }
 

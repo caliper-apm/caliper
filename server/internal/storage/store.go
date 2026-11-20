@@ -250,6 +250,27 @@ type RemoteLogTask struct {
 	StoragePath   string `json:"storage_path,omitempty"`
 }
 
+// DailyTrendPoint captures one UTC calendar day's Zero-Lie aggregated observability signals.
+// Missing or under-sampled metrics remain nil (never zero-filled).
+type DailyTrendPoint struct {
+	DayUTC          string   `json:"day_utc"`
+	DominantVersion string   `json:"dominant_version,omitempty"`
+	StartupP50MS    *float64 `json:"startup_p50_ms"`
+	StartupP90MS    *float64 `json:"startup_p90_ms"`
+	StartupSamples  int64    `json:"startup_samples"`
+	JankRatePct     *float64 `json:"jank_rate_pct"`
+	FluencyWindows  int64    `json:"fluency_windows"`
+	APISuccessPct   *float64 `json:"api_success_rate_pct"`
+	APIP90MS        *float64 `json:"api_p90_ms"`
+	APICalls        int64    `json:"api_calls"`
+	AvgCPUPct       *float64 `json:"avg_cpu_pct"`
+	MemoryP90MiB    *float64 `json:"memory_p90_mib"`
+	ResourceWindows int64    `json:"resource_windows"`
+	CrashEvents     int64    `json:"crash_events"`
+	ANREvents       int64    `json:"anr_events"`
+	AbnormalExits   int64    `json:"abnormal_exit_events"`
+}
+
 // AnalyticsStore is the pluggable OLAP ingestion and query interface.
 type AnalyticsStore interface {
 	IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) (IngestResult, error)
@@ -259,6 +280,7 @@ type AnalyticsStore interface {
 	QueryNetwork(ctx context.Context, f QueryFilter) (NetworkAggregate, error)
 	QueryIssues(ctx context.Context, f QueryFilter, limit int) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, fingerprint string, f QueryFilter) (*IssueSummary, bool, error)
+	QueryDailyTrends(ctx context.Context, f QueryFilter) ([]DailyTrendPoint, error)
 	QuerySessionTimeline(ctx context.Context, f SessionLookupFilter) ([]SessionTimelineEvent, error)
 	QueryCPUProfiles(ctx context.Context, f QueryFilter, runtime string, limit int) ([]CPUProfileRecord, error)
 	GetCPUProfile(ctx context.Context, profileID string) (*CPUProfileRecord, bool, error)

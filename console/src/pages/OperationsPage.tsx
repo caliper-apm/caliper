@@ -1,29 +1,27 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api } from '../api.ts';
 import { formatTime, formatValue } from '../format.ts';
-import type { AlertIncident, AlertRule, AuditLogEntry, Platform, ReleaseRecord, SessionLookupResponse, SymbolRecord } from '../types.ts';
+import { t, type Lang } from '../i18n.ts';
+import type { AlertIncident, AlertRule, AuditLogEntry, GlobalFilters, ReleaseRecord, SymbolRecord } from '../types.ts';
 
 interface Props {
-  platform: Platform;
+  filters: GlobalFilters;
   releases: ReleaseRecord[];
   refreshTick: number;
+  lang: Lang;
   onMutated: () => void;
 }
 
-export function OperationsPage({ platform, releases, refreshTick, onMutated }: Props) {
+export function OperationsPage({ filters, releases, refreshTick, lang, onMutated }: Props) {
   const [symbols, setSymbols] = useState<SymbolRecord[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [incidents, setIncidents] = useState<AlertIncident[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
-  const [lookupType, setLookupType] = useState<'user_hash' | 'install_hash'>('user_hash');
-  const [lookupHash, setLookupHash] = useState('0000111122223333');
-  const [lookupReason, setLookupReason] = useState('');
-  const [lookupResult, setLookupResult] = useState<SessionLookupResponse | null>(null);
+  const [otlpPreview, setOtlpPreview] = useState('');
   const [statusMsg, setStatusMsg] = useState('');
   const [error, setError] = useState('');
 
-  // Quick rule form state
-  const [ruleName, setRuleName] = useState('High Cold Start P90');
+  const [ruleName, setRuleName] = useState('冷启动 P90 劣化告警');
   const [metricId, setMetricId] = useState('startup_cold_p90_ms');
   const [operator, setOperator] = useState<'gt' | 'lt'>('gt');
   const [threshold, setThreshold] = useState('1000');
@@ -36,8 +34,8 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
     let active = true;
     setError('');
     Promise.all([
-      api.symbols(platform),
-      api.alertRules(platform),
+      api.symbols(filters.platform),
+      api.alertRules(filters.platform),
       api.alertIncidents(),
       api.auditLogs(apiKey || undefined).catch(() => ({ audit_logs: [] as AuditLogEntry[] })),
     ])
@@ -50,42 +48,20 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
       })
       .catch(err => { if (active) setError(String(err)); });
     return () => { active = false; };
-  }, [platform, refreshTick]);
-
-  async function runSessionLookup(e: FormEvent) {
-    e.preventDefault();
-    setError('');
-    setStatusMsg('');
-    try {
-      const res = await api.lookupSession(
-        {
-          userHash: lookupType === 'user_hash' ? lookupHash.trim() : undefined,
-          installHash: lookupType === 'install_hash' ? lookupHash.trim() : undefined,
-          reason: lookupReason.trim(),
-          platform,
-        },
-        apiKey || undefined,
-      );
-      setLookupResult(res);
-      setStatusMsg(`Audited lookup recorded for ${res.target_type}=${res.target_hash} (${res.events.length} events)`);
-      onMutated();
-    } catch (err) {
-      setError(String(err));
-    }
-  }
+  }, [filters.platform, refreshTick]);
 
   async function saveRule(e: FormEvent) {
     e.preventDefault();
     setError('');
     setStatusMsg('');
     try {
-      const id = `rule-${platform}-${metricId}-${Date.now().toString(36)}`;
+      const id = `rule-${filters.platform}-${metricId}-${Date.now().toString(36)}`;
       await api.upsertAlertRule({
         rule_id: id,
         name: ruleName.trim() || metricId,
         app_id: releases[0]?.app_id || 'dev.caliper.demo',
-        platform,
-        env: 'prod',
+        platform: filters.platform,
+        env: filters.env,
         metric_id: metricId,
         operator,
         threshold: Number(threshold),
@@ -95,7 +71,7 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
         cooldown_sec: 300,
         enabled: true,
       }, apiKey || undefined);
-      setStatusMsg(`Saved rule ${id}`);
+      setStatusMsg(`${lang === 'zh' ? '已保存告警规则' : 'Saved rule'} ${id}`);
       onMutated();
     } catch (err) {
       setError(String(err));
@@ -108,8 +84,18 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
     try {
       const res = await api.evaluateAlerts(apiKey || undefined);
       const summary = res.outcomes.map(o => `${o.rule_id}: ${o.state}${o.gate_reason ? ` (${o.gate_reason})` : ''}`).join(' · ');
-      setStatusMsg(summary || 'No enabled rules to evaluate.');
+      setStatusMsg(summary || (lang === 'zh' ? '暂无已启用的告警规则。' : 'No enabled rules.'));
       onMutated();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function loadOtlp() {
+    setError('');
+    try {
+      const data = await api.otlpExport(filters);
+      setOtlpPreview(JSON.stringify(data, null, 2));
     } catch (err) {
       setError(String(err));
     }
@@ -120,79 +106,74 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
       {error && <div className="banner red"><span>{error}</span></div>}
       {statusMsg && <div className="banner green"><span>{statusMsg}</span></div>}
 
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <h2 className="card-title">Auto-Discovered &amp; Registered Releases ({platform.toUpperCase()})</h2>
-            <p className="card-sub">Builds register automatically on first ingest or CI symbol upload — zero manual version lists</p>
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{t(lang, 'releasesTitle')}</h2>
+              <p className="card-sub">{lang === 'zh' ? '首次上报或 Gradle / Fastlane 插件上传符号后自动注册' : 'Auto-discovered on ingest or CI symbol upload'}</p>
+            </div>
+            <span className="badge blue">{releases.length}</span>
           </div>
-          <span className="badge blue">{releases.length} releases</span>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr><th>Version / Build</th><th>Adapter</th><th>Git SHA</th><th>Bound Symbol</th><th>Events</th><th>Last Seen</th></tr>
-            </thead>
-            <tbody>
-              {releases.map(r => (
-                <tr key={`${r.app_version}-${r.build_number}`}>
-                  <td><strong>v{r.app_version}</strong> <span className="mono">({r.build_number})</span></td>
-                  <td><span className="badge slate">{r.adapter || 'native'}</span></td>
-                  <td className="mono">{r.git_sha || '—'}</td>
-                  <td className="mono">{r.symbol_id || <span className="badge amber">unmapped</span>}</td>
-                  <td>{r.event_count.toLocaleString('en-US')}</td>
-                  <td className="mono">{formatTime(r.last_seen_ms)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <h2 className="card-title">Uploaded Symbol Bundles</h2>
-            <p className="card-sub">SHA-256 verified R8 mapping, Hermes SourceMap v3, and dSYM/Breakpad tables</p>
-          </div>
-          <span className="badge green">{symbols.length} bundles</span>
-        </div>
-        {symbols.length === 0 ? (
-          <div className="empty">Upload symbols via <span className="mono">caliper-symbols upload</span> to enable automatic stack resolution.</div>
-        ) : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Symbol ID</th><th>Build</th><th>Kind</th><th>SHA-256</th><th>Size</th><th>Uploaded</th></tr></thead>
+              <thead>
+                <tr><th>{lang === 'zh' ? '版本 / Build' : 'Release'}</th><th>Git SHA</th><th>{lang === 'zh' ? '绑定符号' : 'Symbol'}</th><th>{lang === 'zh' ? '事件数' : 'Events'}</th></tr>
+              </thead>
               <tbody>
-                {symbols.map(s => (
-                  <tr key={s.symbol_id}>
-                    <td className="mono"><strong>{s.symbol_id}</strong></td>
-                    <td className="mono">v{s.app_version} ({s.build_number})</td>
-                    <td><span className="badge blue">{s.kind}</span></td>
-                    <td className="mono">{s.sha256.slice(0, 16)}…</td>
-                    <td>{s.size_bytes.toLocaleString('en-US')} B</td>
-                    <td className="mono">{formatTime(s.uploaded_at_ms)}</td>
+                {releases.map(r => (
+                  <tr key={`${r.app_version}-${r.build_number}`}>
+                    <td><strong>v{r.app_version}</strong> <span className="mono">({r.build_number})</span></td>
+                    <td className="mono">{r.git_sha || '—'}</td>
+                    <td className="mono">{r.symbol_id ? <span className="badge green">{r.symbol_id}</span> : <span className="badge amber">unmapped</span>}</td>
+                    <td className="mono">{r.event_count.toLocaleString('en-US')}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        )}
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{t(lang, 'symbolsTitle')}</h2>
+              <p className="card-sub">{lang === 'zh' ? 'SHA-256 校验落盘，支持 R8 / SourceMap v3 / dSYM / Breakpad' : 'SHA-256 verified symbol bundles'}</p>
+            </div>
+            <span className="badge green">{symbols.length}</span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>{lang === 'zh' ? '版本' : 'Build'}</th><th>{lang === 'zh' ? '类型' : 'Kind'}</th><th>SHA-256</th><th>{lang === 'zh' ? '大小' : 'Size'}</th></tr></thead>
+              <tbody>
+                {symbols.map(s => (
+                  <tr key={s.symbol_id}>
+                    <td className="mono">v{s.app_version} ({s.build_number})</td>
+                    <td><span className="badge blue">{s.kind}</span></td>
+                    <td className="mono">{s.sha256.slice(0, 14)}…</td>
+                    <td className="mono">{s.size_bytes.toLocaleString('en-US')} B</td>
+                  </tr>
+                ))}
+                {symbols.length === 0 && <tr><td colSpan={4} className="empty">—</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
 
       <div className="card">
         <div className="card-header">
           <div>
-            <h2 className="card-title">Real Alert Rules &amp; Webhook Delivery</h2>
-            <p className="card-sub">Sample-gated evaluation · cooldown dedup · live Feishu / Slack / Discord / HTTP webhooks</p>
+            <h2 className="card-title">{t(lang, 'alertsTitle')}</h2>
+            <p className="card-sub">{lang === 'zh' ? '样本量门禁防抖 · 冷却去重 · 原生支持飞书交互卡片 / Slack / Discord / HTTP Webhook' : 'Sample-gated evaluation · cooldown dedup · Feishu / Slack / Discord / HTTP webhooks'}</p>
           </div>
-          <button className="btn primary" onClick={evaluateNow}>Evaluate All Rules Now</button>
+          <button className="btn primary" onClick={evaluateNow}>{lang === 'zh' ? '立即评估全部规则' : 'Evaluate All Rules'}</button>
         </div>
 
-        <form onSubmit={saveRule} style={{ marginBottom: 16 }}>
+        <form onSubmit={saveRule} style={{ marginBottom: 14 }}>
           <div className="form-grid">
-            <label className="field">Rule Name<input value={ruleName} onChange={e => setRuleName(e.target.value)} required /></label>
-            <label className="field">Metric
+            <label className="field">{lang === 'zh' ? '规则名称' : 'Rule Name'}<input value={ruleName} onChange={e => setRuleName(e.target.value)} required /></label>
+            <label className="field">{lang === 'zh' ? '监控指标' : 'Metric'}
               <select value={metricId} onChange={e => setMetricId(e.target.value)}>
                 <option value="startup_cold_p90_ms">startup_cold_p90_ms</option>
                 <option value="fluency_jank_rate_pct">fluency_jank_rate_pct</option>
@@ -202,31 +183,31 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
                 <option value="network_api_p90_ms">network_api_p90_ms</option>
               </select>
             </label>
-            <label className="field">Operator
+            <label className="field">{lang === 'zh' ? '条件' : 'Op'}
               <select value={operator} onChange={e => setOperator(e.target.value as 'gt' | 'lt')}>
-                <option value="gt">&gt; greater than</option>
-                <option value="lt">&lt; less than</option>
+                <option value="gt">&gt; 大于</option>
+                <option value="lt">&lt; 小于</option>
               </select>
             </label>
-            <label className="field">Threshold<input type="number" step="any" value={threshold} onChange={e => setThreshold(e.target.value)} required /></label>
-            <label className="field">Min Samples Gate<input type="number" value={minSamples} onChange={e => setMinSamples(e.target.value)} required /></label>
-            <label className="field">Webhook Format
+            <label className="field">{lang === 'zh' ? '阈值' : 'Threshold'}<input type="number" step="any" value={threshold} onChange={e => setThreshold(e.target.value)} required /></label>
+            <label className="field">{lang === 'zh' ? '最小样本门禁' : 'Min Samples'}<input type="number" value={minSamples} onChange={e => setMinSamples(e.target.value)} required /></label>
+            <label className="field">{lang === 'zh' ? '通知模板' : 'Format'}
               <select value={webhookFormat} onChange={e => setWebhookFormat(e.target.value as AlertRule['webhook_format'])}>
-                <option value="feishu">Feishu Card</option>
+                <option value="feishu">飞书卡片 (Feishu)</option>
                 <option value="slack">Slack Blocks</option>
                 <option value="discord">Discord Embed</option>
                 <option value="generic">Generic JSON</option>
               </select>
             </label>
-            <label className="field">Webhook URL (optional)<input placeholder="https://..." value={webhookUrl} onChange={e => setWebhookUrl(e.target.value)} /></label>
-            <label className="field">API Key (if server requires)<input type="password" placeholder="X-Caliper-Key" value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>
+            <label className="field">Webhook URL<input placeholder="https://..." value={webhookUrl} onChange={e => setWebhookUrl(e.target.value)} /></label>
+            <label className="field">API Key (可选)<input type="password" placeholder="X-Caliper-Key" value={apiKey} onChange={e => setApiKey(e.target.value)} /></label>
           </div>
-          <div style={{ marginTop: 10 }}><button className="btn" type="submit">Add Alert Rule</button></div>
+          <div style={{ marginTop: 10 }}><button className="btn" type="submit">{lang === 'zh' ? '新增告警规则' : 'Add Alert Rule'}</button></div>
         </form>
 
         <div className="table-wrap">
           <table>
-            <thead><tr><th>Rule</th><th>Condition</th><th>Format</th><th>Latest Incident &amp; Delivery</th></tr></thead>
+            <thead><tr><th>{lang === 'zh' ? '规则' : 'Rule'}</th><th>{lang === 'zh' ? '触发条件' : 'Condition'}</th><th>{lang === 'zh' ? '通道' : 'Channel'}</th><th>{lang === 'zh' ? '最新告警状态与投递回执' : 'Latest Incident & Delivery'}</th></tr></thead>
             <tbody>
               {rules.map(r => {
                 const inc = incidents.find(i => i.rule_id === r.rule_id);
@@ -241,85 +222,55 @@ export function OperationsPage({ platform, releases, refreshTick, onMutated }: P
                           <span className={`badge ${inc.status === 'firing' ? 'red' : 'green'}`}>{inc.status}</span>{' '}
                           <span className="mono">obs={formatValue(inc.observed_value, '')} (n={inc.sample_size}) · {inc.delivery_status} {inc.delivery_http_status ? `HTTP ${inc.delivery_http_status}` : ''}</span>
                         </>
-                      ) : <span className="kpi-meta">Not triggered</span>}
+                      ) : <span className="kpi-meta">{lang === 'zh' ? '未触发' : 'Idle'}</span>}
                     </td>
                   </tr>
                 );
               })}
-              {rules.length === 0 && <tr><td colSpan={4} className="empty">No alert rules configured yet.</td></tr>}
+              {rules.length === 0 && <tr><td colSpan={4} className="empty">{lang === 'zh' ? '暂未配置告警规则。' : 'No alert rules configured.'}</td></tr>}
             </tbody>
           </table>
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <h2 className="card-title">Audited UID / Session Timeline Lookup</h2>
-            <p className="card-sub">
-              Non-PII hex hash lookup · requires operator/admin role + mandatory ticket/reason · fail-closed immutable audit log
-            </p>
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{t(lang, 'auditTitle')}</h2>
+              <p className="card-sub">{lang === 'zh' ? '记录每一次 UID 追查与远程日志拉取操作（audit.wal.jsonl 不可篡改追加）' : 'Immutable append-only security audit log'}</p>
+            </div>
+            <span className="badge amber">{auditLogs.length}</span>
           </div>
-          <span className="badge amber">Audit Enforced</span>
-        </div>
-        <form onSubmit={runSessionLookup} style={{ marginBottom: 14 }}>
-          <div className="form-grid">
-            <label className="field">Target Type
-              <select value={lookupType} onChange={e => setLookupType(e.target.value as 'user_hash' | 'install_hash')}>
-                <option value="user_hash">user_hash (client-hashed UID)</option>
-                <option value="install_hash">install_hash</option>
-              </select>
-            </label>
-            <label className="field">Target Hex Hash (16–64 chars)
-              <input value={lookupHash} onChange={e => setLookupHash(e.target.value)} placeholder="0000111122223333" required />
-            </label>
-            <label className="field">Audit Reason / Ticket ID (required)
-              <input value={lookupReason} onChange={e => setLookupReason(e.target.value)} placeholder="INC-1042 user freeze triage" required />
-            </label>
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <button className="btn primary" type="submit">Run Audited Lookup</button>
-          </div>
-        </form>
-
-        {lookupResult && (
-          <div className="table-wrap" style={{ marginBottom: 16 }}>
+          <div className="table-wrap">
             <table>
-              <thead><tr><th>Timestamp</th><th>Build</th><th>Kind</th><th>Scene</th><th>Summary</th></tr></thead>
+              <thead><tr><th>{lang === 'zh' ? '时间' : 'Time'}</th><th>Actor</th><th>{lang === 'zh' ? '动作' : 'Action'}</th><th>{lang === 'zh' ? '工单原因' : 'Reason'}</th></tr></thead>
               <tbody>
-                {lookupResult.events.map(ev => (
-                  <tr key={ev.event_id}>
-                    <td className="mono">{formatTime(ev.occurred_at_ms)}</td>
-                    <td className="mono">v{ev.app_version} ({ev.build_number})</td>
-                    <td><span className="badge blue">{ev.kind}</span></td>
-                    <td className="mono">{ev.scene || '—'}</td>
-                    <td className="mono">{ev.summary}</td>
+                {auditLogs.map(a => (
+                  <tr key={a.audit_id}>
+                    <td className="mono">{formatTime(a.timestamp_ms).slice(5, 19)}</td>
+                    <td><strong>{a.actor}</strong> <span className="badge slate">{a.role}</span></td>
+                    <td className="mono">{a.action}</td>
+                    <td>{a.reason}</td>
                   </tr>
                 ))}
-                {lookupResult.events.length === 0 && <tr><td colSpan={5} className="empty">No matching events for this hash on {platform}.</td></tr>}
+                {auditLogs.length === 0 && <tr><td colSpan={4} className="empty">{lang === 'zh' ? '暂无审计记录（执行一次单点追查或远程日志任务后将实时记录）。' : 'No audit entries yet.'}</td></tr>}
               </tbody>
             </table>
           </div>
-        )}
+        </div>
 
-        <h3 style={{ margin: '12px 0 8px', fontSize: 13 }}>Immutable Security Audit Trail ({auditLogs.length})</h3>
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>Time</th><th>Actor / Role</th><th>Action</th><th>Target</th><th>Reason</th><th>Rows</th></tr></thead>
-            <tbody>
-              {auditLogs.map(a => (
-                <tr key={a.audit_id}>
-                  <td className="mono">{formatTime(a.timestamp_ms)}</td>
-                  <td><strong>{a.actor}</strong> <span className="badge slate">{a.role}</span></td>
-                  <td className="mono">{a.action}</td>
-                  <td className="mono">{a.target_type}:{a.target_hash}</td>
-                  <td>{a.reason}</td>
-                  <td className="mono">{a.result_count}</td>
-                </tr>
-              ))}
-              {auditLogs.length === 0 && <tr><td colSpan={6} className="empty">No audit log entries recorded yet (or admin key required).</td></tr>}
-            </tbody>
-          </table>
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{t(lang, 'otlpTitle')}</h2>
+              <p className="card-sub">POST /v1/otlp/v1/traces · POST /v1/otlp/v1/logs · GET /v1/otlp/export</p>
+            </div>
+            <button className="btn" onClick={loadOtlp}>{lang === 'zh' ? '预览实时 OTLP 导出' : 'Preview OTLP Export'}</button>
+          </div>
+          {otlpPreview
+            ? <pre className="stack-box" style={{ maxHeight: 240, overflow: 'auto' }}>{otlpPreview}</pre>
+            : <div className="empty">{lang === 'zh' ? '点击右上角按钮导出当前筛选范围的标准 OTLP resourceMetrics JSON。' : 'Click Preview to inspect live OTLP resourceMetrics JSON.'}</div>}
         </div>
       </div>
     </>

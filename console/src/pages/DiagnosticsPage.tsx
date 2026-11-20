@@ -1,22 +1,25 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import type { ECBasicOption } from 'echarts/types/dist/shared';
 import { api } from '../api.ts';
+import { EChart } from '../components/EChart.tsx';
 import { formatTime } from '../format.ts';
+import { t, type Lang } from '../i18n.ts';
 import type {
   CPUProfileRecord,
   FlameNode,
   FlamegraphReport,
+  GlobalFilters,
   HeapCompareReport,
-  HeapSnapshotRecord,
-  Platform,
   ReleaseRecord,
   RemoteLogTask,
+  SessionLookupResponse,
 } from '../types.ts';
 
 interface Props {
-  platform: Platform;
-  appVersion: string;
+  filters: GlobalFilters;
   releases: ReleaseRecord[];
   refreshTick: number;
+  lang: Lang;
   onMutated: () => void;
 }
 
@@ -48,52 +51,50 @@ function flattenFlame(root: FlameNode): { bars: FlatBar[]; maxDepth: number } {
 }
 
 function barColor(runtime: 'native' | 'hermes', selfPct: number, depth: number): string {
-  if (selfPct >= 40) return '#dc2626';
-  if (selfPct >= 20) return '#d97706';
-  if (runtime === 'hermes') {
-    return depth % 2 === 0 ? '#7c3aed' : '#6366f1';
-  }
-  return depth % 2 === 0 ? '#2563eb' : '#0284c7';
+  if (selfPct >= 40) return '#f53f3f';
+  if (selfPct >= 20) return '#ff7d00';
+  if (runtime === 'hermes') return depth % 2 === 0 ? '#722ed1' : '#551db0';
+  return depth % 2 === 0 ? '#165dff' : '#0fc6c2';
 }
 
-export function DiagnosticsPage({ platform, appVersion, releases, refreshTick, onMutated }: Props) {
+export function DiagnosticsPage({ filters, releases, refreshTick, lang, onMutated }: Props) {
   const [profiles, setProfiles] = useState<CPUProfileRecord[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [flamegraph, setFlamegraph] = useState<FlamegraphReport | null>(null);
   const [zoomRoot, setZoomRoot] = useState<FlameNode | null>(null);
   const [hoveredNode, setHoveredNode] = useState<FlameNode | null>(null);
 
-  const [snapshots, setSnapshots] = useState<HeapSnapshotRecord[]>([]);
   const [heapDiff, setHeapDiff] = useState<HeapCompareReport | null>(null);
 
+  // Audited single-user trace lookup
+  const [lookupType, setLookupType] = useState<'user_hash' | 'install_hash'>('user_hash');
+  const [lookupHash, setLookupHash] = useState('0000111122223333');
+  const [lookupReason, setLookupReason] = useState('');
+  const [lookupResult, setLookupResult] = useState<SessionLookupResponse | null>(null);
+
+  // Remote log retrieval tasks
   const [tasks, setTasks] = useState<RemoteLogTask[]>([]);
-  const [targetType, setTargetType] = useState<'user_hash' | 'install_hash'>('user_hash');
-  const [targetHash, setTargetHash] = useState('0000111122223333');
-  const [reason, setReason] = useState('');
+  const [taskReason, setTaskReason] = useState('');
   const [viewedLog, setViewedLog] = useState<{ task: RemoteLogTask; content: string } | null>(null);
 
-  const [otlpPreview, setOtlpPreview] = useState<string>('');
   const [error, setError] = useState('');
   const [statusMsg, setStatusMsg] = useState('');
 
-  const uniqueVersions = Array.from(new Set(releases.map(r => r.app_version))).sort();
+  const uniqueVersions = useMemo(() => Array.from(new Set(releases.map(r => r.app_version))).sort(), [releases]);
 
   useEffect(() => {
     let active = true;
     setError('');
-    Promise.all([
-      api.cpuProfiles(platform, appVersion || undefined),
-      api.heapSnapshots(platform, appVersion || undefined),
-      api.remoteLogTasks(platform),
-    ])
-      .then(([pRes, hRes, tRes]) => {
+    Promise.all([api.cpuProfiles(filters), api.remoteLogTasks(filters.platform)])
+      .then(([pRes, tRes]) => {
         if (!active) return;
         const pList = pRes.profiles ?? [];
         setProfiles(pList);
-        setSnapshots(hRes.snapshots ?? []);
         setTasks(tRes.tasks ?? []);
         if (pList.length > 0) {
-          setSelectedProfileId(prev => (pList.some(p => p.profile_id === prev) ? prev : pList[0].profile_id));
+          // Prefer regressed v1.1.0 profile by default for immediate symbolicated demo!
+          const preferred = pList.find(p => p.app_version === '1.1.0') ?? pList[0];
+          setSelectedProfileId(prev => (pList.some(p => p.profile_id === prev) ? prev : preferred.profile_id));
         } else {
           setSelectedProfileId('');
           setFlamegraph(null);
@@ -101,7 +102,7 @@ export function DiagnosticsPage({ platform, appVersion, releases, refreshTick, o
       })
       .catch(err => { if (active) setError(String(err)); });
     return () => { active = false; };
-  }, [platform, appVersion, refreshTick]);
+  }, [JSON.stringify(filters), refreshTick]);
 
   useEffect(() => {
     if (!selectedProfileId) return;
@@ -123,11 +124,53 @@ export function DiagnosticsPage({ platform, appVersion, releases, refreshTick, o
       return;
     }
     let active = true;
-    api.compareHeap(platform, uniqueVersions[0], uniqueVersions[1])
+    api.compareHeap(filters, uniqueVersions[0], uniqueVersions[1])
       .then(d => { if (active) setHeapDiff(d); })
       .catch(() => { if (active) setHeapDiff(null); });
     return () => { active = false; };
-  }, [platform, uniqueVersions.join(','), refreshTick]);
+  }, [filters.platform, filters.env, filters.scene, uniqueVersions.join(','), refreshTick]);
+
+  const heapChartOption: ECBasicOption = useMemo(() => {
+    const diffs = (heapDiff?.dominator_diffs ?? []).slice(0, 8);
+    return {
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      legend: { top: 0, right: 10, textStyle: { fontSize: 11 } },
+      grid: { top: 30, right: 24, bottom: 24, left: 150 },
+      xAxis: { type: 'value', name: 'MiB', splitLine: { lineStyle: { color: '#f2f3f5' } } },
+      yAxis: { type: 'category', data: diffs.map(d => d.class_name), axisLabel: { color: '#4e5969', fontSize: 11 } },
+      series: [
+        { name: `v${heapDiff?.baseline_version ?? ''}`, type: 'bar', barMaxWidth: 14, data: diffs.map(d => d.baseline_mib), itemStyle: { color: '#94bfff', borderRadius: [0, 3, 3, 0] } },
+        {
+          name: `v${heapDiff?.candidate_version ?? ''}`,
+          type: 'bar',
+          barMaxWidth: 14,
+          data: diffs.map(d => ({
+            value: d.candidate_mib,
+            itemStyle: { color: d.suspect ? '#f53f3f' : '#165dff', borderRadius: [0, 3, 3, 0] },
+          })),
+        },
+      ],
+    };
+  }, [heapDiff]);
+
+  async function runSessionLookup(e: FormEvent) {
+    e.preventDefault();
+    setError('');
+    setStatusMsg('');
+    try {
+      const res = await api.lookupSession({
+        userHash: lookupType === 'user_hash' ? lookupHash.trim() : undefined,
+        installHash: lookupType === 'install_hash' ? lookupHash.trim() : undefined,
+        reason: lookupReason.trim(),
+        platform: filters.platform,
+      });
+      setLookupResult(res);
+      setStatusMsg(`${lang === 'zh' ? '已记录强审计追查日志' : 'Audited lookup recorded'}: ${res.target_type}=${res.target_hash} (${res.events.length} events)`);
+      onMutated();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
 
   async function createTask(e: FormEvent) {
     e.preventDefault();
@@ -136,13 +179,13 @@ export function DiagnosticsPage({ platform, appVersion, releases, refreshTick, o
     try {
       const created = await api.createRemoteLogTask({
         app_id: releases[0]?.app_id || 'dev.caliper.demo',
-        platform,
-        target_type: targetType,
-        target_hash: targetHash.trim(),
-        reason: reason.trim(),
+        platform: filters.platform,
+        target_type: lookupType,
+        target_hash: lookupHash.trim(),
+        reason: taskReason.trim(),
       });
-      setStatusMsg(`Created audited remote log pull task ${created.task_id}`);
-      setReason('');
+      setStatusMsg(`${lang === 'zh' ? '已下发强审计远程日志任务' : 'Created remote log task'} ${created.task_id}`);
+      setTaskReason('');
       onMutated();
     } catch (err) {
       setError(String(err));
@@ -159,16 +202,6 @@ export function DiagnosticsPage({ platform, appVersion, releases, refreshTick, o
     }
   }
 
-  async function loadOtlpExport() {
-    setError('');
-    try {
-      const data = await api.otlpExport(platform, appVersion || undefined);
-      setOtlpPreview(JSON.stringify(data, null, 2));
-    } catch (err) {
-      setError(String(err));
-    }
-  }
-
   const activeRoot = zoomRoot ?? flamegraph?.root ?? null;
   const flameLayout = activeRoot ? flattenFlame(activeRoot) : null;
 
@@ -180,12 +213,14 @@ export function DiagnosticsPage({ platform, appVersion, releases, refreshTick, o
       <div className="card">
         <div className="card-header">
           <div>
-            <h2 className="card-title">Online Native &amp; Hermes CPU Flamegraphs</h2>
+            <h2 className="card-title">{t(lang, 'flameTitle')}</h2>
             <p className="card-sub">
-              Build-bound auto-symbolication (R8 / Hermes SourceMap v3 / iOS dSYM) · click any frame to zoom
+              {lang === 'zh'
+                ? '自动通过构建绑定 R8 / Hermes SourceMap v3 / iOS dSYM 还原真实源码行 · 点击任意帧块缩放子树'
+                : 'Auto-symbolicated via build-bound R8 / SourceMap v3 / dSYM · click any frame to zoom'}
             </p>
           </div>
-          <div className="controls">
+          <div className="filter-group">
             <select value={selectedProfileId} onChange={e => setSelectedProfileId(e.target.value)} aria-label="CPU Profile">
               {profiles.map(p => (
                 <option key={p.profile_id} value={p.profile_id}>
@@ -193,33 +228,35 @@ export function DiagnosticsPage({ platform, appVersion, releases, refreshTick, o
                 </option>
               ))}
             </select>
-            {zoomRoot && <button className="btn" onClick={() => setZoomRoot(null)}>Reset Zoom</button>}
+            {zoomRoot && <button className="btn primary" onClick={() => setZoomRoot(null)}>{lang === 'zh' ? '重置缩放' : 'Reset Zoom'}</button>}
           </div>
         </div>
 
         {flamegraph && flameLayout ? (
           <>
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10, fontSize: 12 }}>
-              <span className="badge blue">{flamegraph.runtime.toUpperCase()}</span>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10, alignItems: 'center' }}>
+              <span className={`badge ${flamegraph.runtime === 'hermes' ? 'purple' : 'blue'}`}>{flamegraph.runtime.toUpperCase()}</span>
               <span className={`badge ${flamegraph.symbolicated ? 'green' : 'slate'}`}>
-                {flamegraph.symbolicated ? 'Auto-Symbolicated' : 'Raw Frames'}
+                {flamegraph.symbolicated ? (lang === 'zh' ? '已自动符号化' : 'Auto-Symbolicated') : 'Raw'}
               </span>
-              <span className="mono">
-                scene={flamegraph.scene} · thread={flamegraph.thread_name || 'main'} · {flamegraph.sample_interval_ms}ms interval · {flamegraph.total_samples} samples
+              <span className="mono kpi-meta">
+                scene={flamegraph.scene} · thread={flamegraph.thread_name || 'main'} · {flamegraph.sample_interval_ms}ms · {flamegraph.total_samples} samples
               </span>
             </div>
 
-            <div style={{ marginBottom: 10, padding: '8px 10px', borderRadius: 6, background: '#0b1020', border: '1px solid var(--border)', fontSize: 12 }}>
+            <div style={{ marginBottom: 10, padding: '8px 12px', borderRadius: 6, background: '#141923', color: '#e5e7eb', fontSize: 12 }}>
               {hoveredNode ? (
                 <span className="mono">
-                  <strong>{hoveredNode.name}</strong> — Total: {hoveredNode.total_pct.toFixed(1)}% ({hoveredNode.total_samples}) · Self: {hoveredNode.self_pct.toFixed(1)}% ({hoveredNode.self_samples})
+                  <strong style={{ color: '#6aa1ff' }}>{hoveredNode.name}</strong> — Total: <strong>{hoveredNode.total_pct.toFixed(1)}%</strong> ({hoveredNode.total_samples}) · Self: <strong style={{ color: '#ff9a2e' }}>{hoveredNode.self_pct.toFixed(1)}%</strong> ({hoveredNode.self_samples})
                 </span>
               ) : (
-                <span style={{ color: 'var(--muted)' }}>Hover a frame for exact self/total CPU share; click any frame to zoom subtree.</span>
+                <span style={{ color: '#86909c' }}>
+                  {lang === 'zh' ? '悬停帧块查看精确 Self / Total CPU 占比；点击帧块钻取子树。' : 'Hover a frame for self/total CPU share; click to zoom subtree.'}
+                </span>
               )}
             </div>
 
-            <div style={{ position: 'relative', height: (flameLayout.maxDepth + 1) * 28 + 8, background: '#0b1020', borderRadius: 6, border: '1px solid var(--border)', overflow: 'hidden' }}>
+            <div style={{ position: 'relative', height: (flameLayout.maxDepth + 1) * 30 + 10, background: '#141923', borderRadius: 6, overflow: 'hidden' }}>
               {flameLayout.bars.map((bar, idx) => (
                 <button
                   key={`${bar.row}-${bar.xPct}-${idx}`}
@@ -231,13 +268,13 @@ export function DiagnosticsPage({ platform, appVersion, releases, refreshTick, o
                     position: 'absolute',
                     left: `${bar.xPct}%`,
                     width: `calc(${Math.max(bar.widthPct, 0.8)}% - 2px)`,
-                    top: bar.row * 28 + 4,
-                    height: 24,
+                    top: bar.row * 30 + 5,
+                    height: 25,
                     background: barColor(flamegraph.runtime, bar.node.self_pct, bar.row),
                     color: '#fff',
                     border: 'none',
                     borderRadius: 3,
-                    padding: '0 6px',
+                    padding: '0 7px',
                     fontSize: 11,
                     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
                     textAlign: 'left',
@@ -253,151 +290,150 @@ export function DiagnosticsPage({ platform, appVersion, releases, refreshTick, o
             </div>
           </>
         ) : (
-          <div className="empty">No CPU profiles ingested for this platform/version yet.</div>
+          <div className="empty">{lang === 'zh' ? '当前筛选条件下暂无 CPU 火焰图样本。' : 'No CPU profiles in current scope.'}</div>
         )}
       </div>
 
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <h2 className="card-title">Trimmed Heap / OOM Dominator Diagnostics</h2>
-            <p className="card-sub">
-              Zero-PII class-level retention summary (never raw object strings) · cross-version leak suspect detection
-            </p>
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{t(lang, 'heapTitle')}</h2>
+              <p className="card-sub">{lang === 'zh' ? '零 PII 类级别 Dominator 对比（绝不上传原始字符串/业务数据）' : 'Zero-PII class-level retention comparison'}</p>
+            </div>
+            {heapDiff && (
+              <span className={`badge ${heapDiff.delta_retained_mib >= 32 ? 'red' : 'green'}`}>
+                v{heapDiff.baseline_version} → v{heapDiff.candidate_version}: {heapDiff.delta_retained_mib >= 0 ? '+' : ''}{heapDiff.delta_retained_mib} MiB
+              </span>
+            )}
           </div>
-          {heapDiff && (
-            <span className={`badge ${heapDiff.delta_retained_mib >= 32 ? 'red' : 'green'}`}>
-              v{heapDiff.baseline_version} → v{heapDiff.candidate_version}: {heapDiff.delta_retained_mib >= 0 ? '+' : ''}{heapDiff.delta_retained_mib} MiB
-            </span>
+          {heapDiff && heapDiff.dominator_diffs.length > 0 ? <EChart option={heapChartOption} height={225} /> : <div className="empty">—</div>}
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{lang === 'zh' ? 'Dominator 泄漏嫌疑明细' : 'Leak Suspect Breakdown'}</h2>
+              <p className="card-sub">{lang === 'zh' ? '单类内存净增 ≥ +16 MiB 自动标记 LEAK SUSPECT' : 'Classes growing ≥ +16 MiB flagged as LEAK SUSPECT'}</p>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Class</th><th>Baseline</th><th>Candidate</th><th>Delta</th><th>Status</th></tr></thead>
+              <tbody>
+                {(heapDiff?.dominator_diffs ?? []).map(d => (
+                  <tr key={d.class_name}>
+                    <td className="mono"><strong>{d.class_name}</strong></td>
+                    <td className="mono">{d.baseline_mib.toFixed(1)} MiB</td>
+                    <td className="mono">{d.candidate_mib.toFixed(1)} MiB</td>
+                    <td className="mono"><strong>{d.delta_mib >= 0 ? '+' : ''}{d.delta_mib.toFixed(1)} MiB</strong></td>
+                    <td><span className={`badge ${d.suspect ? 'red' : 'slate'}`}>{d.suspect ? 'LEAK SUSPECT' : 'normal'}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid-2">
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{t(lang, 'uidTitle')}</h2>
+              <p className="card-sub">{lang === 'zh' ? '仅接受非 PII 哈希 · 强制工单原因 · Fail-Closed 写入安全审计日志' : 'Hex hash only · mandatory ticket reason · fail-closed audit log'}</p>
+            </div>
+            <span className="badge amber">RBAC + Audit</span>
+          </div>
+          <form onSubmit={runSessionLookup} style={{ marginBottom: 12 }}>
+            <div className="form-grid">
+              <label className="field">{lang === 'zh' ? '标识类型' : 'Target Type'}
+                <select value={lookupType} onChange={e => setLookupType(e.target.value as 'user_hash' | 'install_hash')}>
+                  <option value="user_hash">user_hash</option>
+                  <option value="install_hash">install_hash</option>
+                </select>
+              </label>
+              <label className="field">{lang === 'zh' ? '十六进制哈希' : 'Hex Hash'}
+                <input value={lookupHash} onChange={e => setLookupHash(e.target.value)} required />
+              </label>
+              <label className="field">{lang === 'zh' ? '审计原因 / 工单号 (必填)' : 'Audit Reason / Ticket'}
+                <input value={lookupReason} onChange={e => setLookupReason(e.target.value)} placeholder="INC-1042 VIP 卡顿排查" required />
+              </label>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <button className="btn primary" type="submit">{lang === 'zh' ? '执行强审计单点追查' : 'Run Audited Lookup'}</button>
+            </div>
+          </form>
+          {lookupResult && (
+            <div className="table-wrap" style={{ maxHeight: 240, overflowY: 'auto' }}>
+              <table>
+                <thead><tr><th>{lang === 'zh' ? '时间' : 'Time'}</th><th>{lang === 'zh' ? '类型' : 'Kind'}</th><th>{lang === 'zh' ? '场景' : 'Scene'}</th><th>{lang === 'zh' ? '摘要' : 'Summary'}</th></tr></thead>
+                <tbody>
+                  {lookupResult.events.slice(0, 30).map(ev => (
+                    <tr key={ev.event_id}>
+                      <td className="mono">{formatTime(ev.occurred_at_ms).slice(5, 19)}</td>
+                      <td><span className="badge blue">{ev.kind}</span></td>
+                      <td className="mono">{ev.scene || '—'}</td>
+                      <td className="mono">{ev.summary}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
 
-        {heapDiff && heapDiff.dominator_diffs.length > 0 ? (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{t(lang, 'rlogTitle')}</h2>
+              <p className="card-sub">{lang === 'zh' ? '按需向目标设备下发有界环形日志拉取指令（TTL + 字节上限保护）' : 'Bounded on-demand diagnostic ring-buffer retrieval'}</p>
+            </div>
+            <span className="badge blue">{tasks.length} {lang === 'zh' ? '个任务' : 'tasks'}</span>
+          </div>
+          <form onSubmit={createTask} style={{ marginBottom: 12 }}>
+            <div className="form-grid">
+              <label className="field">{lang === 'zh' ? '目标哈希' : 'Target Hash'}
+                <input value={lookupHash} onChange={e => setLookupHash(e.target.value)} required />
+              </label>
+              <label className="field">{lang === 'zh' ? '拉取原因 / 工单号' : 'Audit Reason'}
+                <input value={taskReason} onChange={e => setTaskReason(e.target.value)} placeholder="INC-2048 捞取卡顿现场日志" required />
+              </label>
+            </div>
+            <div style={{ marginTop: 10 }}>
+              <button className="btn primary" type="submit">{lang === 'zh' ? '下发远程日志拉取任务' : 'Create Pull Task'}</button>
+            </div>
+          </form>
           <div className="table-wrap">
             <table>
-              <thead>
-                <tr>
-                  <th>Dominator Class</th>
-                  <th>Baseline (v{heapDiff.baseline_version})</th>
-                  <th>Candidate (v{heapDiff.candidate_version})</th>
-                  <th>Retained Delta</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
+              <thead><tr><th>Task ID</th><th>{lang === 'zh' ? '状态' : 'Status'}</th><th>{lang === 'zh' ? '原因' : 'Reason'}</th><th>{lang === 'zh' ? '操作' : 'Action'}</th></tr></thead>
               <tbody>
-                {heapDiff.dominator_diffs.map(d => (
-                  <tr key={d.class_name}>
-                    <td className="mono"><strong>{d.class_name}</strong></td>
-                    <td className="mono">{d.baseline_mib.toFixed(1)} MiB ({d.baseline_instances} inst)</td>
-                    <td className="mono">{d.candidate_mib.toFixed(1)} MiB ({d.candidate_instances} inst)</td>
-                    <td className="mono">{d.delta_mib >= 0 ? '+' : ''}{d.delta_mib.toFixed(1)} MiB</td>
+                {tasks.map(tk => (
+                  <tr key={tk.task_id}>
+                    <td className="mono">{tk.task_id}</td>
+                    <td><span className={`badge ${tk.status === 'completed' ? 'green' : tk.status === 'pending' ? 'amber' : 'slate'}`}>{tk.status}</span></td>
+                    <td>{tk.reason}</td>
                     <td>
-                      <span className={`badge ${d.suspect ? 'red' : 'slate'}`}>
-                        {d.suspect ? 'LEAK SUSPECT' : 'normal'}
-                      </span>
+                      {tk.status === 'completed'
+                        ? <button className="btn" onClick={() => inspectTaskLog(tk)}>{lang === 'zh' ? '查看日志' : 'View'}</button>
+                        : <span className="kpi-meta">{lang === 'zh' ? '等待 SDK 轮询' : 'Pending poll'}</span>}
                     </td>
                   </tr>
                 ))}
+                {tasks.length === 0 && <tr><td colSpan={4} className="empty">{lang === 'zh' ? '暂无远程日志任务。' : 'No remote log tasks.'}</td></tr>}
               </tbody>
             </table>
           </div>
-        ) : snapshots.length > 0 ? (
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Snapshot</th><th>Trigger</th><th>Retained</th><th>Top Dominator</th></tr></thead>
-              <tbody>
-                {snapshots.map(s => (
-                  <tr key={s.snapshot_id}>
-                    <td className="mono">v{s.app_version} · {s.scene}</td>
-                    <td><span className={`badge ${s.trigger_reason === 'oom_warning' ? 'red' : 'amber'}`}>{s.trigger_reason}</span></td>
-                    <td className="mono">{(s.total_retained_kib / 1024).toFixed(1)} MiB</td>
-                    <td className="mono">{s.dominators[0]?.class_name ?? '—'} ({((s.dominators[0]?.retained_kib ?? 0) / 1024).toFixed(1)} MiB)</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="empty">No trimmed heap snapshots ingested yet.</div>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <h2 className="card-title">Audited Remote Log Retrieval Tasks</h2>
-            <p className="card-sub">
-              Pull bounded, PII-scrubbed diagnostic ring buffers on demand · TTL-capped · fail-closed audit log
-            </p>
-          </div>
-          <span className="badge amber">{tasks.length} tasks</span>
-        </div>
-
-        <form onSubmit={createTask} style={{ marginBottom: 14 }}>
-          <div className="form-grid">
-            <label className="field">Target Type
-              <select value={targetType} onChange={e => setTargetType(e.target.value as 'user_hash' | 'install_hash')}>
-                <option value="user_hash">user_hash</option>
-                <option value="install_hash">install_hash</option>
-              </select>
-            </label>
-            <label className="field">Target Hex Hash
-              <input value={targetHash} onChange={e => setTargetHash(e.target.value)} required />
-            </label>
-            <label className="field">Audit Reason / Ticket ID (required)
-              <input value={reason} onChange={e => setReason(e.target.value)} placeholder="INC-2048 collect ring log" required />
-            </label>
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <button className="btn primary" type="submit">Create Remote Log Pull Task</button>
-          </div>
-        </form>
-
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>Task ID</th><th>Target</th><th>Reason</th><th>Status</th><th>Uploaded</th><th>Action</th></tr></thead>
-            <tbody>
-              {tasks.map(t => (
-                <tr key={t.task_id}>
-                  <td className="mono">{t.task_id}</td>
-                  <td className="mono">{t.target_type}:{t.target_hash}</td>
-                  <td>{t.reason}<div className="kpi-meta">by {t.requested_by} · {formatTime(t.created_at_ms)}</div></td>
-                  <td><span className={`badge ${t.status === 'completed' ? 'green' : t.status === 'pending' ? 'amber' : 'slate'}`}>{t.status}</span></td>
-                  <td className="mono">{t.uploaded_bytes ? `${t.uploaded_bytes.toLocaleString('en-US')} B` : '—'}</td>
-                  <td>
-                    {t.status === 'completed' ? (
-                      <button className="btn" onClick={() => inspectTaskLog(t)}>View Log</button>
-                    ) : <span className="kpi-meta">Awaiting SDK poll</span>}
-                  </td>
-                </tr>
-              ))}
-              {tasks.length === 0 && <tr><td colSpan={6} className="empty">No remote log retrieval tasks created yet.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-
-        {viewedLog && (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-              <strong className="mono">Remote Log: {viewedLog.task.task_id} (SHA-256: {viewedLog.task.sha256?.slice(0, 16)}…)</strong>
-              <button className="btn" onClick={() => setViewedLog(null)}>Close</button>
+          {viewedLog && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <strong className="mono">{viewedLog.task.task_id}</strong>
+                <button className="btn" onClick={() => setViewedLog(null)}>{lang === 'zh' ? '关闭' : 'Close'}</button>
+              </div>
+              <pre className="stack-box">{viewedLog.content || '(empty)'}</pre>
             </div>
-            <pre className="stack-box">{viewedLog.content || '(empty log)'}</pre>
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="card-header">
-          <div>
-            <h2 className="card-title">OpenTelemetry (OTLP) Interoperability</h2>
-            <p className="card-sub">
-              Ingest standard OTLP/HTTP JSON at <span className="mono">POST /v1/otlp/v1/traces</span> &amp; <span className="mono">/v1/otlp/v1/logs</span> · export aggregated <span className="mono">resourceMetrics</span>
-            </p>
-          </div>
-          <button className="btn" onClick={loadOtlpExport}>Preview Live OTLP Export</button>
+          )}
         </div>
-        {otlpPreview && <pre className="stack-box" style={{ maxHeight: 260, overflow: 'auto' }}>{otlpPreview}</pre>}
       </div>
     </>
   );

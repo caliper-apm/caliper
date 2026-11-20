@@ -57,15 +57,27 @@ func main() {
 		perGroup = 100
 	}
 
+	type dayWindow struct {
+		startDay int // offset from 2026-11-05
+		numDays  int
+	}
+	releaseDays := map[string]dayWindow{
+		"1.0.0": {startDay: 0, numDays: 5},  // Nov 05 - Nov 09: Healthy Baseline
+		"1.1.0": {startDay: 5, numDays: 5},  // Nov 10 - Nov 14: Regressed Release
+		"1.2.0": {startDay: 10, numDays: 4}, // Nov 15 - Nov 18: Hotfix Recovery
+	}
+	epochStart := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+
 	for _, platform := range []string{"android", "ios"} {
 		for _, prof := range profiles {
+			dw := releaseDays[prof.version]
 			var batchEvents []protocol.Event
 			flush := func() {
 				if len(batchEvents) == 0 {
 					return
 				}
 				adapter := "native"
-				if seq%3 == 0 {
+				if batchesSent%3 == 0 {
 					adapter = "react-native"
 				}
 				installHash := fmt.Sprintf("%016x", rng.Uint64())
@@ -87,7 +99,7 @@ func main() {
 						SymbolID:    fmt.Sprintf("sym-%s-%s-%s", platform, prof.version, prof.build),
 						Adapter:     adapter,
 						SDKName:     "caliper-" + platform,
-						SDKVersion:  "0.1.0",
+						SDKVersion:  "1.0.0",
 						InstallHash: installHash,
 						UserHash:    userHash,
 					},
@@ -103,7 +115,8 @@ func main() {
 
 			for i := 0; i < perGroup; i++ {
 				seq++
-				ts := baseTime.Add(-time.Duration(rng.Intn(7*24)) * time.Hour).UnixMilli()
+				dayOffset := dw.startDay + ((i / 6) % dw.numDays)
+				ts := epochStart.AddDate(0, 0, dayOffset).Add(time.Duration(rng.Intn(24*60)) * time.Minute).UnixMilli()
 				ev := buildSyntheticEvent(rng, seq, platform, prof, ts)
 				batchEvents = append(batchEvents, ev)
 				if len(batchEvents) >= protocol.MaxBatchEvents {
@@ -112,7 +125,8 @@ func main() {
 			}
 			flush()
 			// Also emit real Native/Hermes CPU profiles and trimmed Heap snapshots for Deep Diagnostics.
-			batchEvents = append(batchEvents, buildDiagnosticEvents(platform, prof, baseTime.UnixMilli())...)
+			diagTS := epochStart.AddDate(0, 0, dw.startDay+dw.numDays-1).Add(12 * time.Hour).UnixMilli()
+			batchEvents = append(batchEvents, buildDiagnosticEvents(platform, prof, diagTS)...)
 			flush()
 		}
 	}
@@ -243,24 +257,51 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 			buckets[contract.DurationBucketIndex(d)]++
 			sumMS += d
 		}
+		var fc protocol.NetworkFailureCounts
+		for fIdx := int64(0); fIdx < fails; fIdx++ {
+			r := rng.Float64()
+			switch {
+			case r < 0.42:
+				fc.HTTP++
+			case r < 0.66:
+				fc.Timeout++
+			case r < 0.82:
+				fc.Network++
+			case r < 0.92:
+				fc.Business++
+			default:
+				fc.Parse++
+			}
+		}
 		payload, _ := json.Marshal(protocol.NetworkSummaryPayload{
 			WindowDurationMS: 30000,
 			CallCount:        calls,
-			FailureCounts:    protocol.NetworkFailureCounts{HTTP: fails},
+			FailureCounts:    fc,
 			DurationBuckets:  buckets[:],
 			DurationSumMS:    sumMS,
 		})
 		return protocol.Event{EventID: id, Kind: protocol.KindNetworkSummary, OccurredAtMS: ts, ContractVersion: 1, Scene: scene, PolicyID: "default_v1", Payload: payload}
 
 	case 4: // network_transport
-		dns := 18.0 + rng.Float64()*15.0
-		tcp := 25.0 + rng.Float64()*20.0
-		tls := 45.0 + rng.Float64()*30.0
-		if p.apiBaseMS > 500 {
-			tls += 240.0
+		ops := []struct {
+			op     string
+			method string
+			scale  float64
+		}{
+			{"/api/v1/feed", "GET", 1.0},
+			{"/api/v1/gallery", "GET", 1.35},
+			{"/api/v1/stream/article", "POST", 1.65},
+			{"/api/v1/user/profile", "GET", 0.55},
 		}
-		ttfb := p.apiBaseMS * 0.55
-		body := p.apiBaseMS * 0.25
+		chosen := ops[(seq/6)%len(ops)]
+		dns := 16.0 + rng.Float64()*14.0
+		tcp := 22.0 + rng.Float64()*18.0
+		tls := 40.0 + rng.Float64()*28.0
+		if p.apiBaseMS > 500 {
+			tls += 210.0 * chosen.scale
+		}
+		ttfb := p.apiBaseMS * 0.55 * chosen.scale
+		body := p.apiBaseMS * 0.25 * chosen.scale
 		total := dns + tcp + tls + ttfb + body
 		res := "success"
 		status := 200
@@ -269,8 +310,8 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 			status = 502
 		}
 		payload, _ := json.Marshal(protocol.NetworkTransportPayload{
-			Operation:        "GET:/api/v1/feed",
-			Method:           "GET",
+			Operation:        chosen.op,
+			Method:           chosen.method,
 			StatusCode:       status,
 			Result:           res,
 			DNSMS:            &dns,
@@ -285,23 +326,66 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 		})
 		return protocol.Event{EventID: id, Kind: protocol.KindNetworkStage, OccurredAtMS: ts, ContractVersion: 1, Scene: scene, PolicyID: "default_v1", Payload: payload}
 
-	default: // js_longtask or crash
-		if rng.Float64() < p.crashRate {
-			payload, _ := json.Marshal(protocol.StabilityPayload{
-				Fingerprint:   "fp-feed-bitmap-oom",
-				Title:         "OutOfMemoryError in FeedBitmapCache.allocate",
-				Fatal:         true,
-				ExceptionType: "OutOfMemoryError",
-				ThreadName:    "main",
-				Frames: []protocol.StackFrame{
-					{Module: "DemoApp", Symbol: "FeedBitmapCache.allocate", File: "FeedBitmapCache.kt", Line: 61, InApp: true},
-				},
-				Breadcrumbs: []protocol.Breadcrumb{
-					{TimestampMS: ts - 2000, Category: "navigation", Message: "enter home_feed"},
-					{TimestampMS: ts - 300, Category: "memory", Message: "cache pressure warning"},
-				},
-			})
-			return protocol.Event{EventID: id, Kind: protocol.KindCrash, OccurredAtMS: ts, ContractVersion: 1, Scene: scene, PolicyID: "default_v1", Payload: payload}
+	default: // js_longtask or crash/ANR/abnormal_exit
+		if rng.Float64() < p.crashRate*3.0 {
+			switch (seq / 6) % 3 {
+			case 0: // Crash with build-bound obfuscated frames on 1.1.0 for live symbolication!
+				frames := []protocol.StackFrame{
+					{Module: "AtlasDemo", Symbol: "a.b.c.a", File: "SourceFile", Line: 92, InApp: true},
+					{Module: "AtlasDemo", Symbol: "com.caliper.demo.feed.FeedAdapter.onBindViewHolder", File: "FeedAdapter.kt", Line: 148, InApp: true},
+				}
+				title := "OutOfMemoryError in FeedImageDecoder.decodeSync"
+				if platform == "ios" {
+					frames = []protocol.StackFrame{
+						{Module: "AtlasDemo", Symbol: "0x10004220", Address: "0x10004220", InApp: true},
+						{Module: "AtlasDemo", Symbol: "0x10008010", Address: "0x10008010", InApp: true},
+					}
+					title = "EXC_BAD_ACCESS in ImageDecoder.decodeFrame"
+				}
+				payload, _ := json.Marshal(protocol.StabilityPayload{
+					Fingerprint:   "fp-decoder-crash-" + platform,
+					Title:         title,
+					Fatal:         true,
+					ExceptionType: "OutOfMemoryError",
+					ThreadName:    "main",
+					Frames:        frames,
+					Breadcrumbs: []protocol.Breadcrumb{
+						{TimestampMS: ts - 3500, Category: "navigation", Message: "enter home_feed"},
+						{TimestampMS: ts - 1200, Category: "network", Message: "GET /api/v1/gallery 200 (1840ms)"},
+						{TimestampMS: ts - 250, Category: "memory", Message: "low memory trim level=RUNNING_CRITICAL"},
+					},
+				})
+				return protocol.Event{EventID: id, Kind: protocol.KindCrash, OccurredAtMS: ts, ContractVersion: 1, Scene: scene, PolicyID: "default_v1", Payload: payload}
+			case 1: // ANR / Watchdog
+				payload, _ := json.Marshal(protocol.StabilityPayload{
+					Fingerprint:   "fp-main-thread-anr-" + platform,
+					Title:         "Main Thread Blocked > 5000ms (StreamingReader JSON parse)",
+					Fatal:         false,
+					ExceptionType: "ANR",
+					ThreadName:    "main",
+					Frames: []protocol.StackFrame{
+						{Module: "HermesBundle", Symbol: "index.bundle:1:12", InApp: true},
+						{Module: "ReactNative", Symbol: "JSIExecutor.callFunctionReturnFlushedQueue", File: "JSIExecutor.cpp", Line: 214, InApp: false},
+					},
+					Breadcrumbs: []protocol.Breadcrumb{
+						{TimestampMS: ts - 6000, Category: "navigation", Message: "open streaming_reader"},
+						{TimestampMS: ts - 5100, Category: "js_longtask", Message: "renderTokenChunk blocked 1480ms"},
+					},
+				})
+				return protocol.Event{EventID: id, Kind: protocol.KindANR, OccurredAtMS: ts, ContractVersion: 1, Scene: "streaming_reader", PolicyID: "default_v1", Payload: payload}
+			default: // Abnormal Exit (OOM / LMK)
+				payload, _ := json.Marshal(protocol.StabilityPayload{
+					Fingerprint:       "fp-abnormal-lmk-" + platform,
+					Title:             "Abnormal Background/Foreground OOM Termination (LMK)",
+					Fatal:             true,
+					ExitReason:        "REASON_LOW_MEMORY",
+					ProcessImportance: "IMPORTANCE_FOREGROUND",
+					Breadcrumbs: []protocol.Breadcrumb{
+						{TimestampMS: ts - 15000, Category: "resource", Message: "memory peak crossed 384 MiB"},
+					},
+				})
+				return protocol.Event{EventID: id, Kind: protocol.KindAbnormalExit, OccurredAtMS: ts, ContractVersion: 1, Scene: "media_gallery", PolicyID: "default_v1", Payload: payload}
+			}
 		}
 		cnt := int64(1 + rng.Intn(4))
 		blk := float64(cnt) * (65.0 + p.jankRate*900.0)

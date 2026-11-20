@@ -4,8 +4,11 @@ import type {
   AuditLogEntry,
   CompareReport,
   CPUProfileRecord,
+  DailyTrendPoint,
+  DimensionSlice,
   FlamegraphReport,
   FluencySceneReport,
+  GlobalFilters,
   HealthResponse,
   HeapCompareReport,
   HeapSnapshotRecord,
@@ -40,41 +43,93 @@ function query(params: Record<string, string | undefined>): string {
   return s ? `?${s}` : '';
 }
 
+function filterQuery(f: GlobalFilters, extra?: Record<string, string | undefined>): string {
+  return query({
+    platform: f.platform,
+    env: f.env,
+    app_version: f.appVersion || undefined,
+    adapter: f.adapter || undefined,
+    scene: f.scene || undefined,
+    start_day_utc: f.startDayUtc,
+    end_day_utc: f.endDayUtc,
+    ...extra,
+  });
+}
+
 export const api = {
   health: () => requestJson<HealthResponse>('/healthz'),
 
-  releases: (platform: Platform) =>
-    requestJson<{ releases: ReleaseRecord[] }>(`/v1/releases${query({ platform, env: 'prod' })}`),
+  releases: (platform: Platform, env = 'prod') =>
+    requestJson<{ releases: ReleaseRecord[] }>(`/v1/releases${query({ platform, env })}`),
 
   symbols: (platform: Platform) =>
     requestJson<{ symbols: SymbolRecord[] }>(`/v1/symbols${query({ platform })}`),
 
-  overview: (platform: Platform, appVersion?: string) =>
-    requestJson<OverviewReport>(`/v1/analytics/overview${query({ platform, env: 'prod', app_version: appVersion })}`),
+  overview: (f: GlobalFilters) =>
+    requestJson<OverviewReport>(`/v1/analytics/overview${filterQuery(f)}`),
 
-  compare: (platform: Platform, baseline: string, candidate: string) =>
+  timeseries: (f: GlobalFilters) =>
+    requestJson<{ points: DailyTrendPoint[] }>(`/v1/analytics/timeseries${filterQuery(f)}`),
+
+  breakdown: (f: GlobalFilters, dimension: 'version' | 'adapter' | 'scene') =>
+    requestJson<{ dimension: string; slices: DimensionSlice[] }>(
+      `/v1/analytics/breakdown${filterQuery(
+        {
+          ...f,
+          appVersion: dimension === 'version' ? '' : f.appVersion,
+          adapter: dimension === 'adapter' ? '' : f.adapter,
+          scene: dimension === 'scene' ? '' : f.scene,
+        },
+        { dimension },
+      )}`,
+    ),
+
+  compare: (f: GlobalFilters, baseline: string, candidate: string) =>
     requestJson<CompareReport>('/v1/analytics/compare', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        platform,
-        env: 'prod',
+        platform: f.platform,
+        env: f.env,
         baseline_version: baseline,
         candidate_version: candidate,
+        scene: f.scene || undefined,
+        start_day_utc: f.startDayUtc,
+        end_day_utc: f.endDayUtc,
       }),
     }),
 
-  scanRegressions: (platform: Platform, baseline: string, candidate: string) =>
+  scanRegressions: (f: GlobalFilters, baseline: string, candidate: string) =>
     requestJson<RegressionScanReport>('/v1/analytics/regressions/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        platform,
-        env: 'prod',
+        platform: f.platform,
+        env: f.env,
         baseline_version: baseline,
         candidate_version: candidate,
+        start_day_utc: f.startDayUtc,
+        end_day_utc: f.endDayUtc,
       }),
     }),
+
+  startup: (f: GlobalFilters) =>
+    requestJson<StartupReport>(`/v1/analytics/startup${filterQuery(f)}`),
+
+  fluency: (f: GlobalFilters) =>
+    requestJson<{ scenes: FluencySceneReport[] }>(`/v1/analytics/fluency${filterQuery(f)}`),
+
+  resources: (f: GlobalFilters) =>
+    requestJson<{ scenes: ResourceSceneReport[] }>(`/v1/analytics/resources${filterQuery(f)}`),
+
+  network: (f: GlobalFilters) =>
+    requestJson<NetworkReport>(`/v1/analytics/network${filterQuery(f)}`),
+
+  issues: (f: GlobalFilters) =>
+    requestJson<{ issues: IssueSummary[] }>(`/v1/stability/issues${filterQuery(f)}`),
+
+  issueDetail: (fingerprint: string, f: GlobalFilters) =>
+    requestJson<IssueSummary>(`/v1/stability/issues/${encodeURIComponent(fingerprint)}${filterQuery(f)}`),
 
   lookupSession: (params: { installHash?: string; userHash?: string; reason: string; platform?: Platform }, apiKey?: string) =>
     requestJson<SessionLookupResponse>(
@@ -92,28 +147,29 @@ export const api = {
       headers: apiKey ? { 'X-Caliper-Key': apiKey } : undefined,
     }),
 
-  cpuProfiles: (platform: Platform, appVersion?: string, runtime?: string) =>
+  cpuProfiles: (f: GlobalFilters, runtime?: string) =>
     requestJson<{ profiles: CPUProfileRecord[] }>(
-      `/v1/diagnostics/profiles${query({ platform, env: 'prod', app_version: appVersion, runtime })}`,
+      `/v1/diagnostics/profiles${filterQuery(f, { runtime })}`,
     ),
 
   flamegraph: (profileId: string) =>
     requestJson<FlamegraphReport>(`/v1/diagnostics/profiles/${encodeURIComponent(profileId)}/flamegraph`),
 
-  heapSnapshots: (platform: Platform, appVersion?: string) =>
+  heapSnapshots: (f: GlobalFilters) =>
     requestJson<{ snapshots: HeapSnapshotRecord[] }>(
-      `/v1/diagnostics/heap${query({ platform, env: 'prod', app_version: appVersion })}`,
+      `/v1/diagnostics/heap${filterQuery(f)}`,
     ),
 
-  compareHeap: (platform: Platform, baseline: string, candidate: string) =>
+  compareHeap: (f: GlobalFilters, baseline: string, candidate: string) =>
     requestJson<HeapCompareReport>('/v1/diagnostics/heap/compare', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        platform,
-        env: 'prod',
+        platform: f.platform,
+        env: f.env,
         baseline_version: baseline,
         candidate_version: candidate,
+        scene: f.scene || undefined,
       }),
     }),
 
@@ -139,28 +195,8 @@ export const api = {
       { headers: apiKey ? { 'X-Caliper-Key': apiKey } : undefined },
     ),
 
-  otlpExport: (platform: Platform, appVersion?: string) =>
-    requestJson<Record<string, unknown>>(
-      `/v1/otlp/export${query({ platform, env: 'prod', app_version: appVersion })}`,
-    ),
-
-  startup: (platform: Platform, appVersion?: string) =>
-    requestJson<StartupReport>(`/v1/analytics/startup${query({ platform, env: 'prod', app_version: appVersion })}`),
-
-  fluency: (platform: Platform, appVersion?: string) =>
-    requestJson<{ scenes: FluencySceneReport[] }>(`/v1/analytics/fluency${query({ platform, env: 'prod', app_version: appVersion })}`),
-
-  resources: (platform: Platform, appVersion?: string) =>
-    requestJson<{ scenes: ResourceSceneReport[] }>(`/v1/analytics/resources${query({ platform, env: 'prod', app_version: appVersion })}`),
-
-  network: (platform: Platform, appVersion?: string) =>
-    requestJson<NetworkReport>(`/v1/analytics/network${query({ platform, env: 'prod', app_version: appVersion })}`),
-
-  issues: (platform: Platform, appVersion?: string) =>
-    requestJson<{ issues: IssueSummary[] }>(`/v1/stability/issues${query({ platform, env: 'prod', app_version: appVersion })}`),
-
-  issueDetail: (fingerprint: string, platform: Platform) =>
-    requestJson<IssueSummary>(`/v1/stability/issues/${encodeURIComponent(fingerprint)}${query({ platform })}`),
+  otlpExport: (f: GlobalFilters) =>
+    requestJson<Record<string, unknown>>(`/v1/otlp/export${filterQuery(f)}`),
 
   alertRules: (platform: Platform) =>
     requestJson<{ rules: AlertRule[] }>(`/v1/alerts/rules${query({ platform })}`),

@@ -52,3 +52,19 @@ Distinguish states honestly—one never substitutes for another:
 - **Benchmark-Verified**: Measured on physical Release builds (SDK OFF vs ON) under reproducible scripts in `benchmarks/`.
 
 Never claim a milestone is complete based on unit tests alone when E2E or benchmark gates are required.
+
+---
+
+## 5. Console Visual & Interactive Quality Gate (Postmortem Rule)
+
+> Lesson learned from v0.1–v1.0 initial Console review: shipping a bare HTML table shell with 143 lines of basic CSS fails industry APM standards (e.g., Volcano Engine APM Plus / Datadog / Sentry) even when backend APIs are complete. Never repeat this shortcut.
+
+Every Console release or page addition MUST satisfy ALL 5 UI gates:
+1. **Chart-First, Table-Drilldown**: Every core observability domain (Overview, Stability, Startup & Fluency, Network & Resources, Diagnostics) MUST ship real interactive visualizations (time-series trend charts with hover crosshairs, KPI sparklines, 19-bucket distribution histograms, stage waterfalls, error-domain breakdown charts, zoomable flamegraphs) powered strictly by live backend APIs—never plain table-only CRUD screens.
+2. **Backend Visualization Contract First**: Before building a Console view, verify the server exposes real daily time-series (`GET /v1/analytics/timeseries`), 19-bucket distribution arrays, and dimension breakdowns (`GET /v1/analytics/breakdown`). Missing days MUST remain `null` (rendered as explicit chart gaps, never zero-filled).
+3. **Enterprise Information Architecture**:
+   - Persistent top global brand bar (App, Platform, Env, Bilingual `中文`/`EN` switch, Live storage telemetry).
+   - Grouped left navigation sidebar organized by APM workflow domains.
+   - Sticky global multi-dimension filter bar (Time Window, Version, Tech Stack `All / Native / React Native`, Scene) driving every active view in sync.
+4. **High-Density APM Visual Polish**: Use crisp tabular numerals, structured visual hierarchy, color-coded severity semantics, and interactive detail drawers (multi-tab stack/breadcrumbs/release breakdown) without copying a single line of proprietary code or CSS.
+5. **Visual Acceptance Mandatory**: Never mark a Console milestone complete solely because `tsc --noEmit` and `vite build` pass—verify real rendered charts, filters, and drill-downs against live seeded multi-day data.

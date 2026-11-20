@@ -957,6 +957,48 @@ FORMAT JSON`, s.database, strings.Join(conds, " AND "), limit)
 	return out, nil
 }
 
+func (s *Store) QueryDailyTrends(ctx context.Context, f storage.QueryFilter) ([]storage.DailyTrendPoint, error) {
+	where := buildWhereClause(f, false, false)
+	q := fmt.Sprintf(`
+SELECT
+    toString(day_utc) AS day_utc,
+    topK(1)(app_version)[1] AS dominant_version,
+    countIf(result = 'success') AS startup_samples,
+    sumForEach(total_buckets) AS total_buckets
+FROM %s.caliper_startup_events FINAL
+WHERE %s
+GROUP BY day_utc
+ORDER BY day_utc ASC
+FORMAT JSON`, s.database, where)
+
+	var resp chJSONResp[struct {
+		DayUTC          string      `json:"day_utc"`
+		DominantVersion string      `json:"dominant_version"`
+		StartupSamples  flexInt64   `json:"startup_samples"`
+		TotalBuckets    []flexInt64 `json:"total_buckets"`
+	}]
+	if err := s.queryJSON(ctx, q, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]storage.DailyTrendPoint, 0, len(resp.Data))
+	for _, r := range resp.Data {
+		h := toHistogram(r.TotalBuckets)
+		pt := storage.DailyTrendPoint{
+			DayUTC:          r.DayUTC,
+			DominantVersion: r.DominantVersion,
+			StartupSamples:  int64(r.StartupSamples),
+		}
+		if q50 := contract.QuantileDuration(h, 0.50, contract.DefaultDisplayMinSamples); q50.Value != nil {
+			pt.StartupP50MS = q50.Value
+		}
+		if q90 := contract.QuantileDuration(h, 0.90, contract.DefaultDisplayMinSamples); q90.Value != nil {
+			pt.StartupP90MS = q90.Value
+		}
+		out = append(out, pt)
+	}
+	return out, nil
+}
+
 func (s *Store) QueryCPUProfiles(ctx context.Context, f storage.QueryFilter, runtime string, limit int) ([]storage.CPUProfileRecord, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 25
