@@ -1,0 +1,30 @@
+name: Docker & ClickHouse Cluster E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  docker-quickstart-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Boot single-node docker compose stack (< 60s target)
+        run: |
+          docker compose up -d --build caliper mock-api
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz; then break; fi
+            sleep 2
+          done
+          docker compose run --rm caliper-seed
+      - name: Verify Console 2.0 HTML, Timeseries, Breakdown, Source Health, and Prometheus /metrics
+        run: |
+          curl -fsS http://127.0.0.1:8080/ | grep -q "Caliper APM"
+          curl -fsS "http://127.0.0.1:8080/v1/analytics/timeseries?platform=android&env=prod" | grep -q "dominant_version"
+          curl -fsS "http://127.0.0.1:8080/v1/analytics/breakdown?platform=android&env=prod&dimension=device" | grep -q "Redmi Note 13"
+          curl -fsS "http://127.0.0.1:8080/v1/ops/source-health?platform=android&env=prod" | grep -q "symbol_coverage_pct"
+          curl -fsS "http://127.0.0.1:8080/metrics" | grep -q "caliper_ingest_events_accepted_total"
+      - name: Teardown
+        if: always()
+        run: docker compose down -v

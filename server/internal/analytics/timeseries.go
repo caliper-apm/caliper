@@ -125,8 +125,15 @@ func (e *Engine) Breakdown(ctx context.Context, meta storage.MetaStore, f storag
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+	case "device", "os":
+		type dimLister interface {
+			ListDimensionValues(ctx context.Context, f storage.QueryFilter, dimension string) []string
+		}
+		if lister, ok := e.store.(dimLister); ok {
+			keys = lister.ListDimensionValues(ctx, f, dimension)
+		}
 	default:
-		return nil, fmt.Errorf("unsupported breakdown dimension %q (expected version, adapter, or scene)", dimension)
+		return nil, fmt.Errorf("unsupported breakdown dimension %q (expected version, adapter, scene, device, or os)", dimension)
 	}
 
 	out := make([]DimensionSlice, 0, len(keys))
@@ -139,6 +146,10 @@ func (e *Engine) Breakdown(ctx context.Context, meta storage.MetaStore, f storag
 			sub.AppVersion = k
 		case "scene":
 			sub.Scene = k
+		case "device":
+			sub.DeviceModel = k
+		case "os":
+			sub.OSVersion = k
 		}
 		ov, err := e.Overview(ctx, sub)
 		if err != nil {

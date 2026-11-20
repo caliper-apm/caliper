@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { api } from '../api.ts';
 import { formatTime, formatValue } from '../format.ts';
 import { t, type Lang } from '../i18n.ts';
-import type { AlertIncident, AlertRule, AuditLogEntry, GlobalFilters, ReleaseRecord, SymbolRecord } from '../types.ts';
+import type { AlertIncident, AlertRule, AuditLogEntry, GlobalFilters, ReleaseRecord, SourceHealthReport, SymbolRecord } from '../types.ts';
 
 interface Props {
   filters: GlobalFilters;
@@ -13,6 +13,7 @@ interface Props {
 }
 
 export function OperationsPage({ filters, releases, refreshTick, lang, onMutated }: Props) {
+  const [sourceHealth, setSourceHealth] = useState<SourceHealthReport | null>(null);
   const [symbols, setSymbols] = useState<SymbolRecord[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [incidents, setIncidents] = useState<AlertIncident[]>([]);
@@ -34,13 +35,15 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
     let active = true;
     setError('');
     Promise.all([
+      api.sourceHealth(filters),
       api.symbols(filters.platform),
       api.alertRules(filters.platform),
       api.alertIncidents(),
       api.auditLogs(apiKey || undefined).catch(() => ({ audit_logs: [] as AuditLogEntry[] })),
     ])
-      .then(([symRes, ruleRes, incRes, auditRes]) => {
+      .then(([healthRes, symRes, ruleRes, incRes, auditRes]) => {
         if (!active) return;
+        setSourceHealth(healthRes);
         setSymbols(symRes.symbols ?? []);
         setRules(ruleRes.rules ?? []);
         setIncidents(incRes.incidents ?? []);
@@ -48,7 +51,7 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
       })
       .catch(err => { if (active) setError(String(err)); });
     return () => { active = false; };
-  }, [filters.platform, refreshTick]);
+  }, [filters.platform, filters.env, refreshTick]);
 
   async function saveRule(e: FormEvent) {
     e.preventDefault();
@@ -105,6 +108,49 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
     <>
       {error && <div className="banner red"><span>{error}</span></div>}
       {statusMsg && <div className="banner green"><span>{statusMsg}</span></div>}
+
+      {sourceHealth && (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{lang === 'zh' ? '数据源健康度与采集可信度自检 (Source Health)' : 'Data Source Health & Telemetry Integrity'}</h2>
+              <p className="card-sub">
+                {lang === 'zh'
+                  ? '实时评估采集契约通过率、符号表覆盖率、零帧窗口隔离率 · 配套 Prometheus 自监控 GET /metrics'
+                  : 'Live ingest contract acceptance, symbol coverage, zero-frame isolation · Prometheus GET /metrics'}
+              </p>
+            </div>
+            <div className="filter-group">
+              <span className={`badge ${sourceHealth.status === 'healthy' ? 'green' : sourceHealth.status === 'warning' ? 'amber' : 'red'}`}>
+                {sourceHealth.status.toUpperCase()}
+              </span>
+              <a className="btn" href="/metrics" target="_blank" rel="noreferrer">Prometheus /metrics</a>
+            </div>
+          </div>
+          <div className="kpi-grid-5">
+            <div className="kpi-card">
+              <div className="kpi-label">{lang === 'zh' ? '契约通过率' : 'Ingest Acceptance'}</div>
+              <div className="kpi-value">{sourceHealth.ingest_accept_pct.toFixed(2)}%</div>
+              <div className="kpi-meta">{sourceHealth.ingest_accepted.toLocaleString('en-US')} ok · {sourceHealth.ingest_rejected} rejected</div>
+            </div>
+            <div className="kpi-card">
+              <div className="kpi-label">{lang === 'zh' ? '符号覆盖率' : 'Symbol Coverage'}</div>
+              <div className="kpi-value">{formatValue(sourceHealth.symbol_coverage_pct, '%')}</div>
+              <div className="kpi-meta">{sourceHealth.symbol_mapped_releases}/{sourceHealth.total_releases} {lang === 'zh' ? '版本已绑定符号' : 'releases mapped'}</div>
+            </div>
+            <div className="kpi-card">
+              <div className="kpi-label">{lang === 'zh' ? '零帧窗口隔离占比' : 'Zero-Frame Ratio'}</div>
+              <div className="kpi-value">{formatValue(sourceHealth.zero_frame_ratio_pct, '%')}</div>
+              <div className="kpi-meta">{sourceHealth.fluency_zero_windows}/{sourceHealth.fluency_total_windows} windows</div>
+            </div>
+            <div className="kpi-card">
+              <div className="kpi-label">{lang === 'zh' ? '存储引擎' : 'Storage Engine'}</div>
+              <div className="mono" style={{ marginTop: 6, fontWeight: 700 }}>{sourceHealth.storage_engine}</div>
+              <div className="kpi-meta">{sourceHealth.total_stored_events.toLocaleString('en-US')} events · up {sourceHealth.uptime_seconds}s</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid-2">
         <div className="card">

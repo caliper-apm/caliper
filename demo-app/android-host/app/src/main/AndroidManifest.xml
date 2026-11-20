@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application
+        android:name="com.caliper.demo.AtlasApplication"
+        android:label="Atlas Reader (Caliper Demo)"
+        android:usesCleartextTraffic="true">
+    </application>
+</manifest>

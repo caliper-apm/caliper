@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/caliper-apm/caliper/server/internal/alerts"
@@ -38,9 +39,12 @@ type Handler struct {
 	symbolicator *symbolicator.Service
 	alerts       *alerts.Engine
 	authz        *auth.Authorizer
-	cfg          Config
-	startedAt    time.Time
-	mux          *http.ServeMux
+	cfg               Config
+	startedAt         time.Time
+	mux               *http.ServeMux
+	ingestedAccepted  atomic.Int64
+	ingestedDuplicate atomic.Int64
+	ingestedRejected  atomic.Int64
 }
 
 // NewHandler wires all v0.1 + v0.5 REST endpoints onto a clean stdlib ServeMux.
@@ -115,6 +119,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/sessions/lookup", h.handleSessionLookup)
 	h.mux.HandleFunc("GET /v1/audit/logs", h.withPerm(auth.PermReadAuditLogs, h.handleListAuditLogs))
 	h.registerV1DiagnosticsRoutes()
+	h.registerOpsRoutes()
 	if h.cfg.ConsoleDistDir != "" {
 		h.mux.HandleFunc("GET /", h.handleConsoleStatic)
 	}
@@ -218,6 +223,9 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := h.store.IngestBatch(r.Context(), &batch)
+	h.ingestedAccepted.Add(int64(res.Accepted))
+	h.ingestedDuplicate.Add(int64(res.Duplicates))
+	h.ingestedRejected.Add(int64(res.Rejected))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_batch", err.Error())
 		return
@@ -372,6 +380,8 @@ func parseFilter(r *http.Request) (storage.QueryFilter, error) {
 		BuildNumber: q.Get("build_number"),
 		Adapter:     q.Get("adapter"),
 		Scene:       q.Get("scene"),
+		DeviceModel: q.Get("device_model"),
+		OSVersion:   q.Get("os_version"),
 		PolicyID:    q.Get("policy_id"),
 		Algorithm:   q.Get("algorithm"),
 		StartDayUTC: q.Get("start_day_utc"),

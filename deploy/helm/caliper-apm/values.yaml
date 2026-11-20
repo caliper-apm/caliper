@@ -1,0 +1,24 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/caliper-apm/caliper
+  tag: "1.1.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8080
+
+storage:
+  driver: clickhouse # embedded | clickhouse
+  clickhouseEndpoint: "http://clickhouse:8123"
+  clickhouseDatabase: "caliper"
+  alertInterval: "30s"
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi

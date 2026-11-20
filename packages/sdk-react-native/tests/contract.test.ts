@@ -12,6 +12,7 @@ import {
   classifyFluency,
   SlidingQuota,
   CaliperReactNativeAdapter,
+  wrapFetchForDenominator,
 } from '../src/index.ts';
 import type { CaliperNativeBridgeSpec } from '../src/index.ts';
 
@@ -84,4 +85,40 @@ test('RN adapter correlates LongTask + API denominator windows with strict bucke
   adapter.captureJSError(new TypeError('Cannot read properties of undefined'), true);
   assert.equal(sent.length, 3);
   assert.equal(sent[2].kind, 'crash');
+});
+
+test('wrapFetchForDenominator filters allowlist and classifies http/network/timeout failures', async () => {
+  let clock = 50_000;
+  const sent: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+  const bridge: CaliperNativeBridgeSpec = {
+    setScene: () => {},
+    addBreadcrumb: () => {},
+    notifyFirstFrameReady: () => {},
+    enqueueEvent: (kind, _s, _w, payloadJson) => { sent.push({ kind, payload: JSON.parse(payloadJson) }); },
+  };
+  const adapter = new CaliperReactNativeAdapter(bridge, () => clock);
+  const wrapped = wrapFetchForDenominator(
+    async (url: string) => {
+      clock += 120;
+      if (url.includes('502')) return { status: 502, ok: false };
+      if (url.includes('timeout')) throw new Error('AbortError: request timeout');
+      return { status: 200, ok: true };
+    },
+    adapter,
+    { allowlist: ['/api/v1/'], nowMs: () => clock },
+  );
+
+  await wrapped('https://cdn.example.com/static.png'); // ignored (not in allowlist)
+  await wrapped('https://api.example.com/api/v1/feed'); // ok
+  await wrapped('https://api.example.com/api/v1/502');  // http error
+  await assert.rejects(() => wrapped('https://api.example.com/api/v1/timeout'));
+
+  clock += 10_000;
+  adapter.flushWindow();
+  const netEv = sent.find(e => e.kind === 'network_summary');
+  assert.ok(netEv);
+  const net = netEv.payload as { call_count: number; failure_counts: { http: number; timeout: number } };
+  assert.equal(net.call_count, 3);
+  assert.equal(net.failure_counts.http, 1);
+  assert.equal(net.failure_counts.timeout, 1);
 });

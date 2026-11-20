@@ -23,6 +23,8 @@ type rollupKey struct {
 	AppVersion  string
 	BuildNumber string
 	Adapter     string
+	DeviceModel string
+	OSVersion   string
 	DayUTC      string
 	Scene       string
 	PolicyID    string
@@ -378,6 +380,8 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		AppVersion:  r.AppVersion,
 		BuildNumber: r.BuildNumber,
 		Adapter:     adapter,
+		DeviceModel: r.DeviceModel,
+		OSVersion:   r.OSVersion,
 		DayUTC:      dayUTC,
 		Scene:       scene,
 		PolicyID:    e.PolicyID,
@@ -651,6 +655,12 @@ func matchesFilter(k rollupKey, f QueryFilter) bool {
 		return false
 	}
 	if f.Scene != "" && k.Scene != f.Scene {
+		return false
+	}
+	if f.DeviceModel != "" && k.DeviceModel != f.DeviceModel {
+		return false
+	}
+	if f.OSVersion != "" && k.OSVersion != f.OSVersion {
 		return false
 	}
 	if f.PolicyID != "" && k.PolicyID != f.PolicyID {
@@ -1171,6 +1181,42 @@ func (s *EmbeddedStore) ListAlertIncidents(_ context.Context, ruleID string) ([]
 		return out[i].IncidentID < out[j].IncidentID
 	})
 	return out, nil
+}
+
+func (s *EmbeddedStore) ListDimensionValues(_ context.Context, f QueryFilter, dimension string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := map[string]struct{}{}
+	collect := func(k rollupKey) {
+		if !matchesFilter(k, f) {
+			return
+		}
+		var v string
+		switch dimension {
+		case "device":
+			v = k.DeviceModel
+		case "os":
+			v = k.OSVersion
+		}
+		if v != "" {
+			seen[v] = struct{}{}
+		}
+	}
+	for k := range s.startups {
+		collect(k)
+	}
+	for k := range s.fluencies {
+		collect(k)
+	}
+	for k := range s.resources {
+		collect(k)
+	}
+	out := make([]string, 0, len(seen))
+	for v := range seen {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *EmbeddedStore) Stats(_ context.Context) Stats {

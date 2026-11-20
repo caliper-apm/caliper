@@ -40,7 +40,7 @@ export interface DailyTrendPoint {
 }
 
 export interface DimensionSlice {
-  dimension: 'version' | 'adapter' | 'scene';
+  dimension: 'version' | 'adapter' | 'scene' | 'device' | 'os';
   key: string;
   startup_p90_ms: number | null;
   startup_samples: number;
@@ -52,6 +52,25 @@ export interface DimensionSlice {
   avg_cpu_pct: number | null;
   memory_p90_mib: number | null;
   issue_events: number;
+}
+
+export interface SourceHealthReport {
+  status: 'healthy' | 'warning' | 'degraded';
+  platform: Platform;
+  storage_engine: string;
+  total_stored_events: number;
+  ingest_accepted: number;
+  ingest_duplicates: number;
+  ingest_rejected: number;
+  ingest_accept_pct: number;
+  total_releases: number;
+  symbol_mapped_releases: number;
+  symbol_coverage_pct: number | null;
+  symbol_bundles_count: number;
+  fluency_total_windows: number;
+  fluency_zero_windows: number;
+  zero_frame_ratio_pct: number | null;
+  uptime_seconds: number;
 }
 
 export interface NetworkFailureCounts {

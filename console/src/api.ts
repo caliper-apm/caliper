@@ -21,6 +21,7 @@ import type {
   RemoteLogTask,
   ResourceSceneReport,
   SessionLookupResponse,
+  SourceHealthReport,
   StartupReport,
   SymbolRecord,
 } from './types.ts';
@@ -71,7 +72,7 @@ export const api = {
   timeseries: (f: GlobalFilters) =>
     requestJson<{ points: DailyTrendPoint[] }>(`/v1/analytics/timeseries${filterQuery(f)}`),
 
-  breakdown: (f: GlobalFilters, dimension: 'version' | 'adapter' | 'scene') =>
+  breakdown: (f: GlobalFilters, dimension: 'version' | 'adapter' | 'scene' | 'device' | 'os') =>
     requestJson<{ dimension: string; slices: DimensionSlice[] }>(
       `/v1/analytics/breakdown${filterQuery(
         {
@@ -83,6 +84,9 @@ export const api = {
         { dimension },
       )}`,
     ),
+
+  sourceHealth: (f: GlobalFilters) =>
+    requestJson<SourceHealthReport>(`/v1/ops/source-health${filterQuery(f)}`),
 
   compare: (f: GlobalFilters, baseline: string, candidate: string) =>
     requestJson<CompareReport>('/v1/analytics/compare', {

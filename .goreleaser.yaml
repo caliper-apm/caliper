@@ -1,0 +1,28 @@
+version: 2
+project_name: caliper-apm
+
+builds:
+  - id: caliper
+    dir: server
+    main: ./cmd/caliper
+    binary: caliper
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w]
+
+  - id: caliper-symbols
+    dir: packages/cli-symbols
+    main: .
+    binary: caliper-symbols
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w]
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt

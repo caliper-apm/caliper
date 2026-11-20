@@ -86,6 +86,19 @@ func main() {
 					// Deterministic non-PII sample user_hash for testing Audited Session Lookup out of the box.
 					userHash = "0000111122223333"
 				}
+				devicePool := [][2]string{
+					{"Pixel 8", "Android 14"},
+					{"Galaxy A54", "Android 13"},
+					{"Redmi Note 13", "Android 12"},
+				}
+				if platform == "ios" {
+					devicePool = [][2]string{
+						{"iPhone 16 Pro", "iOS 18.1"},
+						{"iPhone 15 Pro", "iOS 18.0"},
+						{"iPhone 13", "iOS 17.5"},
+					}
+				}
+				devChoice := devicePool[batchesSent%len(devicePool)]
 				env := protocol.BatchEnvelope{
 					SchemaVersion: 1,
 					SentAtMS:      baseTime.UnixMilli(),
@@ -99,9 +112,11 @@ func main() {
 						SymbolID:    fmt.Sprintf("sym-%s-%s-%s", platform, prof.version, prof.build),
 						Adapter:     adapter,
 						SDKName:     "caliper-" + platform,
-						SDKVersion:  "1.0.0",
+						SDKVersion:  "1.1.0",
 						InstallHash: installHash,
 						UserHash:    userHash,
+						DeviceModel: devChoice[0],
+						OSVersion:   devChoice[1],
 					},
 					Events: batchEvents,
 				}

@@ -52,6 +52,8 @@ type QueryFilter struct {
 	BuildNumber string // optional
 	Adapter     string // optional: "native" | "react-native"
 	Scene       string // optional
+	DeviceModel string // optional
+	OSVersion   string // optional
 	PolicyID    string // optional
 	Algorithm   string // optional fluency algorithm filter
 	StartDayUTC string // YYYY-MM-DD inclusive

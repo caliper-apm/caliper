@@ -1,8 +1,9 @@
 package io.caliper.apm
 
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.net.HttpURLConnection
-import java.net.URL
+import java.net.URI
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -18,8 +19,9 @@ data class ResourceIdentity(
     val symbolId: String? = null,
     val adapter: String = "native",
     val sdkName: String = "caliper-android",
-    val sdkVersion: String = "0.1.0",
+    val sdkVersion: String = "1.1.0",
     val installHash: String,
+    val userHash: String? = null,
     val osVersion: String? = null,
     val deviceModel: String? = null
 )
@@ -30,7 +32,8 @@ data class CaliperConfig(
     val resource: ResourceIdentity,
     val installSeed: String = UUID.randomUUID().toString(),
     val maxQueueSize: Int = 200,
-    val maxConsecutiveFailures: Int = 5
+    val maxConsecutiveFailures: Int = 5,
+    val spoolDir: File? = null
 )
 
 data class TelemetryEvent(
@@ -65,6 +68,10 @@ class CaliperClient(private val config: CaliperConfig) {
     private var quota = SlidingQuota(86_400_000L, 50)
     private var consecutiveFailures = 0
     private var circuitTripped = false
+    private val diskSpool: CaliperDiskQueue? = config.spoolDir?.let { CaliperDiskQueue(it) }
+
+    fun getConfig(): CaliperConfig = config
+    fun currentSceneName(): String = synchronized(lock) { currentScene }
 
     fun applyLease(nextLease: PolicyLease) = synchronized(lock) {
         lease = nextLease
@@ -127,18 +134,36 @@ class CaliperClient(private val config: CaliperConfig) {
         }
     }
 
-    /** Gzip-compresses and posts queued batch to POST /v1/ingest; fail-closed on repeated errors. */
+    /** Gzip-compresses and posts queued batch (+ offline disk spool) to POST /v1/ingest; fail-closed on repeated errors. */
     fun flushBlocking(): Int {
+        var sentCount = 0
+        // 1. Drain any previously spooled offline batches first.
+        diskSpool?.drainEach { spooledJson ->
+            postGzipJson(spooledJson)
+            sentCount += 1
+        }
+
         val batch: List<TelemetryEvent> = synchronized(lock) {
-            if (circuitTripped || queue.isEmpty()) return 0
+            if (circuitTripped || queue.isEmpty()) return sentCount
             val copy = queue.toList()
             queue.clear()
             copy
         }
         val bodyJson = encodeBatchJson(System.currentTimeMillis(), config.resource, batch)
-        val compressed = gzip(bodyJson.toByteArray(Charsets.UTF_8))
+        return try {
+            postGzipJson(bodyJson)
+            synchronized(lock) { consecutiveFailures = 0 }
+            sentCount + batch.size
+        } catch (t: Throwable) {
+            diskSpool?.enqueue(bodyJson)
+            recordFailure()
+            throw t
+        }
+    }
 
-        val conn = (URL("${config.endpointUrl.trimEnd('/')}/v1/ingest").openConnection() as HttpURLConnection).apply {
+    private fun postGzipJson(bodyJson: String) {
+        val compressed = gzip(bodyJson.toByteArray(Charsets.UTF_8))
+        val conn = (URI.create("${config.endpointUrl.trimEnd('/')}/v1/ingest").toURL().openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = 10_000
             readTimeout = 10_000
@@ -147,19 +172,12 @@ class CaliperClient(private val config: CaliperConfig) {
             setRequestProperty("Content-Encoding", "gzip")
             config.apiKey?.takeIf { it.isNotEmpty() }?.let { setRequestProperty("X-Caliper-Key", it) }
         }
-        return try {
+        try {
             conn.outputStream.use { it.write(compressed) }
             val status = conn.responseCode
-            if (status in 200..299) {
-                synchronized(lock) { consecutiveFailures = 0 }
-                batch.size
-            } else {
-                recordFailure()
+            if (status !in 200..299) {
                 throw IllegalStateException("ingest HTTP $status")
             }
-        } catch (t: Throwable) {
-            recordFailure()
-            throw t
         } finally {
             conn.disconnect()
         }
@@ -187,6 +205,7 @@ class CaliperClient(private val config: CaliperConfig) {
             r.symbolId?.let { sb.append(""""symbol_id":${q(it)},""") }
             sb.append(""""adapter":${q(r.adapter)},"sdk_name":${q(r.sdkName)},"sdk_version":${q(r.sdkVersion)},""")
             sb.append(""""install_hash":${q(r.installHash)}""")
+            r.userHash?.let { sb.append(""","user_hash":${q(it)}""") }
             r.osVersion?.let { sb.append(""","os_version":${q(it)}""") }
             r.deviceModel?.let { sb.append(""","device_model":${q(it)}""") }
             sb.append("""},"events":[""")

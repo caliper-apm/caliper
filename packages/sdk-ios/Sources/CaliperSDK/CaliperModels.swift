@@ -33,6 +33,7 @@ public struct ResourceIdentity: Codable, Sendable {
     public let sdkName: String
     public let sdkVersion: String
     public let installHash: String
+    public let userHash: String?
     public let osVersion: String?
     public let deviceModel: String?
 
@@ -48,6 +49,7 @@ public struct ResourceIdentity: Codable, Sendable {
         case sdkName = "sdk_name"
         case sdkVersion = "sdk_version"
         case installHash = "install_hash"
+        case userHash = "user_hash"
         case osVersion = "os_version"
         case deviceModel = "device_model"
     }
@@ -62,8 +64,9 @@ public struct ResourceIdentity: Codable, Sendable {
         symbolID: String? = nil,
         adapter: String = "native",
         sdkName: String = "caliper-ios",
-        sdkVersion: String = "0.1.0",
+        sdkVersion: String = "1.1.0",
         installHash: String,
+        userHash: String? = nil,
         osVersion: String? = nil,
         deviceModel: String? = nil
     ) {
@@ -78,6 +81,7 @@ public struct ResourceIdentity: Codable, Sendable {
         self.sdkName = sdkName
         self.sdkVersion = sdkVersion
         self.installHash = installHash
+        self.userHash = userHash
         self.osVersion = osVersion
         self.deviceModel = deviceModel
     }

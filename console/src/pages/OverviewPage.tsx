@@ -26,7 +26,8 @@ type TrendMetricTab = 'startup' | 'fluency' | 'network' | 'resources' | 'stabili
 export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
   const [overview, setOverview] = useState<OverviewReport | null>(null);
   const [trends, setTrends] = useState<DailyTrendPoint[]>([]);
-  const [verBreakdown, setVerBreakdown] = useState<DimensionSlice[]>([]);
+  const [dimMode, setDimMode] = useState<'version' | 'device' | 'os'>('version');
+  const [dimBreakdown, setDimBreakdown] = useState<DimensionSlice[]>([]);
   const [adapterBreakdown, setAdapterBreakdown] = useState<DimensionSlice[]>([]);
   const [compare, setCompare] = useState<CompareReport | null>(null);
   const [scan, setScan] = useState<RegressionScanReport | null>(null);
@@ -50,19 +51,19 @@ export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
     Promise.all([
       api.overview(filters),
       api.timeseries(filters),
-      api.breakdown(filters, 'version'),
+      api.breakdown(filters, dimMode),
       api.breakdown(filters, 'adapter'),
     ])
       .then(([ov, ts, vb, ab]) => {
         if (!active) return;
         setOverview(ov);
         setTrends(ts.points ?? []);
-        setVerBreakdown(vb.slices ?? []);
+        setDimBreakdown(vb.slices ?? []);
         setAdapterBreakdown(ab.slices ?? []);
       })
       .catch(err => { if (active) setError(String(err)); });
     return () => { active = false; };
-  }, [JSON.stringify(filters), refreshTick]);
+  }, [JSON.stringify(filters), dimMode, refreshTick]);
 
   useEffect(() => {
     if (!baseline || !candidate) return;
@@ -214,20 +215,24 @@ export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
     };
   }, [trends, trendTab, rolloutMarkLines, lang]);
 
-  const versionChartOption: ECBasicOption = useMemo(() => ({
+  const dimChartOption: ECBasicOption = useMemo(() => ({
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
     legend: { top: 0, right: 8, textStyle: { fontSize: 11 } },
-    grid: { top: 32, right: 48, bottom: 24, left: 48 },
-    xAxis: { type: 'category', data: verBreakdown.map(s => `v${s.key}`), axisLabel: { color: '#4e5969', fontSize: 11 } },
+    grid: { top: 32, right: 48, bottom: 28, left: 48 },
+    xAxis: {
+      type: 'category',
+      data: dimBreakdown.map(s => (dimMode === 'version' ? `v${s.key}` : s.key)),
+      axisLabel: { color: '#4e5969', fontSize: 11 },
+    },
     yAxis: [
       { type: 'value', name: 'ms', splitLine: { lineStyle: { color: '#f2f3f5' } } },
       { type: 'value', name: '%', splitLine: { show: false } },
     ],
     series: [
-      { name: lang === 'zh' ? '冷启动 P90 (ms)' : 'Startup P90', type: 'bar', yAxisIndex: 0, barMaxWidth: 28, data: verBreakdown.map(s => s.startup_p90_ms), itemStyle: { color: '#165dff', borderRadius: [3, 3, 0, 0] } },
-      { name: lang === 'zh' ? '卡顿率 (%)' : 'Jank %', type: 'line', yAxisIndex: 1, data: verBreakdown.map(s => s.jank_rate_pct !== null ? Number(s.jank_rate_pct.toFixed(2)) : null), itemStyle: { color: '#f53f3f' }, lineStyle: { width: 2.5 } },
+      { name: lang === 'zh' ? '冷启动 P90 (ms)' : 'Startup P90', type: 'bar', yAxisIndex: 0, barMaxWidth: 28, data: dimBreakdown.map(s => s.startup_p90_ms), itemStyle: { color: '#165dff', borderRadius: [3, 3, 0, 0] } },
+      { name: lang === 'zh' ? '卡顿率 (%)' : 'Jank %', type: 'line', yAxisIndex: 1, data: dimBreakdown.map(s => s.jank_rate_pct !== null ? Number(s.jank_rate_pct.toFixed(2)) : null), itemStyle: { color: '#f53f3f' }, lineStyle: { width: 2.5 } },
     ],
-  }), [verBreakdown, lang]);
+  }), [dimBreakdown, dimMode, lang]);
 
   return (
     <>
@@ -332,12 +337,16 @@ export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
         <div className="card">
           <div className="card-header">
             <div>
-              <h2 className="card-title">{t(lang, 'versionBreakdown')}</h2>
-              <p className="card-sub">{lang === 'zh' ? '按版本横向对比冷启动 P90 与流畅度卡顿率' : 'Side-by-side Cold Start P90 & Jank Rate per release'}</p>
+              <h2 className="card-title">{lang === 'zh' ? '多维度性能拆解 (版本 / 机型 / 系统版本)' : 'Multi-Dimension Performance Breakdown'}</h2>
+              <p className="card-sub">{lang === 'zh' ? '对标火山 APM Plus 多维切面归因：按版本、机型或系统版本定位长尾劣化' : 'Slice Cold Start P90 & Jank Rate by Release, Device Model, or OS Version'}</p>
             </div>
-            <span className="badge blue">{verBreakdown.length} {lang === 'zh' ? '个版本' : 'releases'}</span>
+            <div className="sub-tabs">
+              <button className={dimMode === 'version' ? 'active' : ''} onClick={() => setDimMode('version')}>{lang === 'zh' ? '按版本' : 'Release'}</button>
+              <button className={dimMode === 'device' ? 'active' : ''} onClick={() => setDimMode('device')}>{lang === 'zh' ? '按机型' : 'Device'}</button>
+              <button className={dimMode === 'os' ? 'active' : ''} onClick={() => setDimMode('os')}>{lang === 'zh' ? '按系统' : 'OS'}</button>
+            </div>
           </div>
-          {verBreakdown.length > 0 ? <EChart option={versionChartOption} height={225} /> : <div className="empty">—</div>}
+          {dimBreakdown.length > 0 ? <EChart option={dimChartOption} height={225} /> : <div className="empty">—</div>}
         </div>
 
         <div className="card">

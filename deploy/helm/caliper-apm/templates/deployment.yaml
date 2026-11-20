@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-caliper
+  labels:
+    app.kubernetes.io/name: caliper-apm
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: caliper-apm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: caliper-apm
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8080"
+    spec:
+      containers:
+        - name: caliper
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--addr=0.0.0.0:8080"
+            - "--storage-driver={{ .Values.storage.driver }}"
+            - "--clickhouse-endpoint={{ .Values.storage.clickhouseEndpoint }}"
+            - "--clickhouse-db={{ .Values.storage.clickhouseDatabase }}"
+            - "--console-dist=/app/console-dist"
+            - "--alert-interval={{ .Values.storage.alertInterval }}"
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
