@@ -73,7 +73,9 @@
               "js_longtask_window",
               "network_summary",
               "network_transport",
-              "custom_scene"
+              "custom_scene",
+              "cpu_profile",
+              "heap_snapshot"
             ]
           },
           "occurred_at_ms": { "type": "integer", "minimum": 0 },

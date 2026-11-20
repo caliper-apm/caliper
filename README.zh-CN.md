@@ -67,6 +67,14 @@ docker compose up --build
 - **RBAC 权限控制与强制审计的 UID/Session 排查**：支持 `--auth-config` 四级角色（`ingest_only` / `viewer` / `operator` / `admin`）与 App 作用域隔离；单用户问题排查（`GET /v1/sessions/lookup`）仅接受非 PII 十六进制哈希且强制填写工单原因，Fail-Closed 写入不可篡改审计日志（`GET /v1/audit/logs`）。
 - **零手工运维 CI 构建插件**：内置 Android Gradle 插件（`packages/gradle-plugin`，`io.caliper.apm.symbols`）、iOS Fastlane 插件（`packages/fastlane-plugin`）与复合 GitHub Action（`packages/github-action`）。
 
+## 深度诊断与 OpenTelemetry 互通（v1.0）
+
+详见 [`docs/roadmap-v1.0.md`](docs/roadmap-v1.0.md)：
+- **在线 Native 与 Hermes CPU 火焰图**：有界折叠调用栈采集（`cpu_profile`），服务端自动通过 R8 / SourceMap v3 / iOS dSYM 符号化，Web 控制台内置可点击缩放的交互式火焰图。
+- **裁剪式堆内存 / OOM 深度诊断**：零 PII 类级别 Dominator 摘要（`heap_snapshot`），支持跨版本内存增量对比与自动泄漏嫌疑识别（`POST /v1/diagnostics/heap/compare`）。
+- **强审计远程日志捞取任务**：支持按 `user_hash` / `install_hash` 下发带 TTL 与字节上限的远程日志拉取任务，SDK 轮询 + Gzip 加密摘要回传，全链路 Fail-Closed 写入审计日志。
+- **全双工 OTLP 互通**：原生接收标准 OpenTelemetry Traces / Logs（`POST /v1/otlp/v1/traces`、`/v1/otlp/v1/logs`），并支持以标准 `resourceMetrics` 导出聚合指标（`GET /v1/otlp/export`）。
+
 ---
 
 ## 开源协议

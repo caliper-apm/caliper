@@ -61,26 +61,31 @@ type persistedMeta struct {
 	Symbols        map[string]SymbolRecord   `json:"symbols"`
 	AlertRules     map[string]AlertRule      `json:"alert_rules"`
 	AlertIncidents map[string]AlertIncident  `json:"alert_incidents"`
+	RemoteLogTasks map[string]RemoteLogTask  `json:"remote_log_tasks"`
 }
 
 // EmbeddedStore is a zero-CGO, WAL-durable, in-process columnar rollup store implementing
 // both AnalyticsStore and MetaStore. Designed for <1s builds and sub-10ms 100k-event queries.
 type EmbeddedStore struct {
-	mu             sync.RWMutex
-	dataDir        string
-	walFile        *os.File
-	walWriter      *bufio.Writer
-	seenEvents     map[string]struct{}
-	totalEvents    int64
-	releases       map[string]ReleaseRecord
-	policies       map[string]SamplingPolicy
-	symbols        map[string]SymbolRecord
-	symbolBytes    map[string][]byte // in-memory fallback when dataDir == ""
+	mu               sync.RWMutex
+	dataDir          string
+	walFile          *os.File
+	walWriter        *bufio.Writer
+	seenEvents       map[string]struct{}
+	totalEvents      int64
+	releases         map[string]ReleaseRecord
+	policies         map[string]SamplingPolicy
+	symbols          map[string]SymbolRecord
+	symbolBytes      map[string][]byte // in-memory fallback when dataDir == ""
 	alertRules       map[string]AlertRule
 	alertIncidents   map[string]AlertIncident
+	remoteLogTasks   map[string]RemoteLogTask
+	remoteLogBytes   map[string][]byte
 	auditLogs        []AuditLogEntry
 	installTimelines map[string][]SessionTimelineEvent
 	userTimelines    map[string][]SessionTimelineEvent
+	cpuProfiles      []CPUProfileRecord
+	heapSnapshots    []HeapSnapshotRecord
 	startups         map[rollupKey]*StartupAggregate
 	fluencies        map[rollupKey]*FluencyAggregate
 	resources        map[rollupKey]*ResourceAggregate
@@ -91,6 +96,7 @@ type EmbeddedStore struct {
 const (
 	maxTimelineEventsPerHash = 200
 	maxTrackedTimelineHashes = 10000
+	maxStoredDiagnostics     = 500
 )
 
 // OpenEmbedded opens or initializes an embedded store in dataDir (empty dataDir = memory-only).
@@ -104,6 +110,8 @@ func OpenEmbedded(dataDir string) (*EmbeddedStore, error) {
 		symbolBytes:      make(map[string][]byte),
 		alertRules:       make(map[string]AlertRule),
 		alertIncidents:   make(map[string]AlertIncident),
+		remoteLogTasks:   make(map[string]RemoteLogTask),
+		remoteLogBytes:   make(map[string][]byte),
 		installTimelines: make(map[string][]SessionTimelineEvent),
 		userTimelines:    make(map[string][]SessionTimelineEvent),
 		startups:         make(map[rollupKey]*StartupAggregate),
@@ -189,6 +197,9 @@ func (s *EmbeddedStore) loadMetaLocked() error {
 	if pm.AlertIncidents != nil {
 		s.alertIncidents = pm.AlertIncidents
 	}
+	if pm.RemoteLogTasks != nil {
+		s.remoteLogTasks = pm.RemoteLogTasks
+	}
 	return nil
 }
 
@@ -202,6 +213,7 @@ func (s *EmbeddedStore) saveMetaLocked() error {
 		Symbols:        s.symbols,
 		AlertRules:     s.alertRules,
 		AlertIncidents: s.alertIncidents,
+		RemoteLogTasks: s.remoteLogTasks,
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -571,6 +583,50 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		}
 		if len(p.Breadcrumbs) > 0 && len(ib.Breadcrumbs) == 0 {
 			ib.Breadcrumbs = append([]protocol.Breadcrumb(nil), p.Breadcrumbs...)
+		}
+
+	case protocol.CPUProfilePayload:
+		rec := CPUProfileRecord{
+			ProfileID:        e.EventID,
+			OccurredAtMS:     e.OccurredAtMS,
+			AppID:            r.AppID,
+			Platform:         r.Platform,
+			Env:              r.Env,
+			AppVersion:       r.AppVersion,
+			BuildNumber:      r.BuildNumber,
+			Scene:            scene,
+			Runtime:          p.Runtime,
+			ThreadName:       p.ThreadName,
+			SampleIntervalMS: p.SampleIntervalMS,
+			DurationMS:       p.DurationMS,
+			TotalSamples:     p.TotalSamples,
+			Stacks:           append([]protocol.ProfileStackSample(nil), p.Stacks...),
+		}
+		s.cpuProfiles = append(s.cpuProfiles, rec)
+		if len(s.cpuProfiles) > maxStoredDiagnostics {
+			s.cpuProfiles = s.cpuProfiles[len(s.cpuProfiles)-maxStoredDiagnostics:]
+		}
+
+	case protocol.HeapSnapshotPayload:
+		rec := HeapSnapshotRecord{
+			SnapshotID:        e.EventID,
+			OccurredAtMS:      e.OccurredAtMS,
+			AppID:             r.AppID,
+			Platform:          r.Platform,
+			Env:               r.Env,
+			AppVersion:        r.AppVersion,
+			BuildNumber:       r.BuildNumber,
+			Scene:             scene,
+			TriggerReason:     p.TriggerReason,
+			MemoryKind:        p.MemoryKind,
+			TotalAllocatedKiB: p.TotalAllocatedKiB,
+			TotalRetainedKiB:  p.TotalRetainedKiB,
+			MemoryLimitKiB:    p.MemoryLimitKiB,
+			Dominators:        append([]protocol.HeapDominator(nil), p.Dominators...),
+		}
+		s.heapSnapshots = append(s.heapSnapshots, rec)
+		if len(s.heapSnapshots) > maxStoredDiagnostics {
+			s.heapSnapshots = s.heapSnapshots[len(s.heapSnapshots)-maxStoredDiagnostics:]
 		}
 	}
 }
@@ -1147,6 +1203,10 @@ func SummarizeEvent(kind string, parsed any) string {
 		return fmt.Sprintf("%s %s status=%d total=%.0fms result=%s", p.Method, p.Operation, p.StatusCode, p.TotalMS, p.Result)
 	case protocol.CustomScenePayload:
 		return fmt.Sprintf("journey=%s status=%s", p.JourneyName, p.Status)
+	case protocol.CPUProfilePayload:
+		return fmt.Sprintf("cpu_profile runtime=%s samples=%d duration=%dms", p.Runtime, p.TotalSamples, p.DurationMS)
+	case protocol.HeapSnapshotPayload:
+		return fmt.Sprintf("heap_snapshot trigger=%s retained=%.1fMiB dominators=%d", p.TriggerReason, p.TotalRetainedKiB/1024.0, len(p.Dominators))
 	default:
 		return kind
 	}
@@ -1321,4 +1381,245 @@ func releaseMapKey(appID, platform, env, ver, build string) string {
 
 func issueMapKey(appID, platform, env, fingerprint string) string {
 	return appID + "|" + platform + "|" + env + "|" + fingerprint
+}
+
+func (s *EmbeddedStore) QueryCPUProfiles(_ context.Context, f QueryFilter, runtime string, limit int) ([]CPUProfileRecord, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]CPUProfileRecord, 0, min(len(s.cpuProfiles), limit))
+	for i := len(s.cpuProfiles) - 1; i >= 0; i-- {
+		p := s.cpuProfiles[i]
+		if f.AppID != "" && p.AppID != f.AppID {
+			continue
+		}
+		if f.Platform != "" && p.Platform != f.Platform {
+			continue
+		}
+		if f.Env != "" && p.Env != f.Env {
+			continue
+		}
+		if f.AppVersion != "" && p.AppVersion != f.AppVersion {
+			continue
+		}
+		if f.Scene != "" && p.Scene != f.Scene {
+			continue
+		}
+		if runtime != "" && p.Runtime != runtime {
+			continue
+		}
+		out = append(out, p)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *EmbeddedStore) GetCPUProfile(_ context.Context, profileID string) (*CPUProfileRecord, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for i := len(s.cpuProfiles) - 1; i >= 0; i-- {
+		if s.cpuProfiles[i].ProfileID == profileID {
+			cp := s.cpuProfiles[i]
+			return &cp, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
+func (s *EmbeddedStore) QueryHeapSnapshots(_ context.Context, f QueryFilter, limit int) ([]HeapSnapshotRecord, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]HeapSnapshotRecord, 0, min(len(s.heapSnapshots), limit))
+	for i := len(s.heapSnapshots) - 1; i >= 0; i-- {
+		h := s.heapSnapshots[i]
+		if f.AppID != "" && h.AppID != f.AppID {
+			continue
+		}
+		if f.Platform != "" && h.Platform != f.Platform {
+			continue
+		}
+		if f.Env != "" && h.Env != f.Env {
+			continue
+		}
+		if f.AppVersion != "" && h.AppVersion != f.AppVersion {
+			continue
+		}
+		if f.Scene != "" && h.Scene != f.Scene {
+			continue
+		}
+		out = append(out, h)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *EmbeddedStore) CreateRemoteLogTask(_ context.Context, task RemoteLogTask) (RemoteLogTask, error) {
+	if task.TargetHash == "" || task.Reason == "" || task.RequestedBy == "" {
+		return RemoteLogTask{}, errors.New("target_hash, reason, and requested_by are required")
+	}
+	if task.TargetType != "install_hash" && task.TargetType != "user_hash" {
+		return RemoteLogTask{}, errors.New("target_type must be install_hash or user_hash")
+	}
+	if task.Platform != "android" && task.Platform != "ios" {
+		return RemoteLogTask{}, errors.New("platform must be android or ios")
+	}
+	if task.MaxBytes <= 0 || task.MaxBytes > protocol.MaxPayloadBytes {
+		task.MaxBytes = 512 * 1024 // 512 KiB default bounded cap
+	}
+	now := time.Now().UTC().UnixMilli()
+	if task.CreatedAtMS == 0 {
+		task.CreatedAtMS = now
+	}
+	if task.ExpiresAtMS <= task.CreatedAtMS {
+		task.ExpiresAtMS = task.CreatedAtMS + 3600_000 // 1 hour default TTL
+	}
+	task.Status = "pending"
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if task.TaskID == "" {
+		task.TaskID = fmt.Sprintf("rlog-%d-%d", task.CreatedAtMS, len(s.remoteLogTasks)+1)
+	}
+	s.remoteLogTasks[task.TaskID] = task
+	if err := s.saveMetaLocked(); err != nil {
+		return RemoteLogTask{}, err
+	}
+	return task, nil
+}
+
+func (s *EmbeddedStore) ListRemoteLogTasks(_ context.Context, appID, platform string) ([]RemoteLogTask, error) {
+	now := time.Now().UTC().UnixMilli()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]RemoteLogTask, 0, len(s.remoteLogTasks))
+	for _, t := range s.remoteLogTasks {
+		if appID != "" && t.AppID != appID {
+			continue
+		}
+		if platform != "" && t.Platform != platform {
+			continue
+		}
+		if t.Status == "pending" && now > t.ExpiresAtMS {
+			t.Status = "expired"
+		}
+		t.StoragePath = ""
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAtMS != out[j].CreatedAtMS {
+			return out[i].CreatedAtMS > out[j].CreatedAtMS
+		}
+		return out[i].TaskID < out[j].TaskID
+	})
+	return out, nil
+}
+
+func (s *EmbeddedStore) PollPendingLogTasks(_ context.Context, appID, platform, installHash, userHash string, nowMS int64) ([]RemoteLogTask, error) {
+	if nowMS <= 0 {
+		nowMS = time.Now().UTC().UnixMilli()
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]RemoteLogTask, 0)
+	for _, t := range s.remoteLogTasks {
+		if t.Status != "pending" || nowMS > t.ExpiresAtMS {
+			continue
+		}
+		if appID != "" && t.AppID != "" && t.AppID != appID {
+			continue
+		}
+		if platform != "" && t.Platform != platform {
+			continue
+		}
+		if t.TargetType == "install_hash" && installHash != "" && t.TargetHash == installHash {
+			t.StoragePath = ""
+			out = append(out, t)
+		} else if t.TargetType == "user_hash" && userHash != "" && t.TargetHash == userHash {
+			t.StoragePath = ""
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (s *EmbeddedStore) CompleteRemoteLogTask(_ context.Context, taskID string, content []byte, sha256Hex string, nowMS int64) (RemoteLogTask, error) {
+	if nowMS <= 0 {
+		nowMS = time.Now().UTC().UnixMilli()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	task, ok := s.remoteLogTasks[taskID]
+	if !ok {
+		return RemoteLogTask{}, errors.New("remote log task not found")
+	}
+	if task.Status != "pending" {
+		return RemoteLogTask{}, fmt.Errorf("remote log task %s already %s", taskID, task.Status)
+	}
+	if nowMS > task.ExpiresAtMS {
+		task.Status = "expired"
+		s.remoteLogTasks[taskID] = task
+		_ = s.saveMetaLocked()
+		return RemoteLogTask{}, errors.New("remote log task has expired")
+	}
+	if int64(len(content)) > task.MaxBytes {
+		return RemoteLogTask{}, fmt.Errorf("log payload %d bytes exceeds task max_bytes %d", len(content), task.MaxBytes)
+	}
+
+	if s.dataDir != "" {
+		dir := filepath.Join(s.dataDir, "remotelog")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return RemoteLogTask{}, fmt.Errorf("mkdir remotelog: %w", err)
+		}
+		path := filepath.Join(dir, taskID+".log")
+		if err := os.WriteFile(path, content, 0o600); err != nil {
+			return RemoteLogTask{}, fmt.Errorf("write remotelog: %w", err)
+		}
+		task.StoragePath = path
+	} else {
+		s.remoteLogBytes[taskID] = append([]byte(nil), content...)
+	}
+
+	task.Status = "completed"
+	task.CompletedAtMS = nowMS
+	task.UploadedBytes = int64(len(content))
+	task.SHA256 = sha256Hex
+	s.remoteLogTasks[taskID] = task
+	if err := s.saveMetaLocked(); err != nil {
+		return RemoteLogTask{}, err
+	}
+	task.StoragePath = ""
+	return task, nil
+}
+
+func (s *EmbeddedStore) GetRemoteLogContent(_ context.Context, taskID string) (RemoteLogTask, []byte, bool, error) {
+	s.mu.RLock()
+	task, ok := s.remoteLogTasks[taskID]
+	memData := s.remoteLogBytes[taskID]
+	s.mu.RUnlock()
+	if !ok {
+		return RemoteLogTask{}, nil, false, nil
+	}
+	if task.Status != "completed" {
+		task.StoragePath = ""
+		return task, nil, true, nil
+	}
+	if task.StoragePath != "" {
+		raw, err := os.ReadFile(task.StoragePath)
+		if err != nil {
+			return task, nil, false, err
+		}
+		task.StoragePath = ""
+		return task, raw, true, nil
+	}
+	task.StoragePath = ""
+	return task, memData, true, nil
 }

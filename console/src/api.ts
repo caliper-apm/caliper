@@ -3,14 +3,19 @@ import type {
   AlertRule,
   AuditLogEntry,
   CompareReport,
+  CPUProfileRecord,
+  FlamegraphReport,
   FluencySceneReport,
   HealthResponse,
+  HeapCompareReport,
+  HeapSnapshotRecord,
   IssueSummary,
   NetworkReport,
   OverviewReport,
   Platform,
   RegressionScanReport,
   ReleaseRecord,
+  RemoteLogTask,
   ResourceSceneReport,
   SessionLookupResponse,
   StartupReport,
@@ -86,6 +91,58 @@ export const api = {
     requestJson<{ audit_logs: AuditLogEntry[] }>('/v1/audit/logs?limit=50', {
       headers: apiKey ? { 'X-Caliper-Key': apiKey } : undefined,
     }),
+
+  cpuProfiles: (platform: Platform, appVersion?: string, runtime?: string) =>
+    requestJson<{ profiles: CPUProfileRecord[] }>(
+      `/v1/diagnostics/profiles${query({ platform, env: 'prod', app_version: appVersion, runtime })}`,
+    ),
+
+  flamegraph: (profileId: string) =>
+    requestJson<FlamegraphReport>(`/v1/diagnostics/profiles/${encodeURIComponent(profileId)}/flamegraph`),
+
+  heapSnapshots: (platform: Platform, appVersion?: string) =>
+    requestJson<{ snapshots: HeapSnapshotRecord[] }>(
+      `/v1/diagnostics/heap${query({ platform, env: 'prod', app_version: appVersion })}`,
+    ),
+
+  compareHeap: (platform: Platform, baseline: string, candidate: string) =>
+    requestJson<HeapCompareReport>('/v1/diagnostics/heap/compare', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform,
+        env: 'prod',
+        baseline_version: baseline,
+        candidate_version: candidate,
+      }),
+    }),
+
+  remoteLogTasks: (platform: Platform) =>
+    requestJson<{ tasks: RemoteLogTask[] }>(`/v1/diagnostics/log-tasks${query({ platform })}`),
+
+  createRemoteLogTask: (
+    payload: { app_id: string; platform: Platform; target_type: 'user_hash' | 'install_hash'; target_hash: string; reason: string; max_bytes?: number },
+    apiKey?: string,
+  ) =>
+    requestJson<RemoteLogTask>('/v1/diagnostics/log-tasks', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { 'X-Caliper-Key': apiKey } : {}),
+      },
+      body: JSON.stringify(payload),
+    }),
+
+  remoteLogContent: (taskId: string, reason: string, apiKey?: string) =>
+    requestJson<{ task: RemoteLogTask; content: string }>(
+      `/v1/diagnostics/log-tasks/${encodeURIComponent(taskId)}/content${query({ reason })}`,
+      { headers: apiKey ? { 'X-Caliper-Key': apiKey } : undefined },
+    ),
+
+  otlpExport: (platform: Platform, appVersion?: string) =>
+    requestJson<Record<string, unknown>>(
+      `/v1/otlp/export${query({ platform, env: 'prod', app_version: appVersion })}`,
+    ),
 
   startup: (platform: Platform, appVersion?: string) =>
     requestJson<StartupReport>(`/v1/analytics/startup${query({ platform, env: 'prod', app_version: appVersion })}`),

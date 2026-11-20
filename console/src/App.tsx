@@ -4,16 +4,18 @@ import { OverviewPage } from './pages/OverviewPage.tsx';
 import { StabilityPage } from './pages/StabilityPage.tsx';
 import { FluencyPage } from './pages/FluencyPage.tsx';
 import { ResourcesNetworkPage } from './pages/ResourcesNetworkPage.tsx';
+import { DiagnosticsPage } from './pages/DiagnosticsPage.tsx';
 import { OperationsPage } from './pages/OperationsPage.tsx';
 import type { HealthResponse, Platform, ReleaseRecord } from './types.ts';
 
-type Tab = 'overview' | 'stability' | 'fluency' | 'resources' | 'operations';
+type Tab = 'overview' | 'stability' | 'fluency' | 'resources' | 'diagnostics' | 'operations';
 
 const TABS: Array<{ id: Tab; label: string; icon: string }> = [
   { id: 'overview', label: 'Overview & Compare', icon: '◈' },
   { id: 'stability', label: 'Stability & Stacks', icon: '△' },
   { id: 'fluency', label: 'Startup & Fluency', icon: '◷' },
   { id: 'resources', label: 'Resources & Network', icon: '⇄' },
+  { id: 'diagnostics', label: 'Deep Diagnostics', icon: '✦' },
   { id: 'operations', label: 'Releases, Symbols & Alerts', icon: '⚙' },
 ];
 
@@ -86,6 +88,7 @@ export function App() {
           {tab === 'stability' && <StabilityPage platform={platform} appVersion={appVersion} refreshTick={refreshTick} />}
           {tab === 'fluency' && <FluencyPage platform={platform} appVersion={appVersion} refreshTick={refreshTick} />}
           {tab === 'resources' && <ResourcesNetworkPage platform={platform} appVersion={appVersion} refreshTick={refreshTick} />}
+          {tab === 'diagnostics' && <DiagnosticsPage platform={platform} appVersion={appVersion} releases={releases} refreshTick={refreshTick} onMutated={() => setRefreshTick(t => t + 1)} />}
           {tab === 'operations' && <OperationsPage platform={platform} releases={releases} refreshTick={refreshTick} onMutated={() => setRefreshTick(t => t + 1)} />}
         </main>
       </div>

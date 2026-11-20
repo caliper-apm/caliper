@@ -141,6 +141,14 @@ See [`docs/roadmap-v0.5.md`](docs/roadmap-v0.5.md) for full details:
 - **RBAC & Fail-Closed Audited Session Lookup**: Role-scoped API keys/Bearer tokens (`ingest_only`, `viewer`, `operator`, `admin` via `--auth-config`), non-PII hex `user_hash`/`install_hash` timeline lookup (`GET /v1/sessions/lookup?user_hash=...&reason=INC-123`) with immutable append-only audit trail (`GET /v1/audit/logs`).
 - **CI Build Plugins**: Android Gradle plugin (`packages/gradle-plugin`, ID `io.caliper.apm.symbols`), iOS Fastlane action (`packages/fastlane-plugin`), and composite GitHub Action (`packages/github-action`).
 
+## Deep Diagnostics & OpenTelemetry Interoperability (v1.0)
+
+See [`docs/roadmap-v1.0.md`](docs/roadmap-v1.0.md):
+- **Online Native & Hermes CPU Flamegraphs**: Bounded folded-stack profiles (`cpu_profile`) auto-symbolicated via R8 / Hermes SourceMap v3 / iOS dSYM and rendered in the zoomable Console Flamegraph (`GET /v1/diagnostics/profiles/{id}/flamegraph`).
+- **Trimmed Heap / OOM Deep Diagnostics**: Zero-PII class-level dominator summaries (`heap_snapshot`) with automated cross-version leak suspect diff (`POST /v1/diagnostics/heap/compare`).
+- **Audited Remote Log Retrieval Tasks**: Pull bounded, PII-scrubbed diagnostic ring logs on demand (`POST /v1/diagnostics/log-tasks`, SDK poll + gzip upload, fail-closed immutable audit trail).
+- **Full OTLP/HTTP JSON Interoperability**: Ingest standard OpenTelemetry traces & logs (`POST /v1/otlp/v1/traces`, `POST /v1/otlp/v1/logs`) and export aggregated `resourceMetrics` (`GET /v1/otlp/export`).
+
 ---
 
 ## License

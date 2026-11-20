@@ -103,8 +103,8 @@ func TestClickHouseMigrateIngestAndQueries(t *testing.T) {
 	mu.Lock()
 	ddlCount := len(ddls)
 	mu.Unlock()
-	if ddlCount != 8 { // 1 CREATE DATABASE + 7 CREATE TABLE
-		t.Fatalf("expected 8 DDL statements, got %d", ddlCount)
+	if ddlCount != 10 { // 1 CREATE DATABASE + 9 CREATE TABLE
+		t.Fatalf("expected 10 DDL statements, got %d", ddlCount)
 	}
 
 	batch := &protocol.BatchEnvelope{

@@ -178,3 +178,47 @@ CREATE TABLE IF NOT EXISTS caliper_session_timeline (
 PARTITION BY toYYYYMM(day_utc)
 ORDER BY (app_id, install_hash, user_hash, occurred_at_ms, event_id)
 TTL day_utc + INTERVAL 30 DAY;
+
+CREATE TABLE IF NOT EXISTS caliper_cpu_profiles (
+    profile_id         String,
+    ingested_at_ms     UInt64,
+    occurred_at_ms     UInt64,
+    day_utc            Date,
+    app_id             LowCardinality(String),
+    platform           LowCardinality(String),
+    env                LowCardinality(String),
+    app_version        LowCardinality(String),
+    build_number       LowCardinality(String),
+    scene              LowCardinality(String),
+    runtime            LowCardinality(String),
+    thread_name        String,
+    sample_interval_ms UInt32,
+    duration_ms        UInt64,
+    total_samples      UInt64,
+    stacks_json        String
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, platform, env, app_version, occurred_at_ms, profile_id)
+TTL day_utc + INTERVAL 30 DAY;
+
+CREATE TABLE IF NOT EXISTS caliper_heap_snapshots (
+    snapshot_id         String,
+    ingested_at_ms      UInt64,
+    occurred_at_ms      UInt64,
+    day_utc             Date,
+    app_id              LowCardinality(String),
+    platform            LowCardinality(String),
+    env                 LowCardinality(String),
+    app_version         LowCardinality(String),
+    build_number        LowCardinality(String),
+    scene               LowCardinality(String),
+    trigger_reason      LowCardinality(String),
+    memory_kind         LowCardinality(String),
+    total_allocated_kib Float64,
+    total_retained_kib  Float64,
+    memory_limit_kib    Float64,
+    dominators_json     String
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, platform, env, app_version, occurred_at_ms, snapshot_id)
+TTL day_utc + INTERVAL 30 DAY;

@@ -112,6 +112,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/stability/issues/{fingerprint}", h.withPerm(auth.PermReadAnalytics, h.handleIssueDetail))
 	h.mux.HandleFunc("GET /v1/sessions/lookup", h.handleSessionLookup)
 	h.mux.HandleFunc("GET /v1/audit/logs", h.withPerm(auth.PermReadAuditLogs, h.handleListAuditLogs))
+	h.registerV1DiagnosticsRoutes()
 	if h.cfg.ConsoleDistDir != "" {
 		h.mux.HandleFunc("GET /", h.handleConsoleStatic)
 	}

@@ -403,6 +403,48 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"frames_json":      string(framesJSON),
 				"breadcrumbs_json": string(crumbsJSON),
 			})
+
+		case protocol.CPUProfilePayload:
+			stacksJSON, _ := json.Marshal(p.Stacks)
+			tableRows["caliper_cpu_profiles"] = append(tableRows["caliper_cpu_profiles"], map[string]any{
+				"profile_id":         ev.EventID,
+				"ingested_at_ms":     nowMS,
+				"occurred_at_ms":     uint64(ev.OccurredAtMS),
+				"day_utc":            dayUTC,
+				"app_id":             batch.Resource.AppID,
+				"platform":           batch.Resource.Platform,
+				"env":                batch.Resource.Env,
+				"app_version":        batch.Resource.AppVersion,
+				"build_number":       batch.Resource.BuildNumber,
+				"scene":              scene,
+				"runtime":            p.Runtime,
+				"thread_name":        p.ThreadName,
+				"sample_interval_ms": p.SampleIntervalMS,
+				"duration_ms":        uint64(p.DurationMS),
+				"total_samples":      uint64(p.TotalSamples),
+				"stacks_json":        string(stacksJSON),
+			})
+
+		case protocol.HeapSnapshotPayload:
+			domJSON, _ := json.Marshal(p.Dominators)
+			tableRows["caliper_heap_snapshots"] = append(tableRows["caliper_heap_snapshots"], map[string]any{
+				"snapshot_id":         ev.EventID,
+				"ingested_at_ms":      nowMS,
+				"occurred_at_ms":      uint64(ev.OccurredAtMS),
+				"day_utc":             dayUTC,
+				"app_id":              batch.Resource.AppID,
+				"platform":            batch.Resource.Platform,
+				"env":                 batch.Resource.Env,
+				"app_version":         batch.Resource.AppVersion,
+				"build_number":        batch.Resource.BuildNumber,
+				"scene":               scene,
+				"trigger_reason":      p.TriggerReason,
+				"memory_kind":         p.MemoryKind,
+				"total_allocated_kib": p.TotalAllocatedKiB,
+				"total_retained_kib":  p.TotalRetainedKiB,
+				"memory_limit_kib":    p.MemoryLimitKiB,
+				"dominators_json":     string(domJSON),
+			})
 		}
 
 		res.Accepted++
@@ -910,6 +952,147 @@ FORMAT JSON`, s.database, strings.Join(conds, " AND "), limit)
 			Kind:         r.Kind,
 			Scene:        r.Scene,
 			Summary:      r.Summary,
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) QueryCPUProfiles(ctx context.Context, f storage.QueryFilter, runtime string, limit int) ([]storage.CPUProfileRecord, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	where := buildWhereClause(f, true, false)
+	if runtime != "" {
+		where += " AND runtime = " + quoteSQLString(runtime)
+	}
+	q := fmt.Sprintf(`
+SELECT profile_id, occurred_at_ms, app_id, platform, env, app_version, build_number, scene,
+       runtime, thread_name, sample_interval_ms, duration_ms, total_samples, stacks_json
+FROM %s.caliper_cpu_profiles FINAL
+WHERE %s
+ORDER BY occurred_at_ms DESC
+LIMIT %d
+FORMAT JSON`, s.database, where, limit)
+	return s.decodeCPUProfiles(ctx, q)
+}
+
+func (s *Store) GetCPUProfile(ctx context.Context, profileID string) (*storage.CPUProfileRecord, bool, error) {
+	q := fmt.Sprintf(`
+SELECT profile_id, occurred_at_ms, app_id, platform, env, app_version, build_number, scene,
+       runtime, thread_name, sample_interval_ms, duration_ms, total_samples, stacks_json
+FROM %s.caliper_cpu_profiles FINAL
+WHERE profile_id = %s
+LIMIT 1
+FORMAT JSON`, s.database, quoteSQLString(profileID))
+	rows, err := s.decodeCPUProfiles(ctx, q)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(rows) == 0 {
+		return nil, false, nil
+	}
+	return &rows[0], true, nil
+}
+
+func (s *Store) decodeCPUProfiles(ctx context.Context, q string) ([]storage.CPUProfileRecord, error) {
+	var resp chJSONResp[struct {
+		ProfileID        string    `json:"profile_id"`
+		OccurredAtMS     flexInt64 `json:"occurred_at_ms"`
+		AppID            string    `json:"app_id"`
+		Platform         string    `json:"platform"`
+		Env              string    `json:"env"`
+		AppVersion       string    `json:"app_version"`
+		BuildNumber      string    `json:"build_number"`
+		Scene            string    `json:"scene"`
+		Runtime          string    `json:"runtime"`
+		ThreadName       string    `json:"thread_name"`
+		SampleIntervalMS flexInt64 `json:"sample_interval_ms"`
+		DurationMS       flexInt64 `json:"duration_ms"`
+		TotalSamples     flexInt64 `json:"total_samples"`
+		StacksJSON       string    `json:"stacks_json"`
+	}]
+	if err := s.queryJSON(ctx, q, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]storage.CPUProfileRecord, 0, len(resp.Data))
+	for _, r := range resp.Data {
+		var stacks []protocol.ProfileStackSample
+		if r.StacksJSON != "" {
+			_ = json.Unmarshal([]byte(r.StacksJSON), &stacks)
+		}
+		out = append(out, storage.CPUProfileRecord{
+			ProfileID:        r.ProfileID,
+			OccurredAtMS:     int64(r.OccurredAtMS),
+			AppID:            r.AppID,
+			Platform:         r.Platform,
+			Env:              r.Env,
+			AppVersion:       r.AppVersion,
+			BuildNumber:      r.BuildNumber,
+			Scene:            r.Scene,
+			Runtime:          r.Runtime,
+			ThreadName:       r.ThreadName,
+			SampleIntervalMS: int(r.SampleIntervalMS),
+			DurationMS:       int64(r.DurationMS),
+			TotalSamples:     int64(r.TotalSamples),
+			Stacks:           stacks,
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) QueryHeapSnapshots(ctx context.Context, f storage.QueryFilter, limit int) ([]storage.HeapSnapshotRecord, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	where := buildWhereClause(f, true, false)
+	q := fmt.Sprintf(`
+SELECT snapshot_id, occurred_at_ms, app_id, platform, env, app_version, build_number, scene,
+       trigger_reason, memory_kind, total_allocated_kib, total_retained_kib, memory_limit_kib, dominators_json
+FROM %s.caliper_heap_snapshots FINAL
+WHERE %s
+ORDER BY occurred_at_ms DESC
+LIMIT %d
+FORMAT JSON`, s.database, where, limit)
+	var resp chJSONResp[struct {
+		SnapshotID        string    `json:"snapshot_id"`
+		OccurredAtMS      flexInt64 `json:"occurred_at_ms"`
+		AppID             string    `json:"app_id"`
+		Platform          string    `json:"platform"`
+		Env               string    `json:"env"`
+		AppVersion        string    `json:"app_version"`
+		BuildNumber       string    `json:"build_number"`
+		Scene             string    `json:"scene"`
+		TriggerReason     string    `json:"trigger_reason"`
+		MemoryKind        string    `json:"memory_kind"`
+		TotalAllocatedKiB float64   `json:"total_allocated_kib"`
+		TotalRetainedKiB  float64   `json:"total_retained_kib"`
+		MemoryLimitKiB    float64   `json:"memory_limit_kib"`
+		DominatorsJSON    string    `json:"dominators_json"`
+	}]
+	if err := s.queryJSON(ctx, q, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]storage.HeapSnapshotRecord, 0, len(resp.Data))
+	for _, r := range resp.Data {
+		var doms []protocol.HeapDominator
+		if r.DominatorsJSON != "" {
+			_ = json.Unmarshal([]byte(r.DominatorsJSON), &doms)
+		}
+		out = append(out, storage.HeapSnapshotRecord{
+			SnapshotID:        r.SnapshotID,
+			OccurredAtMS:      int64(r.OccurredAtMS),
+			AppID:             r.AppID,
+			Platform:          r.Platform,
+			Env:               r.Env,
+			AppVersion:        r.AppVersion,
+			BuildNumber:       r.BuildNumber,
+			Scene:             r.Scene,
+			TriggerReason:     r.TriggerReason,
+			MemoryKind:        r.MemoryKind,
+			TotalAllocatedKiB: r.TotalAllocatedKiB,
+			TotalRetainedKiB:  r.TotalRetainedKiB,
+			MemoryLimitKiB:    r.MemoryLimitKiB,
+			Dominators:        doms,
 		})
 	}
 	return out, nil

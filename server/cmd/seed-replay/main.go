@@ -111,6 +111,9 @@ func main() {
 				}
 			}
 			flush()
+			// Also emit real Native/Hermes CPU profiles and trimmed Heap snapshots for Deep Diagnostics.
+			batchEvents = append(batchEvents, buildDiagnosticEvents(platform, prof, baseTime.UnixMilli())...)
+			flush()
 		}
 	}
 
@@ -344,4 +347,99 @@ func postGzip(client *http.Client, url, apiKey string, body any) error {
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(msg))
 	}
 	return nil
+}
+
+func buildDiagnosticEvents(platform string, prof releaseProfile, tsMS int64) []protocol.Event {
+	regressed := prof.version == "1.1.0"
+	memKind := "android_pss_kib"
+	hotFrame := "a.b.c.a(SourceFile:92)" // Retraces via atlas-android-1.1.0-110.r8.txt -> FeedImageDecoder.decodeSync
+	cacheClass := "BitmapImageCache"
+	if platform == "ios" {
+		memKind = "ios_phys_footprint_kib"
+		hotFrame = "0x10004220" // Resolves via atlas-ios-1.1.0-110.dsym.json -> ImageDecoder.decodeFrame(_:)
+		cacheClass = "UIImageDiskCache"
+	}
+
+	hotSamples := int64(18)
+	if regressed {
+		hotSamples = 72
+	}
+	nativePayload, _ := json.Marshal(protocol.CPUProfilePayload{
+		Runtime:          "native",
+		ThreadName:       "main",
+		SampleIntervalMS: 10,
+		DurationMS:       5000,
+		TotalSamples:     100,
+		Stacks: []protocol.ProfileStackSample{
+			{Frames: []string{"MainRunLoop", "HomeFeedController.renderVisibleCells", hotFrame}, Samples: hotSamples},
+			{Frames: []string{"MainRunLoop", "HomeFeedController.renderVisibleCells", "LayoutEngine.measure"}, Samples: 100 - hotSamples - 10},
+			{Frames: []string{"MainRunLoop", "NetworkClient.dispatch"}, Samples: 10},
+		},
+	})
+
+	hermesHot := int64(20)
+	if regressed {
+		hermesHot = 68
+	}
+	hermesPayload, _ := json.Marshal(protocol.CPUProfilePayload{
+		Runtime:          "hermes",
+		ThreadName:       "mqt_js",
+		SampleIntervalMS: 10,
+		DurationMS:       5000,
+		TotalSamples:     100,
+		Stacks: []protocol.ProfileStackSample{
+			{Frames: []string{"(root)", "index.bundle:1:12", "MarkdownParser.parseSync"}, Samples: hermesHot},
+			{Frames: []string{"(root)", "ReactReconciler.commitMutationEffects"}, Samples: 100 - hermesHot},
+		},
+	})
+
+	cacheKiB := 42.0 * 1024
+	totalRetKiB := 175.0 * 1024
+	cacheInst := int64(140)
+	trigger := "manual"
+	if regressed {
+		cacheKiB = 218.0 * 1024
+		totalRetKiB = 365.0 * 1024
+		cacheInst = 920
+		trigger = "oom_warning"
+	}
+	heapPayload, _ := json.Marshal(protocol.HeapSnapshotPayload{
+		TriggerReason:     trigger,
+		MemoryKind:        memKind,
+		TotalAllocatedKiB: totalRetKiB * 1.15,
+		TotalRetainedKiB:  totalRetKiB,
+		MemoryLimitKiB:    512 * 1024,
+		Dominators: []protocol.HeapDominator{
+			{ClassName: cacheClass, InstanceCount: cacheInst, RetainedKiB: cacheKiB, RetainerPath: []string{"AtlasApplication", "FeedImagePipeline", cacheClass}},
+			{ClassName: "StreamingTokenBuffer", InstanceCount: 240, RetainedKiB: 28 * 1024, RetainerPath: []string{"StreamingReaderController", "StreamingTokenBuffer"}},
+			{ClassName: "SQLitePageCache", InstanceCount: 64, RetainedKiB: 16 * 1024, RetainerPath: []string{"LocalArticleStore", "SQLitePageCache"}},
+		},
+	})
+
+	return []protocol.Event{
+		{
+			EventID:         fmt.Sprintf("prof-nat-%s-%s", platform, prof.version),
+			Kind:            protocol.KindCPUProfile,
+			OccurredAtMS:    tsMS,
+			ContractVersion: 1,
+			Scene:           "home_feed",
+			Payload:         nativePayload,
+		},
+		{
+			EventID:         fmt.Sprintf("prof-js-%s-%s", platform, prof.version),
+			Kind:            protocol.KindCPUProfile,
+			OccurredAtMS:    tsMS + 1000,
+			ContractVersion: 1,
+			Scene:           "streaming_reader",
+			Payload:         hermesPayload,
+		},
+		{
+			EventID:         fmt.Sprintf("heap-snap-%s-%s", platform, prof.version),
+			Kind:            protocol.KindHeapSnapshot,
+			OccurredAtMS:    tsMS + 2000,
+			ContractVersion: 1,
+			Scene:           "home_feed",
+			Payload:         heapPayload,
+		},
+	}
 }

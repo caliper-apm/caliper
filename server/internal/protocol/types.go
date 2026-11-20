@@ -28,6 +28,8 @@ const (
 	KindNetworkSummary  = "network_summary"
 	KindNetworkStage    = "network_transport"
 	KindCustomScene     = "custom_scene"
+	KindCPUProfile      = "cpu_profile"
+	KindHeapSnapshot    = "heap_snapshot"
 )
 
 var (
@@ -193,6 +195,40 @@ type CustomScenePayload struct {
 	Status      string   `json:"status"` // "success" | "failure" | "cancelled" | "timeout"
 	DurationMS  *float64 `json:"duration_ms,omitempty"`
 	ErrorCode   string   `json:"error_code,omitempty"`
+}
+
+// ProfileStackSample holds one folded root-to-leaf callstack and sample count for CPU flamegraphs.
+type ProfileStackSample struct {
+	Frames  []string `json:"frames"` // root-to-leaf frame strings (raw or obfuscated)
+	Samples int64    `json:"samples"`
+}
+
+// CPUProfilePayload captures bounded Native (ART/mach) or Hermes JS sampling CPU profiles.
+type CPUProfilePayload struct {
+	Runtime          string               `json:"runtime"` // "native" | "hermes"
+	ThreadName       string               `json:"thread_name,omitempty"`
+	SampleIntervalMS int                  `json:"sample_interval_ms"`
+	DurationMS       int64                `json:"duration_ms"`
+	TotalSamples     int64                `json:"total_samples"`
+	Stacks           []ProfileStackSample `json:"stacks"`
+}
+
+// HeapDominator summarizes retained bytes for one class/type without uploading raw object values/PII.
+type HeapDominator struct {
+	ClassName     string   `json:"class_name"`
+	InstanceCount int64    `json:"instance_count"`
+	RetainedKiB   float64  `json:"retained_kib"`
+	RetainerPath  []string `json:"retainer_path,omitempty"`
+}
+
+// HeapSnapshotPayload captures privacy-safe trimmed heap/OOM dominator diagnostics.
+type HeapSnapshotPayload struct {
+	TriggerReason     string          `json:"trigger_reason"` // "oom_warning" | "high_watermark" | "manual"
+	MemoryKind        string          `json:"memory_kind"`    // android_pss_kib | ios_phys_footprint_kib | hermes_heap_kib
+	TotalAllocatedKiB float64         `json:"total_allocated_kib"`
+	TotalRetainedKiB  float64         `json:"total_retained_kib"`
+	MemoryLimitKiB    float64         `json:"memory_limit_kib,omitempty"`
+	Dominators        []HeapDominator `json:"dominators"`
 }
 
 // Validate checks top-level envelope and resource identity constraints.
@@ -429,6 +465,60 @@ func ValidateEvent(e *Event) (any, error) {
 		}
 		if p.DurationMS != nil && (!isFiniteNonNeg(*p.DurationMS) || *p.DurationMS > 600_000) {
 			return nil, errors.New("custom_scene duration_ms out of bounds")
+		}
+		return p, nil
+
+	case KindCPUProfile:
+		var p CPUProfilePayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return nil, fmt.Errorf("decode cpu_profile: %w", err)
+		}
+		if p.Runtime != "native" && p.Runtime != "hermes" {
+			return nil, fmt.Errorf("invalid cpu_profile runtime %q", p.Runtime)
+		}
+		if p.SampleIntervalMS <= 0 || p.SampleIntervalMS > 1000 || p.DurationMS <= 0 || p.DurationMS > 300_000 {
+			return nil, errors.New("cpu_profile timing bounds exceeded")
+		}
+		if len(p.Stacks) == 0 || len(p.Stacks) > 256 {
+			return nil, errors.New("cpu_profile stacks count must be in [1, 256]")
+		}
+		var sum int64
+		for _, s := range p.Stacks {
+			if len(s.Frames) == 0 || len(s.Frames) > 64 || s.Samples <= 0 {
+				return nil, errors.New("cpu_profile stack frames (1..64) and positive samples required")
+			}
+			sum += s.Samples
+		}
+		if p.TotalSamples <= 0 {
+			p.TotalSamples = sum
+		}
+		return p, nil
+
+	case KindHeapSnapshot:
+		var p HeapSnapshotPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return nil, fmt.Errorf("decode heap_snapshot: %w", err)
+		}
+		switch p.TriggerReason {
+		case "oom_warning", "high_watermark", "manual":
+		default:
+			return nil, fmt.Errorf("invalid heap_snapshot trigger_reason %q", p.TriggerReason)
+		}
+		switch p.MemoryKind {
+		case "android_pss_kib", "ios_phys_footprint_kib", "hermes_heap_kib":
+		default:
+			return nil, fmt.Errorf("invalid heap_snapshot memory_kind %q", p.MemoryKind)
+		}
+		if !isFiniteNonNeg(p.TotalAllocatedKiB) || !isFiniteNonNeg(p.TotalRetainedKiB) {
+			return nil, errors.New("heap_snapshot totals must be finite non-negative")
+		}
+		if len(p.Dominators) == 0 || len(p.Dominators) > 128 {
+			return nil, errors.New("heap_snapshot dominators must be in [1, 128]")
+		}
+		for _, d := range p.Dominators {
+			if d.ClassName == "" || d.InstanceCount < 0 || !isFiniteNonNeg(d.RetainedKiB) {
+				return nil, errors.New("invalid heap dominator entry")
+			}
 		}
 		return p, nil
 

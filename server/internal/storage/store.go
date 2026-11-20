@@ -195,6 +195,61 @@ type AuditLogEntry struct {
 	ResultCount int    `json:"result_count"`
 }
 
+// CPUProfileRecord stores one ingested Native or Hermes folded-stack CPU profile.
+type CPUProfileRecord struct {
+	ProfileID        string                        `json:"profile_id"`
+	OccurredAtMS     int64                         `json:"occurred_at_ms"`
+	AppID            string                        `json:"app_id"`
+	Platform         string                        `json:"platform"`
+	Env              string                        `json:"env"`
+	AppVersion       string                        `json:"app_version"`
+	BuildNumber      string                        `json:"build_number"`
+	Scene            string                        `json:"scene"`
+	Runtime          string                        `json:"runtime"` // native | hermes
+	ThreadName       string                        `json:"thread_name,omitempty"`
+	SampleIntervalMS int                           `json:"sample_interval_ms"`
+	DurationMS       int64                         `json:"duration_ms"`
+	TotalSamples     int64                         `json:"total_samples"`
+	Stacks           []protocol.ProfileStackSample `json:"stacks"`
+}
+
+// HeapSnapshotRecord stores one ingested Zero-PII trimmed heap/OOM dominator snapshot.
+type HeapSnapshotRecord struct {
+	SnapshotID        string                   `json:"snapshot_id"`
+	OccurredAtMS      int64                    `json:"occurred_at_ms"`
+	AppID             string                   `json:"app_id"`
+	Platform          string                   `json:"platform"`
+	Env               string                   `json:"env"`
+	AppVersion        string                   `json:"app_version"`
+	BuildNumber       string                   `json:"build_number"`
+	Scene             string                   `json:"scene"`
+	TriggerReason     string                   `json:"trigger_reason"`
+	MemoryKind        string                   `json:"memory_kind"`
+	TotalAllocatedKiB float64                  `json:"total_allocated_kib"`
+	TotalRetainedKiB  float64                  `json:"total_retained_kib"`
+	MemoryLimitKiB    float64                  `json:"memory_limit_kib,omitempty"`
+	Dominators        []protocol.HeapDominator `json:"dominators"`
+}
+
+// RemoteLogTask coordinates an audited, bounded remote diagnostic log pull from a target device/user.
+type RemoteLogTask struct {
+	TaskID        string `json:"task_id"`
+	AppID         string `json:"app_id"`
+	Platform      string `json:"platform"`
+	TargetType    string `json:"target_type"` // install_hash | user_hash
+	TargetHash    string `json:"target_hash"`
+	Reason        string `json:"reason"`
+	RequestedBy   string `json:"requested_by"`
+	Status        string `json:"status"` // pending | completed | expired
+	MaxBytes      int64  `json:"max_bytes"`
+	CreatedAtMS   int64  `json:"created_at_ms"`
+	ExpiresAtMS   int64  `json:"expires_at_ms"`
+	CompletedAtMS int64  `json:"completed_at_ms,omitempty"`
+	UploadedBytes int64  `json:"uploaded_bytes,omitempty"`
+	SHA256        string `json:"sha256,omitempty"`
+	StoragePath   string `json:"storage_path,omitempty"`
+}
+
 // AnalyticsStore is the pluggable OLAP ingestion and query interface.
 type AnalyticsStore interface {
 	IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) (IngestResult, error)
@@ -205,6 +260,9 @@ type AnalyticsStore interface {
 	QueryIssues(ctx context.Context, f QueryFilter, limit int) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, fingerprint string, f QueryFilter) (*IssueSummary, bool, error)
 	QuerySessionTimeline(ctx context.Context, f SessionLookupFilter) ([]SessionTimelineEvent, error)
+	QueryCPUProfiles(ctx context.Context, f QueryFilter, runtime string, limit int) ([]CPUProfileRecord, error)
+	GetCPUProfile(ctx context.Context, profileID string) (*CPUProfileRecord, bool, error)
+	QueryHeapSnapshots(ctx context.Context, f QueryFilter, limit int) ([]HeapSnapshotRecord, error)
 	Stats(ctx context.Context) Stats
 	Close() error
 }
@@ -281,4 +339,9 @@ type MetaStore interface {
 	ListAlertIncidents(ctx context.Context, ruleID string) ([]AlertIncident, error)
 	AppendAuditLog(ctx context.Context, entry AuditLogEntry) error
 	ListAuditLogs(ctx context.Context, limit int) ([]AuditLogEntry, error)
+	CreateRemoteLogTask(ctx context.Context, task RemoteLogTask) (RemoteLogTask, error)
+	ListRemoteLogTasks(ctx context.Context, appID, platform string) ([]RemoteLogTask, error)
+	PollPendingLogTasks(ctx context.Context, appID, platform, installHash, userHash string, nowMS int64) ([]RemoteLogTask, error)
+	CompleteRemoteLogTask(ctx context.Context, taskID string, content []byte, sha256Hex string, nowMS int64) (RemoteLogTask, error)
+	GetRemoteLogContent(ctx context.Context, taskID string) (RemoteLogTask, []byte, bool, error)
 }
