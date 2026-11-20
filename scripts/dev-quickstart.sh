@@ -20,10 +20,10 @@ echo "[1/4] Building Go binaries..."
 
 echo "[2/4] Checking Web Console build..."
 if [[ ! -f "$ROOT_DIR/console/dist/index.html" ]]; then
-  if command -v pnpm >/dev/null 2>&1; then
-    (cd "$ROOT_DIR/console" && pnpm install && pnpm run build)
+  if [[ -f "$ROOT_DIR/console/package-lock.json" ]]; then
+    (cd "$ROOT_DIR/console" && npm ci --no-audit --no-fund && npm run build)
   else
-    (cd "$ROOT_DIR/console" && npm install && npm run build)
+    (cd "$ROOT_DIR/console" && npm install --no-audit --no-fund && npm run build)
   fi
 fi
 
