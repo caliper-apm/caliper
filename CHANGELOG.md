@@ -2,6 +2,11 @@
 
 All notable releases of **Caliper APM** are documented here.
 
+## v1.4.1 — Dual Physical-Device Release Benchmarks Verified (Android + iOS) & Watchdog Tuning
+- **Android Physical Release AOT Verification (`vivo V2343A`, Snapdragon 6 Gen 1, Android 14 / API 34)**: Cold Start `+6.0 ms` P50 (`-1 ms` P95, n=20), 15-fling scroll jank `+0.00%` (0/518 jank frames), PSS `+2.67 MiB`, pre-R8 Release APK delta `+28.0 KiB`, `0` self-induced crashes, and live physical-device E2E telemetry ingestion (`0` rejected).
+- **iOS Physical Release Verification (`iPhone 13 Pro Max`, A15 Bionic, iOS 27.2.1, `-O wholemodule`)**: Cold Start `+3.98 ms` P50 (`+1.51 ms` P90, n=18), ProMotion scroll jank `+0.00%` aggregate (3/517 vs 3/516 frames), `phys_footprint` `+0.34 MiB`, active scroll CPU `+0.10%` of 1 core, stripped arm64 Mach-O binary delta `+247.5 KiB`, `0` self-induced crashes, and live physical-device E2E telemetry ingestion (`0` rejected).
+- **Android Agent Real-SDK Fix & Tuning**: Fixed `FluencyWindowAccumulator` integration in `CaliperAndroidAgent.kt` verified directly against Android 35 SDK and tuned default `CaliperWatchdog` poll cadence to `1000 ms`.
+
 ## v1.4.0 — Deep Network Forensics, Multi-Stage Business Journeys, GitHub PR Gate Action & Device Bench Collector
 - **Deep Network Slow/Error Samples & HTTP Status Code Distribution**: Added `status_codes` (`2xx` / `3xx` / `4xx` / `5xx` / `timeout`) onto `GET /v1/analytics/network`, bounded per-request transport sample retention (`GET /v1/analytics/network/samples`), HTTP Status Code ECharts bar chart, and a clickable Endpoint Drill-Down Drawer displaying individual DNS/TCP/TLS/TTFB/Body waterfalls with 1-click jump to Single-User Trace.
 - **Custom Business Journey / Multi-Stage Transaction Traces (`custom_scene`)**: Extended `CustomScenePayload` with optional ordered `stages[]` across Go server, ClickHouse (`caliper_custom_scene_events`), Android Kotlin (`CaliperClient.recordCustomJourney`), iOS Swift (`CaliperClient.recordCustomJourney`), and RN TypeScript (`CaliperRNAdapter.recordCustomJourney`), served via `GET /v1/analytics/journeys` and visualized with multi-stage P90 waterfalls & 19-bucket distribution drawers in Console 2.3.

@@ -46,16 +46,17 @@ docker compose up --build
 
 ---
 
-## 实测宿主机性能基准（2026-11-20）
+## 实测性能基准（宿主机 + 双端物理真机 · 2026-11-23）
 
-完整指标与物理真机 Release 门禁追踪见 [`benchmarks/REPORT.md`](benchmarks/REPORT.md)，可通过 `./benchmarks/run-overhead-bench.sh` 一键复现。
+完整测试方法、样本分布与 North Star 门禁详见 [`benchmarks/REPORT.md`](benchmarks/REPORT.md)，可通过 `./benchmarks/run-overhead-bench.sh` 与 `./benchmarks/collect-device-bench.sh` 复现。
 
-| 组件 | 压测场景 | 实测结果 |
+| 平台 / 组件 | 压测场景（Release OFF vs ON） | 实测结果 |
 |---|---|---|
-| Go 内嵌存储引擎 | 100 事件批次写入 | **104.3 µs / 100 条**（进程内 ~95.8 万 events/s） |
-| 真实 HTTP + WAL 回放 | 99,996 条事件（504 个 Gzip 批次） | **2.98 秒**（**33,566 events/s**）；跨版本对比查询 **0.34–0.90 ms** |
-| RN 适配器 OFF vs ON | 10 万次 API + 1 万次 LongTask | 单次 API 开销 **42 ns**；**550× 过桥流量压缩** |
-| Chaos Lab 全链路 E2E | 上传三端符号 + 三端自动符号化 + 双 Webhook 投递 | 全流程 **2.74 秒** |
+| **Android 真机（`vivo V2343A`，API 34，AOT）** | 20 轮冷启 + 15 轮滑动 + PSS + APK 增量 | 冷启 **`+6.0 ms` P50（`-1 ms` P95）** · 掉帧 **`+0.00%`** · PSS **`+2.67 MiB`** · APK **`+28.0 KiB`** · 自崩溃 **`0`** |
+| **iOS 真机（`iPhone 13 Pro Max`，iOS 27.2.1，`-O`）** | 18 轮冷启 + 3×3s ProMotion 滑动 + `phys_footprint` + Mach-O | 冷启 **`+3.98 ms` P50（`+1.51 ms` P90）** · 掉帧 **`+0.00%`** · 内存 **`+0.34 MiB`** · CPU **`+0.10%`** · 体积 **`+247.5 KiB`** |
+| **Go 内嵌引擎 + 真实 HTTP/WAL 回放** | 100 条写入 / 99,996 条 Gzip 回放 | **104.3 µs / 100 条** · **33,566–76,904 events/s** · 跨版本对比 **0.17–0.90 ms** |
+| **RN 适配器 OFF vs ON** | 10 万次 API + 1 万次 LongTask | 单次 API 开销 **42 ns** · **550× 过桥流量压缩** |
+| **Chaos Lab 全链路 E2E** | 三端 R8/SourceMap/dSYM 符号化 + 飞书/Slack 真 Webhook | 全流程 **2.74–2.96 秒** |
 
 ---
 

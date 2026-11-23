@@ -120,16 +120,17 @@ caliper-symbols upload \
 
 ---
 
-## Measured Host Benchmarks (2026-11-20)
+## Measured Benchmarks (Host + Real Physical Devices · 2026-11-23)
 
-Full details & physical-device Release gates: [`benchmarks/REPORT.md`](benchmarks/REPORT.md). Reproduce with `./benchmarks/run-overhead-bench.sh`.
+Full methodology, raw distributions & physical-device Release gates: [`benchmarks/REPORT.md`](benchmarks/REPORT.md). Reproduce host benches via `./benchmarks/run-overhead-bench.sh` or physical benches via `./benchmarks/collect-device-bench.sh`.
 
-| Component | Workload | Measured Result |
+| Platform / Component | Workload (Release OFF vs ON) | Measured Result |
 |---|---|---|
-| Go Embedded Store | 100-event batch ingest | **104.3 µs / 100 events** (~958k events/s in-process) |
-| Live HTTP + WAL Replay | 99,996 events (504 gzip batches) | **2.98 s** (**33,566 events/s**); compare query **0.34–0.90 ms** |
-| RN Adapter OFF vs ON | 100k API calls + 10k LongTasks | **42 ns / API call**; **550× bridge traffic reduction** |
-| Chaos Lab Full E2E | Symbol upload + 3-platform symbolication + 2 Webhooks | **2.74 s** end-to-end |
+| **Android Physical (`vivo V2343A`, API 34, AOT)** | 20 cold starts + 15-fling scroll + PSS + APK size | Cold Start **`+6.0 ms` P50 (`-1 ms` P95)** · Scroll Jank **`+0.00%`** · PSS **`+2.67 MiB`** · APK **`+28.0 KiB`** · Crashes **`0`** |
+| **iOS Physical (`iPhone 13 Pro Max`, iOS 27.2.1, `-O`)** | 18 cold starts + 3×3s ProMotion scroll + `phys_footprint` + Mach-O | Cold Start **`+3.98 ms` P50 (`+1.51 ms` P90)** · Scroll Jank **`+0.00%`** · Memory **`+0.34 MiB`** · CPU **`+0.10%`** · Binary **`+247.5 KiB`** |
+| **Go Embedded Store + Live WAL Replay** | 100-event batch / 99,996-event gzip HTTP replay | **104.3 µs / 100 events** · **33,566–76,904 events/s** · compare query **0.17–0.90 ms** |
+| **RN Adapter (`sdk-react-native`)** | 100k API calls + 10k LongTasks | **42 ns / API call** · **550× bridge traffic reduction** |
+| **Chaos Lab Full E2E** | 3-platform R8/SourceMap/dSYM symbolication + 2 real Webhooks | **2.74–2.96 s** end-to-end |
 
 ---
 
