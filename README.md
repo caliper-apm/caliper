@@ -16,7 +16,7 @@ Most mid-to-large mobile apps run **Native code for performance-critical core fl
 **Caliper APM** fills that gap with five core principles:
 1. **Native-First Core + RN First-Class Adapter**: `sdk-android` (Kotlin) and `sdk-ios` (Swift SPM) have **zero React Native dependencies**. Hybrid apps attach `sdk-react-native` onto the exact same Native lifecycle, window correlation, and symbolication timeline.
 2. **Zero-Lie Analytics Engine**: Mergeable 19-bucket histograms (never averaged daily P90), missing values never zero-filled, `frame_count == 0` never reported as smooth, Android API 31+ `deadline` vs `heuristic` strictly separated, and explicit sample-size gates (`n >= 100` for release deltas).
-3. **Built-In Multi-Format Auto-Symbolication**: Pure-Go R8/ProGuard Retrace, Source Map v3 VLQ (JS/Hermes), and Breakpad/JSON dSYM address resolution bound strictly to `app_version + build_number + symbol_id`.
+3. **Built-In Multi-Format Auto-Symbolication**: Pure-Go R8/ProGuard Retrace, Source Map v3 VLQ (JS/Hermes), **native Mach-O `.dSYM`/`.dSYM.zip` & Android NDK ELF `.so` DWARF (with inlined-frame expansion & Itanium C++ demangling)**, and Breakpad `.sym` resolution bound strictly to `app_version + build_number + symbol_id`.
 4. **Actionable Real Alerting**: Sample-gated rule evaluation with cooldown deduplication and native **Feishu Interactive Card**, **Slack Block Kit**, **Discord Embed**, and **Generic JSON** Webhooks.
 5. **Single-Binary Self-Hosting + Chaos Lab Showcase**: Zero-CGO Go binary serving both APIs and the 5-page real-data React 19 Web Console, paired with the **Atlas Reader** hybrid demo & **Chaos Lab**.
 
@@ -160,7 +160,7 @@ See [`CHANGELOG.md`](CHANGELOG.md):
   ```
 - **Stability Issue Lifecycle Triage & Impact Charts**: Persistent status workflow (`open` / `in_progress` / `resolved` / `ignored`, assignee, resolved-in version, note via `PATCH /v1/stability/issues/{fp}`), per-issue Device/OS/Release ECharts charts, honest device/OS-scoped issue counts, and 1-click jump into Single-User Trace.
 - **Dynamic Sampling & Collector Policy Control**: Hot-update sampling rate (`%` / PPM), 24h device quotas, lease TTL, and collector switches via `GET/PUT /v1/policy` with immutable audit logging, plus Data Source Health (`GET /v1/ops/source-health`) and Prometheus `GET /metrics`.
-- **Production Mobile SDK Depth & Cluster HA**: Offline disk queues, main-thread Watchdogs, Android `CaliperAndroidAgent` (`FrameMetrics`, `ApplicationExitInfo`, `Debug.MemoryInfo`), iOS `CaliperMetricKitBridge`, RN native bridges, pure-Go AWS SigV4 S3/MinIO `--object-store=s3`, ClickHouse `device_model`/`os_version` parity, PostgreSQL metadata DDL, and Kubernetes Helm Chart (`deploy/helm/caliper-apm`).
+- **Production Mobile SDK Depth & Stateless Cluster HA (`v1.6`)**: Offline disk queues, main-thread Watchdogs, Android `CaliperAndroidAgent` (`FrameMetrics`, `ApplicationExitInfo`, `Debug.MemoryInfo`), iOS `CaliperMetricKitBridge`, RN native bridges, **runtime zero-CGO PostgreSQL `MetaStore` (`--meta-driver=postgres`)**, pure-Go AWS SigV4 S3/MinIO `--object-store=s3`, ClickHouse OLAP (`--storage-driver=clickhouse`), native Mach-O `.dSYM`/ELF `.so` DWARF symbolication, and Kubernetes Helm Chart (`deploy/helm/caliper-apm`).
 
 ---
 

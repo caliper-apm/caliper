@@ -2,6 +2,13 @@
 
 All notable releases of **Caliper APM** are documented here.
 
+## v1.6.0 — Stateless Multi-Replica PostgreSQL HA & Native Mach-O/ELF DWARF Symbolicator
+- **Runtime PostgreSQL `MetaStore` Driver (`--meta-driver=postgres`, zero-CGO `pgx/v5`)**: Implemented all 22 `storage.MetaStore` methods over PostgreSQL 15+ (`server/internal/storage/postgres/store.go`) with embedded idempotent startup migrations (`//go:embed schema.sql`, including `caliper_issue_states` and `native_elf`), atomic `ON CONFLICT` upserts, S3/Local `ObjectStore` blob integration, live `/healthz` DB ping probes, `docker-compose --profile cluster` PostgreSQL 16 service, and Helm Chart `metaStore` templates. Running `--storage-driver=clickhouse --meta-driver=postgres --object-store=s3` requires zero local disk state across N collector replicas.
+- **Pure-Go Native Mach-O `.dSYM`/`.dSYM.zip` & Android NDK ELF `.so` DWARF Symbolicator (`server/internal/symbolicator/{dwarf.go,demangle.go}`)**:
+  - Auto-detects raw Mach-O Thin, Universal/Fat Mach-O (arm64 priority), `.dSYM.zip` archives (with 256 MiB zip-bomb guard), Android NDK ELF-32/64 `.so` (`--kind native_elf`, 128 MiB upload limit), Breakpad `.sym`, and JSON address maps with zero CGO and zero external `llvm-symbolizer`.
+  - Extracts Mach-O `LC_UUID` and ELF `.note.gnu.build-id`, resolves both absolute virtual addresses and `__TEXT` slide-relative offsets, parses `DW_TAG_subprogram` + `DW_TAG_inlined_subroutine` (expanding inlined frames with `inlined: true` and exact call-site `file:line`), falls back to Mach-O/ELF symbol tables, and includes a zero-dep Itanium C++ ABI demangler.
+  - Enhanced `caliper-symbols upload` CLI to accept `--kind native_elf` and auto-zip `.dSYM` bundle directories in memory.
+
 ## v1.5.0 — Console 2.4 Enterprise UX Polish & Production OSS Documentation Suite
 - **Global Device Model / OS Version Filter Bar & Dynamic Dimensions API (`GET /v1/ops/dimensions`)**: Added live-discovered `devices`, `os_versions`, and `scenes` selectors directly in the sticky global filter bar; wired `device_model` and `os_version` query parameters through Overview, Stability (`QueryIssues` now honors honest per-device/OS event counts), Fluency, Startup, Network, and Journeys.
 - **Shareable URL Query State, Dark/Light Theme & 1-Click Diagnostic Export**: Synced active tab and all global filters (`platform`, `env`, `version`, `device`, `os`, `adapter`, `scene`, `range`) to URL query parameters with a 1-click "Share View" copy button, added persistent Dark/Light theme switching (`[data-theme="dark"]`), and added 1-click JSON Diagnostic Report export containing active filters, summary, top issues, source health, and release gate verdict.

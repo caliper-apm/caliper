@@ -70,9 +70,11 @@ func (s *Service) ResolveFrames(ctx context.Context, scope LookupScope, frames [
 	res.MatchedSymbolID = matchedIDs
 
 	resolved := 0
+	expanded := make([]protocol.StackFrame, 0, len(outFrames))
 	for i := range outFrames {
-		f := &outFrames[i]
+		f := outFrames[i]
 		frameResolved := false
+		var extraFrames []protocol.StackFrame
 		for _, b := range bundles {
 			switch b.kind {
 			case "r8_mapping":
@@ -101,21 +103,31 @@ func (s *Service) ResolveFrames(ctx context.Context, scope LookupScope, frames [
 						frameResolved = true
 					}
 				}
-			case "dsym", "breakpad":
+			case "dsym", "breakpad", "native_elf":
 				addr := f.Address
 				if addr == "" && strings.HasPrefix(strings.TrimSpace(f.Symbol), "0x") {
 					addr = strings.TrimSpace(f.Symbol)
 				}
 				if addr != "" {
-					if entry, ok := b.nativeTbl.ResolveAddress(addr); ok {
-						if entry.Symbol != "" {
-							f.Symbol = entry.Symbol
+					if chain, ok := b.nativeTbl.ResolveAddressChain(addr); ok && len(chain) > 0 {
+						first := chain[0]
+						if first.Symbol != "" {
+							f.Symbol = first.Symbol
 						}
-						if entry.File != "" {
-							f.File = entry.File
+						if first.File != "" {
+							f.File = first.File
 						}
-						if entry.Line > 0 {
-							f.Line = entry.Line
+						if first.Line > 0 {
+							f.Line = first.Line
+						}
+						f.Inlined = first.Inlined
+						for _, next := range chain[1:] {
+							ef := f
+							ef.Symbol = next.Symbol
+							ef.File = next.File
+							ef.Line = next.Line
+							ef.Inlined = next.Inlined
+							extraFrames = append(extraFrames, ef)
 						}
 						frameResolved = true
 					}
@@ -128,8 +140,13 @@ func (s *Service) ResolveFrames(ctx context.Context, scope LookupScope, frames [
 		if frameResolved {
 			resolved++
 		}
+		expanded = append(expanded, f)
+		if len(extraFrames) > 0 {
+			expanded = append(expanded, extraFrames...)
+		}
 	}
 
+	res.Frames = expanded
 	res.ResolvedCount = resolved
 	switch {
 	case resolved == len(outFrames):
@@ -175,7 +192,7 @@ func (s *Service) ResolveLines(ctx context.Context, scope LookupScope, lines []s
 						matched = true
 					}
 				}
-			case "dsym", "breakpad":
+			case "dsym", "breakpad", "native_elf":
 				trimmed := strings.TrimSpace(raw)
 				if entry, ok := b.nativeTbl.ResolveAddress(trimmed); ok {
 					if entry.File != "" && entry.Line > 0 {
@@ -250,7 +267,7 @@ func (s *Service) getOrParse(rec storage.SymbolRecord, content []byte) *parsedBu
 			return nil
 		}
 		b.sourceMap = sm
-	case "dsym", "breakpad":
+	case "dsym", "breakpad", "native_elf":
 		b.nativeTbl = ParseNativeSymbols(content)
 	default:
 		return nil

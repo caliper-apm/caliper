@@ -16,11 +16,17 @@ type NativeSymbolEntry struct {
 	Symbol  string
 	File    string
 	Line    int
+	Inlined bool
 }
 
-// NativeSymbolTable resolves hex instruction addresses from Breakpad (.sym) or JSON dSYM symbol tables.
+// NativeSymbolTable resolves hex instruction addresses from native Mach-O (.dSYM / .dSYM.zip),
+// ELF (.so DWARF/symtab), Breakpad (.sym), or JSON dSYM symbol tables.
 type NativeSymbolTable struct {
-	Entries []NativeSymbolEntry
+	Format    string // macho-dwarf | macho-symtab | elf-dwarf | elf-symtab | breakpad | json
+	BuildUUID string // Mach-O LC_UUID or ELF .note.gnu.build-id
+	ImageBase uint64 // Mach-O __TEXT vmaddr or ELF executable PT_LOAD vaddr
+	Entries   []NativeSymbolEntry
+	dwarf     *dwarfIndex
 }
 
 type jsonNativeSymbol struct {
@@ -31,8 +37,17 @@ type jsonNativeSymbol struct {
 	Line    int    `json:"line"`
 }
 
-// ParseNativeSymbols parses either a JSON dSYM/ELF address map or a Breakpad .sym text file.
+// ParseNativeSymbols auto-detects and parses native Mach-O (.dSYM / .dSYM.zip), ELF (.so),
+// JSON address maps, or Breakpad .sym text files.
 func ParseNativeSymbols(raw []byte) *NativeSymbolTable {
+	if len(raw) == 0 {
+		return &NativeSymbolTable{}
+	}
+	if isNativeBinaryFormat(raw) {
+		if tbl, err := parseNativeBinary(raw); err == nil && tbl != nil {
+			return tbl
+		}
+	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return &NativeSymbolTable{}
@@ -67,6 +82,7 @@ func parseJSONNativeSymbols(raw []byte) *NativeSymbolTable {
 		})
 	}
 	sort.Slice(tbl.Entries, func(i, j int) bool { return tbl.Entries[i].Address < tbl.Entries[j].Address })
+	tbl.Format = "json"
 	return tbl
 }
 
@@ -141,29 +157,68 @@ func parseBreakpadSymbols(raw []byte) *NativeSymbolTable {
 		}
 		return entries[i].Line > entries[j].Line
 	})
-	return &NativeSymbolTable{Entries: entries}
+	return &NativeSymbolTable{Format: "breakpad", Entries: entries}
 }
 
-// ResolveAddress looks up an address string like "0x100042bc" or "100042bc".
+// ResolveAddress looks up an address string like "0x100042bc" or "0x42bc" (slide-relative).
+// For inlined DWARF locations, it returns the innermost inlined frame; use ResolveAddressChain
+// to retrieve all expanded inlined + caller frames.
 func (t *NativeSymbolTable) ResolveAddress(addrStr string) (NativeSymbolEntry, bool) {
-	if t == nil || len(t.Entries) == 0 {
+	chain, ok := t.ResolveAddressChain(addrStr)
+	if !ok || len(chain) == 0 {
 		return NativeSymbolEntry{}, false
+	}
+	return chain[0], true
+}
+
+// ResolveAddressChain resolves an address to one or more frames (innermost inlined frame first,
+// followed by enclosing caller frames with callsite file/line when DWARF inline info is present).
+func (t *NativeSymbolTable) ResolveAddressChain(addrStr string) ([]NativeSymbolEntry, bool) {
+	if t == nil || (t.dwarf == nil && len(t.Entries) == 0) {
+		return nil, false
 	}
 	addr, ok := parseHexAddress(addrStr)
 	if !ok {
+		return nil, false
+	}
+
+	candidates := []uint64{addr}
+	if t.ImageBase > 0 && addr < t.ImageBase {
+		candidates = append(candidates, addr+t.ImageBase)
+	}
+
+	if t.dwarf != nil {
+		for _, a := range candidates {
+			if chain, ok := t.dwarf.lookupChain(a); ok {
+				return chain, true
+			}
+		}
+	}
+
+	for _, a := range candidates {
+		if entry, ok := t.lookupTableEntry(a); ok {
+			return []NativeSymbolEntry{entry}, true
+		}
+	}
+	return nil, false
+}
+
+func (t *NativeSymbolTable) lookupTableEntry(addr uint64) (NativeSymbolEntry, bool) {
+	if len(t.Entries) == 0 {
 		return NativeSymbolEntry{}, false
 	}
 	// Find best matching range containing addr (prefer entry with line number and smallest size).
 	var best *NativeSymbolEntry
-	for i := range t.Entries {
+	hi := sort.Search(len(t.Entries), func(i int) bool { return t.Entries[i].Address > addr })
+	for i := hi - 1; i >= 0; i-- {
 		e := &t.Entries[i]
-		if e.Address > addr {
-			break
-		}
 		if addr >= e.Address && addr < e.Address+e.Size {
-			if best == nil || (e.Line > 0 && best.Line == 0) || (e.Line > 0 == (best.Line > 0) && e.Size < best.Size) {
+			if best == nil || (e.Line > 0 && best.Line == 0) || ((e.Line > 0) == (best.Line > 0) && e.Size < best.Size) {
 				best = e
 			}
+		}
+		if best != nil && addr-e.Address > 1024*1024 {
+			break
 		}
 	}
 	if best == nil {

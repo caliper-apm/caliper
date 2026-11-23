@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/caliper-apm/caliper/server/internal/storage"
 	"github.com/caliper-apm/caliper/server/internal/storage/clickhouse"
 	"github.com/caliper-apm/caliper/server/internal/storage/objectstore"
+	"github.com/caliper-apm/caliper/server/internal/storage/postgres"
 )
 
 func main() {
@@ -26,6 +28,10 @@ func main() {
 	chUser := flag.String("clickhouse-user", "", "Optional ClickHouse HTTP username")
 	chPass := flag.String("clickhouse-password", "", "Optional ClickHouse HTTP password")
 	chMigrate := flag.Bool("clickhouse-migrate", true, "Run idempotent ClickHouse DDL migration on startup")
+	metaDriver := flag.String("meta-driver", "embedded", "Metadata store engine: embedded | postgres (use postgres + clickhouse + s3 for stateless multi-replica HA)")
+	pgDSN := flag.String("postgres-dsn", os.Getenv("CALIPER_POSTGRES_DSN"), "PostgreSQL DSN (when --meta-driver=postgres)")
+	pgMigrate := flag.Bool("postgres-migrate", true, "Run idempotent PostgreSQL schema migration on startup")
+	pgMaxConns := flag.Int("postgres-max-conns", 25, "Maximum open PostgreSQL connections")
 	objectStoreDriver := flag.String("object-store", "local", "Blob store for symbols & remote logs: local | s3")
 	s3Endpoint := flag.String("s3-endpoint", os.Getenv("CALIPER_S3_ENDPOINT"), "S3/MinIO endpoint URL (when --object-store=s3)")
 	s3Bucket := flag.String("s3-bucket", os.Getenv("CALIPER_S3_BUCKET"), "S3/MinIO bucket name")
@@ -38,19 +44,19 @@ func main() {
 	alertInterval := flag.Duration("alert-interval", 0, "Optional background alert evaluation interval (e.g., 30s; 0 disables background loop)")
 	flag.Parse()
 
-	metaStore, err := storage.OpenEmbedded(*dataDir)
-	if err != nil {
-		log.Fatalf("open metadata/embedded store: %v", err)
-	}
-	defer func() {
-		if err := metaStore.Close(); err != nil {
-			log.Printf("close metadata store error: %v", err)
-		}
-	}()
-
+	// 1. Initialize ObjectStore (S3/MinIO for stateless HA, or local disk/memory fallback).
+	var blobStore objectstore.ObjectStore
 	switch *objectStoreDriver {
 	case "local", "":
-		// Local filesystem (or in-memory when data-dir is empty).
+		if *dataDir != "" {
+			ls, err := objectstore.NewLocal(filepath.Join(*dataDir, "blobs"))
+			if err != nil {
+				log.Fatalf("init local object store: %v", err)
+			}
+			blobStore = ls
+		} else {
+			blobStore = objectstore.NewMemory()
+		}
 	case "s3":
 		s3Store, err := objectstore.NewS3(objectstore.S3Config{
 			Endpoint:  *s3Endpoint,
@@ -62,15 +68,70 @@ func main() {
 		if err != nil {
 			log.Fatalf("init s3 object store: %v", err)
 		}
-		metaStore.SetObjectStore(s3Store)
+		blobStore = s3Store
 	default:
 		log.Fatalf("unsupported --object-store %q (expected local or s3)", *objectStoreDriver)
 	}
 
-	var analyticsStore storage.AnalyticsStore = metaStore
+	// 2. Open EmbeddedStore only if needed by either analytics or metadata driver.
+	var embeddedStore *storage.EmbeddedStore
+	if *storageDriver == "embedded" || *metaDriver == "embedded" || *metaDriver == "" {
+		es, err := storage.OpenEmbedded(*dataDir)
+		if err != nil {
+			log.Fatalf("open embedded store: %v", err)
+		}
+		if *objectStoreDriver == "s3" {
+			es.SetObjectStore(blobStore)
+		}
+		defer func() {
+			if err := es.Close(); err != nil {
+				log.Printf("close embedded store error: %v", err)
+			}
+		}()
+		embeddedStore = es
+	}
+
+	// 3. Initialize MetaStore (embedded WAL or PostgreSQL HA).
+	var metaStore storage.MetaStore
+	activeMetaEngine := "embedded"
+	switch *metaDriver {
+	case "embedded", "":
+		metaStore = embeddedStore
+	case "postgres":
+		pgCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		pgStore, err := postgres.Open(pgCtx, postgres.Config{
+			DSN:          *pgDSN,
+			MaxOpenConns: *pgMaxConns,
+			ObjectStore:  blobStore,
+		})
+		if err != nil {
+			cancel()
+			log.Fatalf("init postgres meta store: %v", err)
+		}
+		if *pgMigrate {
+			if err := pgStore.Migrate(pgCtx); err != nil {
+				cancel()
+				_ = pgStore.Close()
+				log.Fatalf("postgres migrate: %v", err)
+			}
+		}
+		cancel()
+		defer func() {
+			if err := pgStore.Close(); err != nil {
+				log.Printf("close postgres store error: %v", err)
+			}
+		}()
+		metaStore = pgStore
+		activeMetaEngine = "postgres"
+	default:
+		log.Fatalf("unsupported --meta-driver %q (expected embedded or postgres)", *metaDriver)
+	}
+
+	// 4. Initialize AnalyticsStore (embedded WAL or ClickHouse OLAP).
+	var analyticsStore storage.AnalyticsStore
 	switch *storageDriver {
 	case "embedded":
-		// Already wired to metaStore.
+		analyticsStore = embeddedStore
 	case "clickhouse":
 		chStore, err := clickhouse.New(clickhouse.Config{
 			Endpoint: *chEndpoint,
@@ -97,6 +158,7 @@ func main() {
 	}
 
 	var authorizer *auth.Authorizer
+	var err error
 	if *authConfig != "" {
 		authorizer, err = auth.LoadRBACFile(*authConfig)
 		if err != nil {
@@ -110,6 +172,7 @@ func main() {
 		APIKey:         *apiKey,
 		Authorizer:     authorizer,
 		ConsoleDistDir: *consoleDist,
+		MetaEngine:     activeMetaEngine,
 	})
 	srv := &http.Server{
 		Addr:              *addr,
@@ -148,7 +211,8 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("Caliper APM server listening on http://%s (storage=%s data-dir=%q)", *addr, *storageDriver, *dataDir)
+		log.Printf("Caliper APM server listening on http://%s (storage=%s meta=%s object-store=%s data-dir=%q)",
+			*addr, *storageDriver, activeMetaEngine, *objectStoreDriver, *dataDir)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen failed: %v", err)
 		}

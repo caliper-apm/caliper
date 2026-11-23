@@ -30,16 +30,17 @@ Or run the turnkey local sandbox (with pre-seeded 14-day release story):
 
 ---
 
-## 2. Tier 2 — Production Cluster (ClickHouse OLAP + S3/MinIO)
+## 2. Tier 2 — Stateless Multi-Replica HA Cluster (ClickHouse + PostgreSQL + S3/MinIO)
 
-For high-volume production fleets (tens of millions of daily events), switch analytics storage to ClickHouse (`--storage-driver=clickhouse`) and offload symbol bundles + remote logs to any S3-compatible bucket (`--object-store=s3`):
+For high-volume production fleets (tens of millions of daily events across horizontally scaled collector pods), run **zero local disk state** with ClickHouse for OLAP analytics (`--storage-driver=clickhouse`), PostgreSQL 15+ for shared metadata/triage/audit state (`--meta-driver=postgres`), and S3/MinIO for symbol bundles + remote logs (`--object-store=s3`):
 
 ```bash
 docker compose --profile cluster up -d --build
 ```
 
-Manual CLI invocation:
+Manual stateless CLI invocation (zero CGO static binary):
 ```bash
+export CALIPER_POSTGRES_DSN="postgres://caliper:strong_pass@postgres:5432/caliper?sslmode=require"
 export CALIPER_S3_ACCESS_KEY="..."
 export CALIPER_S3_SECRET_KEY="..."
 
@@ -49,6 +50,9 @@ export CALIPER_S3_SECRET_KEY="..."
   --clickhouse-endpoint http://clickhouse:8123 \
   --clickhouse-db caliper \
   --clickhouse-migrate=true \
+  --meta-driver postgres \
+  --postgres-migrate=true \
+  --postgres-max-conns 25 \
   --object-store s3 \
   --s3-endpoint https://s3.us-east-1.amazonaws.com \
   --s3-bucket caliper-symbols-prod \
@@ -58,7 +62,7 @@ export CALIPER_S3_SECRET_KEY="..."
   --alert-interval 30s
 ```
 
-PostgreSQL cluster metadata DDL is available at [`server/internal/storage/postgres/schema.sql`](../server/internal/storage/postgres/schema.sql).
+The embedded PostgreSQL schema ([`server/internal/storage/postgres/schema.sql`](../server/internal/storage/postgres/schema.sql)) is applied idempotently on startup when `--postgres-migrate=true`, and `/healthz` performs live PostgreSQL connectivity checks for Kubernetes readiness probes.
 
 ---
 
@@ -69,8 +73,11 @@ Deploy directly via [`deploy/helm/caliper-apm`](../deploy/helm/caliper-apm):
 ```bash
 helm upgrade --install caliper ./deploy/helm/caliper-apm \
   --namespace observability --create-namespace \
+  --set replicaCount=3 \
   --set storage.driver=clickhouse \
   --set storage.clickhouseEndpoint=http://clickhouse.observability:8123 \
+  --set metaStore.driver=postgres \
+  --set metaStore.postgresDsn="postgres://caliper:pass@postgres.observability:5432/caliper?sslmode=require" \
   --set objectStore.driver=s3 \
   --set objectStore.s3Endpoint=http://minio.observability:9000 \
   --set objectStore.s3Bucket=caliper-blobs

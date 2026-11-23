@@ -37,7 +37,7 @@ services:
         seed-replay --target http://caliper:8080 --events 30000 --verify=true
     restart: "no"
 
-  # Optional production OLAP cluster profile:
+  # Optional stateless production HA cluster profile (ClickHouse + PostgreSQL 16):
   #   docker compose --profile cluster up
   clickhouse:
     image: clickhouse/clickhouse-server:24.8-alpine
@@ -52,11 +52,30 @@ services:
       timeout: 3s
       retries: 10
 
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["cluster"]
+    environment:
+      POSTGRES_USER: caliper
+      POSTGRES_PASSWORD: caliper_dev_password
+      POSTGRES_DB: caliper
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U caliper -d caliper"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   caliper-cluster:
     build: .
     profiles: ["cluster"]
     depends_on:
       clickhouse:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     ports:
       - "8081:8080"
@@ -68,9 +87,12 @@ services:
       - "--storage-driver=clickhouse"
       - "--clickhouse-endpoint=http://clickhouse:8123"
       - "--clickhouse-db=caliper"
+      - "--meta-driver=postgres"
+      - "--postgres-dsn=postgres://caliper:caliper_dev_password@postgres:5432/caliper?sslmode=disable"
       - "--console-dist=/app/console-dist"
       - "--alert-interval=30s"
 
 volumes:
   caliper_data:
   clickhouse_data:
+  postgres_data:

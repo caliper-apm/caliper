@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -9,38 +10,40 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "upload" {
-		fmt.Fprintln(os.Stderr, "Usage: caliper-symbols upload --server URL --app-id ID --platform android|ios --version VER --build BUILD --kind r8_mapping|dsym|hermes_sourcemap|breakpad --file PATH [--git-sha SHA] [--env prod] [--api-key KEY]")
+		fmt.Fprintln(os.Stderr, "Usage: caliper-symbols upload --server URL --app-id ID --platform android|ios --version VER --build BUILD --kind r8_mapping|dsym|hermes_sourcemap|breakpad|native_elf --file PATH [--git-sha SHA] [--env prod] [--api-key KEY]")
 		os.Exit(2)
 	}
 
-	fs := flag.NewFlagSet("upload", flag.ExitOnError)
-	serverURL := fs.String("server", "http://127.0.0.1:8080", "Caliper server base URL")
-	appID := fs.String("app-id", "", "Application identifier")
-	platform := fs.String("platform", "", "android or ios")
-	env := fs.String("env", "prod", "Environment (prod|staging|dev)")
-	version := fs.String("version", "", "App version")
-	build := fs.String("build", "", "Build number")
-	gitSHA := fs.String("git-sha", "", "Git commit SHA")
-	kind := fs.String("kind", "", "Symbol kind: r8_mapping|dsym|hermes_sourcemap|breakpad")
-	filePath := fs.String("file", "", "Path to symbol file")
-	apiKey := fs.String("api-key", "", "Optional X-Caliper-Key")
-	_ = fs.Parse(os.Args[2:])
+	fsFlag := flag.NewFlagSet("upload", flag.ExitOnError)
+	serverURL := fsFlag.String("server", "http://127.0.0.1:8080", "Caliper server base URL")
+	appID := fsFlag.String("app-id", "", "Application identifier")
+	platform := fsFlag.String("platform", "", "android or ios")
+	env := fsFlag.String("env", "prod", "Environment (prod|staging|dev)")
+	version := fsFlag.String("version", "", "App version")
+	build := fsFlag.String("build", "", "Build number")
+	gitSHA := fsFlag.String("git-sha", "", "Git commit SHA")
+	kind := fsFlag.String("kind", "", "Symbol kind: r8_mapping|dsym|hermes_sourcemap|breakpad|native_elf")
+	filePath := fsFlag.String("file", "", "Path to symbol file or .dSYM bundle directory")
+	apiKey := fsFlag.String("api-key", "", "Optional X-Caliper-Key")
+	_ = fsFlag.Parse(os.Args[2:])
 
 	if *appID == "" || (*platform != "android" && *platform != "ios") || *version == "" || *build == "" || *kind == "" || *filePath == "" {
 		fmt.Fprintln(os.Stderr, "error: --app-id, --platform, --version, --build, --kind, and --file are required")
 		os.Exit(2)
 	}
 
-	content, err := os.ReadFile(*filePath)
+	content, err := loadSymbolArtifact(*filePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "read symbol file: %v\n", err)
 		os.Exit(1)
@@ -137,4 +140,44 @@ func main() {
 
 	fmt.Printf("Uploaded symbol successfully:\n  symbol_id: %s\n  sha256:    %s\n  raw_bytes: %d (gzip %d)\n  receipt:   %s\n",
 		symbolID, digest, len(content), gzipLen, strings.TrimSpace(string(symBody)))
+}
+
+// loadSymbolArtifact reads a regular file or auto-zips a .dSYM bundle directory into memory.
+func loadSymbolArtifact(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return os.ReadFile(path)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	rootName := filepath.Base(filepath.Clean(path))
+	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil || d.IsDir() {
+			return walkErr
+		}
+		rel, err := filepath.Rel(path, p)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		w, err := zw.Create(filepath.ToSlash(filepath.Join(rootName, rel)))
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(data)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

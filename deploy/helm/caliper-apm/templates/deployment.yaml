@@ -29,6 +29,14 @@ spec:
             - "--clickhouse-db={{ .Values.storage.clickhouseDatabase }}"
             - "--console-dist=/app/console-dist"
             - "--alert-interval={{ .Values.storage.alertInterval }}"
+            - "--meta-driver={{ .Values.metaStore.driver }}"
+            {{- if eq .Values.metaStore.driver "postgres" }}
+            - "--postgres-migrate={{ .Values.metaStore.migrate }}"
+            - "--postgres-max-conns={{ .Values.metaStore.maxConns }}"
+            {{- if .Values.metaStore.postgresDsn }}
+            - "--postgres-dsn={{ .Values.metaStore.postgresDsn }}"
+            {{- end }}
+            {{- end }}
             - "--object-store={{ .Values.objectStore.driver }}"
             {{- if eq .Values.objectStore.driver "s3" }}
             - "--s3-endpoint={{ .Values.objectStore.s3Endpoint }}"

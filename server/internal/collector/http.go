@@ -2,6 +2,7 @@ package collector
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +30,7 @@ type Config struct {
 	Authorizer     *auth.Authorizer
 	MaxPayloadSize int64
 	ConsoleDistDir string
+	MetaEngine     string // "embedded" | "postgres"
 }
 
 // Handler serves ingestion, policy, release registration, symbolication, alerts, RBAC, and Zero-Lie analytics endpoints.
@@ -188,8 +190,31 @@ func (h *Handler) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	stats := h.store.Stats(r.Context())
+	metaEngine := h.cfg.MetaEngine
+	if metaEngine == "" {
+		metaEngine = "embedded"
+	}
+	type pinger interface {
+		Ping(ctx context.Context) error
+	}
+	if p, ok := h.meta.(pinger); ok {
+		pingCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		err := p.Ping(pingCtx)
+		cancel()
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"status":         "degraded",
+				"meta_engine":    metaEngine,
+				"meta_error":     err.Error(),
+				"uptime_seconds": int64(time.Since(h.startedAt).Seconds()),
+				"storage":        stats,
+			})
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":         "ok",
+		"meta_engine":    metaEngine,
 		"uptime_seconds": int64(time.Since(h.startedAt).Seconds()),
 		"storage":        stats,
 	})
@@ -284,13 +309,13 @@ func (h *Handler) handleListReleases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleUploadSymbol(w http.ResponseWriter, r *http.Request) {
-	const maxSymbolBytes = 32 * 1024 * 1024 // 32 MiB cap for v0.1 single-node upload
+	const maxSymbolBytes = 128 * 1024 * 1024 // 128 MiB cap supporting native .dSYM / .so DWARF binaries
 	q := r.URL.Query()
 	kind := q.Get("kind")
 	switch kind {
-	case "r8_mapping", "dsym", "hermes_sourcemap", "breakpad":
+	case "r8_mapping", "dsym", "hermes_sourcemap", "breakpad", "native_elf":
 	default:
-		writeError(w, http.StatusBadRequest, "invalid_symbol_kind", "kind must be r8_mapping, dsym, hermes_sourcemap, or breakpad")
+		writeError(w, http.StatusBadRequest, "invalid_symbol_kind", "kind must be r8_mapping, dsym, hermes_sourcemap, breakpad, or native_elf")
 		return
 	}
 	platform := q.Get("platform")
@@ -321,7 +346,7 @@ func (h *Handler) handleUploadSymbol(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if int64(len(content)) > maxSymbolBytes || len(content) == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_symbol_size", "symbol artifact must be non-empty and <= 32 MiB")
+		writeError(w, http.StatusBadRequest, "invalid_symbol_size", "symbol artifact must be non-empty and <= 128 MiB")
 		return
 	}
 

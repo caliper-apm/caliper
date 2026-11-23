@@ -16,7 +16,7 @@
 **Caliper APM** 的五大核心特性：
 1. **Native 优先内核 + RN 一等适配**：`sdk-android`（Kotlin）与 `sdk-ios`（Swift SPM）**零 RN 依赖**；混合 App 挂接 `sdk-react-native` 后，自动与原生生命周期、窗口关联与符号化时间线合二为一。
 2. **Zero-Lie 统计引擎**：19 桶固定边界直方图可合并分位数（绝不平均每日 P90）、缺值绝不补零、零帧窗口绝不误判为 0% 卡顿、Android `deadline` 与 `heuristic` 算法严格隔离、版本对比强制样本量门禁（`n >= 100`）。
-3. **内置多格式自动符号化**：纯 Go 实现 **R8/ProGuard Retrace**、**Source Map v3 VLQ（JS/Hermes）**、**Breakpad/JSON dSYM** 自动还原，直接将崩溃堆栈与流畅度同窗卡顿栈还原到精确源码行。
+3. **内置多格式自动符号化**：纯 Go 实现 **R8/ProGuard Retrace**、**Source Map v3 VLQ（JS/Hermes）**、**原生 Mach-O `.dSYM`/`.dSYM.zip` 与 Android NDK ELF `.so` DWARF 解析（含内联栈展开与 Itanium C++ Demangle）** 以及 Breakpad `.sym` 自动还原，直接将崩溃堆栈与流畅度同窗卡顿栈还原到精确源码行。
 4. **真告警与多渠道 Webhook**：样本量门禁防误报 + 冷却去重 + 恢复自动通知，原生支持 **飞书交互卡片、Slack Block Kit、Discord Embed、通用 JSON**。
 5. **单二进制自托管 + Chaos Lab 故障实验室**：单 Go 二进制同时托管采集/分析 API 与 5 页真数据 Web 控制台，自带 **Atlas Reader** 混合 Demo 与一键故障注入实验室。
 
@@ -86,7 +86,7 @@ docker compose up --build
   ```
 - **稳定性异常流转与影响分布**：异常全生命周期处置（待处理 / 处理中 / 已修复 / 已忽略、负责人、修复版本、备注 + 审计留痕）、按机型/系统诚实计数筛选、单异常的机型/系统/版本 ECharts 分布图，以及抽屉内一键跳转单点追查。
 - **远程动态采样策略与运维自检**：控制台热更新采样率（% / PPM）、单设备 24h 上限、租约 TTL 与各探针开关（`GET/PUT /v1/policy`），配套告警规则一键测通/启停/删除、数据源健康自检（`GET /v1/ops/source-health`）与 Prometheus `GET /metrics`。
-- **生产端 SDK 深度与集群高可用**：Android/iOS 离线落盘队列与主线程 Watchdog、Android `CaliperAndroidAgent`（`FrameMetrics` / `ApplicationExitInfo` / `PSS`）、iOS `CaliperMetricKitBridge`、RN 原生桥、纯 Go AWS SigV4 S3/MinIO 对象存储（`--object-store=s3`）、ClickHouse 机型/系统切片、PostgreSQL 元数据 DDL 与 Kubernetes Helm Chart（`deploy/helm/caliper-apm`）。
+- **生产端 SDK 深度与无状态多副本集群高可用（`v1.6`）**：Android/iOS 离线落盘队列与主线程 Watchdog、Android `CaliperAndroidAgent`（`FrameMetrics` / `ApplicationExitInfo` / `PSS`）、iOS `CaliperMetricKitBridge`、RN 原生桥、**运行时零 CGO PostgreSQL `MetaStore` 驱动（`--meta-driver=postgres`）**、纯 Go AWS SigV4 S3/MinIO 对象存储（`--object-store=s3`）、ClickHouse 机型/系统切片、原生 `.dSYM`/`.so` DWARF 符号化与 Kubernetes Helm Chart（`deploy/helm/caliper-apm`）。
 
 ---
 

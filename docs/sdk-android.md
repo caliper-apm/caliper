@@ -84,9 +84,9 @@ CaliperAndroidAgent.client().recordCustomJourney(
 
 ---
 
-## 4. Automated R8 / ProGuard Symbol Upload (Gradle Plugin)
+## 4. Automated R8 / ProGuard & NDK ELF `.so` Symbol Upload
 
-Apply [`packages/gradle-plugin`](../packages/gradle-plugin) (`io.caliper.apm.symbols`) in your `app/build.gradle.kts`:
+Apply [`packages/gradle-plugin`](../packages/gradle-plugin) (`io.caliper.apm.symbols`) in your `app/build.gradle.kts` for R8/ProGuard `mapping.txt`:
 
 ```kotlin
 plugins {
@@ -99,6 +99,15 @@ caliperSymbols {
     appId.set("com.example.app")
     env.set("prod")
 }
+```
+
+For apps shipping C/C++ JNI libraries, upload unstripped NDK ELF `.so` binaries directly (`--kind native_elf`) — Caliper extracts `.note.gnu.build-id`, parses DWARF line/function/inline tables + ELF symtabs in pure Go, and demangles Itanium C++ frames automatically:
+
+```bash
+caliper-symbols upload \
+  --server https://apm.example.com --api-key "$CALIPER_API_KEY" \
+  --app-id com.example.app --platform android --version 1.6.0 --build 160 \
+  --kind native_elf --file app/build/intermediates/merged_native_libs/release/out/lib/arm64-v8a/libengine.so
 ```
 
 ---

@@ -96,6 +96,7 @@ type StackFrame struct {
 	Line    int    `json:"line,omitempty"`
 	Address string `json:"address,omitempty"`
 	InApp   bool   `json:"in_app,omitempty"`
+	Inlined bool   `json:"inlined,omitempty"`
 }
 
 // Breadcrumb records a bounded trail of pre-fault lifecycle/user events.

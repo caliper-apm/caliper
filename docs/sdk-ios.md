@@ -83,9 +83,19 @@ client.recordCustomJourney(
 
 ---
 
-## 4. Automated dSYM Upload (Fastlane Plugin)
+## 4. Native `.dSYM` / `.dSYM.zip` DWARF Upload (CLI & Fastlane)
 
-Use [`packages/fastlane-plugin`](../packages/fastlane-plugin) in your `Fastfile`:
+Caliper parses **native Mach-O DWARF binaries** (Thin, Universal/Fat arm64, and `.dSYM.zip`) in pure Go with zero external `llvm-symbolizer` dependency — extracting Mach-O `LC_UUID`, resolving both absolute virtual addresses and `__TEXT`-relative offsets, demangling Itanium C++ symbols, and expanding `DW_TAG_inlined_subroutine` inline chains.
+
+Upload a raw `.dSYM` bundle directory directly via CLI (`caliper-symbols` auto-zips directories in memory):
+```bash
+caliper-symbols upload \
+  --server https://apm.example.com --api-key "$CALIPER_API_KEY" \
+  --app-id com.example.app --platform ios --version 1.6.0 --build 160 \
+  --kind dsym --file build/MyApp.app.dSYM
+```
+
+Or use [`packages/fastlane-plugin`](../packages/fastlane-plugin) in your `Fastfile`:
 
 ```ruby
 lane :release do

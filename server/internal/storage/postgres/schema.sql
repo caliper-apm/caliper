@@ -1,6 +1,6 @@
 -- Caliper APM Cluster Production MetaStore Schema (PostgreSQL 15+)
 -- Enables stateless multi-replica caliper collector pods sharing releases, symbols,
--- alert rules, remote log tasks, and immutable append-only security audit trails.
+-- issue triage states, alert rules, remote log tasks, and immutable append-only security audit trails.
 
 CREATE TABLE IF NOT EXISTS caliper_releases (
     app_id        TEXT NOT NULL,
@@ -26,10 +26,10 @@ CREATE TABLE IF NOT EXISTS caliper_symbols (
     app_version    TEXT NOT NULL,
     build_number   TEXT NOT NULL,
     git_sha        TEXT NOT NULL DEFAULT '',
-    kind           TEXT NOT NULL CHECK (kind IN ('r8_mapping', 'dsym', 'hermes_sourcemap', 'breakpad')),
+    kind           TEXT NOT NULL CHECK (kind IN ('r8_mapping', 'dsym', 'hermes_sourcemap', 'breakpad', 'native_elf')),
     sha256         TEXT NOT NULL,
     size_bytes     BIGINT NOT NULL,
-    object_key     TEXT NOT NULL, -- S3 / MinIO object key via objectstore.ObjectStore
+    object_key     TEXT NOT NULL, -- S3 / MinIO or shared PVC object key via objectstore.ObjectStore
     uploaded_at_ms BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_caliper_symbols_build ON caliper_symbols (app_id, platform, app_version, build_number);
@@ -84,6 +84,15 @@ CREATE TABLE IF NOT EXISTS caliper_alert_incidents (
     delivery_status      TEXT NOT NULL DEFAULT 'none',
     delivery_http_status INTEGER NOT NULL DEFAULT 0,
     delivery_error       TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS caliper_issue_states (
+    fingerprint         TEXT PRIMARY KEY,
+    status              TEXT NOT NULL CHECK (status IN ('open', 'in_progress', 'resolved', 'ignored')),
+    assignee            TEXT NOT NULL DEFAULT '',
+    note                TEXT NOT NULL DEFAULT '',
+    resolved_in_version TEXT NOT NULL DEFAULT '',
+    updated_at_ms       BIGINT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS caliper_remote_log_tasks (
