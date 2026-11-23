@@ -8,6 +8,7 @@ public struct CaliperConfig: Sendable {
     public let maxQueueSize: Int
     public let maxConsecutiveFailures: Int
     public let spoolDirectoryURL: URL?
+    public let tracePropagationTargets: [String]
 
     public init(
         endpointURL: URL,
@@ -16,7 +17,8 @@ public struct CaliperConfig: Sendable {
         installSeed: String = UUID().uuidString.lowercased(),
         maxQueueSize: Int = 200,
         maxConsecutiveFailures: Int = 5,
-        spoolDirectoryURL: URL? = nil
+        spoolDirectoryURL: URL? = nil,
+        tracePropagationTargets: [String] = []
     ) {
         self.endpointURL = endpointURL
         self.apiKey = apiKey
@@ -25,6 +27,7 @@ public struct CaliperConfig: Sendable {
         self.maxQueueSize = max(1, min(maxQueueSize, 200))
         self.maxConsecutiveFailures = max(1, maxConsecutiveFailures)
         self.spoolDirectoryURL = spoolDirectoryURL
+        self.tracePropagationTargets = tracePropagationTargets
     }
 }
 
@@ -32,6 +35,7 @@ public struct CaliperConfig: Sendable {
 /// Zero React Native dependencies; optional RN adapters call public enqueue/scene/breadcrumb APIs.
 public final class CaliperClient: @unchecked Sendable {
     private let config: CaliperConfig
+    public var configuration: CaliperConfig { config }
     private let session: URLSession
     private let diskSpool: CaliperDiskQueue?
     private let worker = DispatchQueue(label: "dev.caliper.apm.worker", qos: .utility)

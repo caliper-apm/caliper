@@ -10,7 +10,8 @@ public enum CaliperTransportExtractor {
         method: String,
         statusCode: Int?,
         result: String,
-        tx: URLSessionTaskTransactionMetrics
+        tx: URLSessionTaskTransactionMetrics,
+        traceContext: CaliperTraceContext? = nil
     ) -> NetworkTransportPayload? {
         guard let fetchStart = tx.fetchStartDate, let responseEnd = tx.responseEndDate else {
             return nil
@@ -34,7 +35,9 @@ public enum CaliperTransportExtractor {
             bodyMS: bodyMS,
             totalMS: totalMS,
             connectionReused: tx.isReusedConnection,
-            protocolName: tx.networkProtocolName
+            protocolName: tx.networkProtocolName,
+            traceID: traceContext?.traceID,
+            spanID: traceContext?.spanID
         )
     }
 

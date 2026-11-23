@@ -146,7 +146,8 @@ public final class CaliperIOSAgent: @unchecked Sendable {
             installSeed: config.installSeed,
             maxQueueSize: config.maxQueueSize,
             maxConsecutiveFailures: config.maxConsecutiveFailures,
-            spoolDirectoryURL: config.spoolDirectoryURL ?? stateDir.appendingPathComponent("spool")
+            spoolDirectoryURL: config.spoolDirectoryURL ?? stateDir.appendingPathComponent("spool"),
+            tracePropagationTargets: config.tracePropagationTargets
         )
         let client = CaliperClient(config: effectiveConfig)
         _client = client
@@ -277,7 +278,7 @@ public final class CaliperIOSAgent: @unchecked Sendable {
 }
 
 /// Safe forwarding `URLSessionTaskDelegate` proxy preserving host SSL pinning / auth delegate selectors
-/// while capturing `URLSessionTaskMetrics` transport waterfalls automatically.
+/// while capturing `URLSessionTaskMetrics` transport waterfalls & W3C `traceparent` correlation automatically.
 public final class CaliperAutoURLSessionDelegate: NSObject, URLSessionTaskDelegate, URLSessionDataDelegate {
     private let client: CaliperClient
     private weak var originalDelegate: URLSessionDelegate?
@@ -286,6 +287,28 @@ public final class CaliperAutoURLSessionDelegate: NSObject, URLSessionTaskDelega
         self.client = client
         self.originalDelegate = original
         super.init()
+    }
+
+    /// Convenience factory creating a `URLSession` wired with `CaliperAutoURLSessionDelegate`.
+    public static func makeSession(
+        client: CaliperClient,
+        configuration: URLSessionConfiguration = .default,
+        forwardingTo original: URLSessionDelegate? = nil,
+        delegateQueue: OperationQueue? = nil
+    ) -> (URLSession, CaliperAutoURLSessionDelegate) {
+        let proxy = CaliperAutoURLSessionDelegate(client: client, forwardingTo: original)
+        let session = URLSession(configuration: configuration, delegate: proxy, delegateQueue: delegateQueue)
+        return (session, proxy)
+    }
+
+    /// Injects W3C `traceparent` into `request` when its host matches `client.configuration.tracePropagationTargets`.
+    public func instrumentedRequest(_ request: URLRequest, sampled: Bool = true) -> URLRequest {
+        CaliperTraceContext.inject(
+            into: request,
+            targets: client.configuration.tracePropagationTargets,
+            collectorEndpointURL: client.configuration.endpointURL,
+            sampled: sampled
+        ).0
     }
 
     public override func responds(to aSelector: Selector!) -> Bool {
@@ -302,33 +325,57 @@ public final class CaliperAutoURLSessionDelegate: NSObject, URLSessionTaskDelega
 
     public func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
         if let tx = metrics.transactionMetrics.last {
-            let op = CaliperWebViewProbe.normalizeURL(task.originalRequest?.url?.path ?? "/")
-            let method = task.originalRequest?.httpMethod ?? "GET"
-            let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
-            let result = task.error != nil ? "failed" : (code >= 500 || code == 0 ? "failed" : "success")
-            let dns = deltaMS(tx.domainLookupStartDate, tx.domainLookupEndDate)
-            let tcp = deltaMS(tx.connectStartDate, tx.connectEndDate)
-            let tls = deltaMS(tx.secureConnectionStartDate, tx.secureConnectionEndDate)
-            let ttfb = deltaMS(tx.requestStartDate, tx.responseStartDate)
-            let body = deltaMS(tx.responseStartDate, tx.responseEndDate)
-            let total = metrics.taskInterval.duration * 1000.0
-            client.enqueue(
-                kind: "network_stage",
-                payload: .networkTransport(NetworkTransportPayload(
-                    operation: op,
-                    method: method,
-                    statusCode: code,
-                    result: result,
-                    dnsMS: dns,
-                    tcpMS: tcp,
-                    tlsMS: tls,
-                    ttfbMS: ttfb,
-                    bodyMS: body,
-                    totalMS: max(0, total),
-                    connectionReused: tx.isReusedConnection,
-                    protocolName: tx.networkProtocolName
-                ))
-            )
+            let req = task.currentRequest ?? task.originalRequest
+            let reqURL = req?.url
+            let collectorURL = client.configuration.endpointURL
+            let collectorHost = collectorURL.host?.lowercased()
+            let collectorPort = collectorURL.port ?? (collectorURL.scheme?.lowercased() == "https" ? 443 : 80)
+            let reqPort = reqURL?.port ?? (reqURL?.scheme?.lowercased() == "https" ? 443 : 80)
+            let isCollectorCall = collectorHost != nil &&
+                reqURL?.host?.lowercased() == collectorHost &&
+                reqPort == collectorPort &&
+                (reqURL?.path.hasPrefix("/v1/ingest") ?? false)
+
+            if !isCollectorCall {
+                let op = CaliperWebViewProbe.normalizeURL(reqURL?.path.isEmpty == false ? (reqURL?.path ?? "/") : "/")
+                let rawMethod = (req?.httpMethod ?? "GET").uppercased()
+                let method = ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(rawMethod) ? rawMethod : "GET"
+                let code = (task.response as? HTTPURLResponse)?.statusCode ?? 0
+                let result: String
+                if let err = task.error as NSError? {
+                    result = err.code == NSURLErrorCancelled ? "cancelled" : (err.code == NSURLErrorTimedOut ? "timeout" : "failed")
+                } else {
+                    result = (code >= 500 || code == 0) ? "failed" : "success"
+                }
+                let dns = deltaMS(tx.domainLookupStartDate, tx.domainLookupEndDate)
+                let tcp = deltaMS(tx.connectStartDate, tx.secureConnectionStartDate ?? tx.connectEndDate)
+                let tls = deltaMS(tx.secureConnectionStartDate, tx.secureConnectionEndDate)
+                let ttfb = deltaMS(tx.requestStartDate, tx.responseStartDate)
+                let body = deltaMS(tx.responseStartDate, tx.responseEndDate)
+                let total = metrics.taskInterval.duration * 1000.0
+                let traceCtx = CaliperTraceContext.parse(
+                    traceparent: req?.value(forHTTPHeaderField: CaliperTraceContext.headerName)
+                )
+                client.enqueue(
+                    kind: "network_transport",
+                    payload: .networkTransport(NetworkTransportPayload(
+                        operation: op,
+                        method: method,
+                        statusCode: code,
+                        result: result,
+                        dnsMS: dns,
+                        tcpMS: tcp,
+                        tlsMS: tls,
+                        ttfbMS: ttfb,
+                        bodyMS: body,
+                        totalMS: max(0, total),
+                        connectionReused: tx.isReusedConnection,
+                        protocolName: tx.networkProtocolName,
+                        traceID: traceCtx?.traceID,
+                        spanID: traceCtx?.spanID
+                    ))
+                )
+            }
         }
         if let taskDel = originalDelegate as? URLSessionTaskDelegate {
             taskDel.urlSession?(session, task: task, didFinishCollecting: metrics)

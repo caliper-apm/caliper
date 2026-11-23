@@ -153,7 +153,9 @@
         "total_ms": { "type": "number", "minimum": 0, "maximum": 600000 },
         "connection_reused": { "type": "boolean" },
         "protocol": { "type": "string", "maxLength": 16 },
-        "network_type": { "type": "string", "maxLength": 32 }
+        "network_type": { "type": "string", "maxLength": 32 },
+        "trace_id": { "type": "string", "pattern": "^[a-f0-9]{32}$" },
+        "span_id": { "type": "string", "pattern": "^[a-f0-9]{16}$" }
       }
     },
     "custom_scene": {

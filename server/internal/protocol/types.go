@@ -35,6 +35,13 @@ const (
 var (
 	reHexHash = regexp.MustCompile(`^[a-fA-F0-9]{7,64}$`)
 	reInstall = regexp.MustCompile(`^[a-f0-9]{16,64}$`)
+	reTraceID = regexp.MustCompile(`^[a-f0-9]{32}$`)
+	reSpanID  = regexp.MustCompile(`^[a-f0-9]{16}$`)
+)
+
+const (
+	zeroTraceID = "00000000000000000000000000000000"
+	zeroSpanID  = "0000000000000000"
 )
 
 // BatchEnvelope is the top-level ingestion payload sent by Native & RN SDKs.
@@ -188,6 +195,8 @@ type NetworkTransportPayload struct {
 	ConnectionReused bool     `json:"connection_reused,omitempty"`
 	Protocol         string   `json:"protocol,omitempty"`
 	NetworkType      string   `json:"network_type,omitempty"`
+	TraceID          string   `json:"trace_id,omitempty"` // W3C Trace Context 32 lower-hex trace-id
+	SpanID           string   `json:"span_id,omitempty"`  // W3C Trace Context 16 lower-hex parent-id/span-id
 }
 
 // SceneStage captures one ordered stage duration inside a custom business journey trace.
@@ -456,6 +465,12 @@ func ValidateEvent(e *Event) (any, error) {
 			if stage != nil && !isFiniteNonNeg(*stage) {
 				return nil, errors.New("transport stage ms must be finite non-negative")
 			}
+		}
+		if p.TraceID != "" && (!reTraceID.MatchString(p.TraceID) || p.TraceID == zeroTraceID) {
+			return nil, errors.New("trace_id must be 32 non-zero lowercase hex characters (W3C traceparent)")
+		}
+		if p.SpanID != "" && (!reSpanID.MatchString(p.SpanID) || p.SpanID == zeroSpanID) {
+			return nil, errors.New("span_id must be 16 non-zero lowercase hex characters (W3C traceparent)")
 		}
 		return p, nil
 

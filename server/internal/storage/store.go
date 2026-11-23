@@ -145,6 +145,8 @@ type NetworkTransportSample struct {
 	ConnectionReused bool     `json:"connection_reused,omitempty"`
 	Protocol         string   `json:"protocol,omitempty"`
 	NetworkType      string   `json:"network_type,omitempty"`
+	TraceID          string   `json:"trace_id,omitempty"`
+	SpanID           string   `json:"span_id,omitempty"`
 }
 
 // CustomSceneAggregate holds mergeable Zero-Lie histograms for custom business journey traces.

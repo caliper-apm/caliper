@@ -39,7 +39,9 @@ final class AppBootstrap {
                 installHash: InstallationHash.stableHex16(), // Non-PII 16-64 hex
                 osVersion: "iOS \(UIDevice.current.systemVersion)",
                 deviceModel: DeviceHardware.modelName()
-            )
+            ),
+            // Opt-in W3C `traceparent` propagation allowlist for backend Jaeger/Tempo/SkyWalking correlation:
+            tracePropagationTargets: [".example.com"]
         )
         // Automatically wires C/Mach + Signal crash capture, 9-branch FOOM detector,
         // Watchdog, MetricKit, UIViewController scene tracking, thermal observer, and daily disk audit!
@@ -50,7 +52,7 @@ final class AppBootstrap {
 
 - **SwiftUI screens**: attach `.caliperScene("home_feed")` on root views.
 - **WKWebView / H5**: call `CaliperWKWebViewBridge.attach(to: webView.configuration.userContentController, client: client)` for NavigationTiming, FCP, JS errors, and blank-screen detection.
-- **URLSession auto-metrics**: wrap your existing delegate with `CaliperAutoURLSessionDelegate(client: client, forwardingTo: yourDelegate)` without disturbing SSL pinning or auth callbacks.
+- **URLSession auto-metrics & W3C `traceparent`**: use `CaliperAutoURLSessionDelegate.makeSession(client: client, forwardingTo: yourDelegate)` and wrap outbound requests via `proxy.instrumentedRequest(req)` (or `req.withCaliperTraceparent()`) to propagate W3C `traceparent` to allowlisted backend hosts and correlate `trace_id`/`span_id` on `network_transport` samples + `GET /v1/otlp/export/traces` without disturbing SSL pinning or auth callbacks.
 
 ---
 
@@ -74,7 +76,7 @@ client.recordCustomJourney(
 
 ## 4. Native `.dSYM` / `.dSYM.zip` DWARF Upload (CLI & Fastlane)
 
-Caliper parses **native Mach-O DWARF binaries** (Thin, Universal/Fat arm64, and `.dSYM.zip`) in pure Go with zero external `llvm-symbolizer` dependency — extracting Mach-O `LC_UUID`, resolving both absolute virtual addresses and `__TEXT`-relative offsets, demangling Itanium C++ symbols, and expanding `DW_TAG_inlined_subroutine` inline chains.
+Caliper parses **native Mach-O DWARF binaries** (Thin, Universal/Fat arm64, and `.dSYM.zip`) in pure Go with zero external `llvm-symbolizer` dependency — extracting Mach-O `LC_UUID`, resolving both absolute virtual addresses and `__TEXT`-relative offsets, demangling **both Swift 5+ (`$s...` / `_$s...`) and Itanium C++ (`_Z...`)** symbols, and expanding `DW_TAG_inlined_subroutine` inline chains.
 
 Upload a raw `.dSYM` bundle directory directly via CLI (`caliper-symbols` auto-zips directories in memory):
 ```bash

@@ -119,4 +119,92 @@ class CaliperAsmWeaverTest {
         assertEquals(1, TestHooks.okHttpBuilders.size)
         assertTrue(TestHooks.okHttpBuilders[0] is FakeOkHttpClient.Builder)
     }
+
+    @Test
+    fun weavesRealOkHttp412BuilderAndInjectsW3CTraceparentOverLoopbackHTTP() {
+        TestHooks.okHttpBuilders.clear()
+
+        // Fixture class using REAL okhttp3.OkHttpClient.Builder (4.12.0)
+        val callerCls = RealOkHttpCallerFixture::class.java
+        val rawBytes = callerCls.classLoader
+            .getResourceAsStream(callerCls.name.replace('.', '/') + ".class")!!
+            .readBytes()
+
+        val cr = org.objectweb.asm.ClassReader(rawBytes)
+        val cw = org.objectweb.asm.ClassWriter(cr, org.objectweb.asm.ClassWriter.COMPUTE_FRAMES)
+        val remapper = org.objectweb.asm.commons.SimpleRemapper(
+            callerCls.name.replace('.', '/'),
+            "com/example/shop/RealOkHttpCaller",
+        )
+        // Use DEFAULT real OkHttp owner/desc (`okhttp3/OkHttpClient$Builder.build()Lokhttp3/OkHttpClient;`)!
+        val cfg = CaliperAsmConfig(
+            instrumentOkHttp = true,
+            instrumentCaliperTrace = false,
+            includePackages = listOf("com.example.shop"),
+            hooksOwner = RealOkHttpTestHooks::class.java.name.replace('.', '/'),
+        )
+        val visitor = CaliperAsmClassVisitor(org.objectweb.asm.Opcodes.ASM9, cw, cfg)
+        cr.accept(
+            org.objectweb.asm.commons.ClassRemapper(visitor, remapper),
+            org.objectweb.asm.ClassReader.EXPAND_FRAMES,
+        )
+
+        val loader = ByteArrayClassLoader(callerCls.classLoader)
+        val loaded = loader.define("com.example.shop.RealOkHttpCaller", cw.toByteArray())
+        val caller = loaded.getDeclaredConstructor().newInstance()
+
+        // Start a real loopback HTTP server verifying the woven OkHttp 4.12 client injects traceparent.
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        val receivedTraceparent = java.util.concurrent.atomic.AtomicReference<String?>()
+        server.createContext("/v1/checkout") { exchange ->
+            receivedTraceparent.set(exchange.requestHeaders.getFirst("traceparent"))
+            val body = """{"status":"paid"}""".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            RealOkHttpTestHooks.hookCalls = 0
+            val url = "http://127.0.0.1:${server.address.port}/v1/checkout"
+            val code = loaded.getMethod("executeGet", String::class.java).invoke(caller, url) as Int
+            assertEquals(200, code)
+            assertEquals("ASM9 hook must run before real OkHttpClient.Builder.build()", 1, RealOkHttpTestHooks.hookCalls)
+            val tp = receivedTraceparent.get()
+            assertTrue(
+                "Real OkHttp 4.12 request must deliver W3C traceparent header, got: $tp",
+                tp != null && Regex("^00-[a-f0-9]{32}-[a-f0-9]{16}-01$").matches(tp),
+            )
+        } finally {
+            server.stop(0)
+        }
+    }
+}
+
+object RealOkHttpTestHooks {
+    @Volatile
+    var hookCalls: Int = 0
+
+    @JvmStatic
+    fun onOkHttpBuilder(builder: Any): Any {
+        hookCalls++
+        if (builder is okhttp3.OkHttpClient.Builder) {
+            builder.addInterceptor { chain ->
+                val req = chain.request().newBuilder()
+                    .header("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+                    .build()
+                chain.proceed(req)
+            }
+        }
+        return builder
+    }
+}
+
+class RealOkHttpCallerFixture {
+    fun executeGet(url: String): Int {
+        val client = okhttp3.OkHttpClient.Builder().build()
+        val req = okhttp3.Request.Builder().url(url).get().build()
+        client.newCall(req).execute().use { resp ->
+            return resp.code
+        }
+    }
 }

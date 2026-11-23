@@ -39,6 +39,7 @@ build/
 
 # Android / Gradle
 .gradle/
+.cxx/
 local.properties
 *.apk
 *.aab

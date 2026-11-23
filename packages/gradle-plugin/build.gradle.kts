@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "io.caliper.apm"
-version = "1.8.0"
+version = "1.9.0"
 
 kotlin {
     jvmToolchain(21)
@@ -32,4 +32,5 @@ dependencies {
     implementation("org.ow2.asm:asm-commons:9.7.1")
     compileOnly("com.android.tools.build:gradle-api:8.7.3")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

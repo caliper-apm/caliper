@@ -34,6 +34,8 @@ class MyApp : Application() {
                 osVersion = "Android ${Build.VERSION.RELEASE}",
                 deviceModel = Build.MODEL,
             ),
+            // Opt-in W3C `traceparent` propagation allowlist for backend Jaeger/Tempo/SkyWalking correlation:
+            tracePropagationTargets = listOf(".example.com"),
         )
         // Optional bootstrap lease until first GET /v1/policy completes (fail-closed if omitted)
         CaliperAndroidAgent.install(this, config)
@@ -96,7 +98,7 @@ plugins {
 
 caliperAutoInstrument {
     enabled.set(true)
-    instrumentOkHttp.set(true)       // Auto-hooks OkHttpClient.Builder.build() across all modules
+    instrumentOkHttp.set(true)       // Auto-hooks OkHttpClient.Builder.build() -> W3C traceparent + DNS/TCP/TLS/TTFB waterfall
     instrumentCaliperTrace.set(true) // Auto-wraps @CaliperTrace methods (normal + exception exits)
     includePackages.set(listOf("com.example.app"))
 }

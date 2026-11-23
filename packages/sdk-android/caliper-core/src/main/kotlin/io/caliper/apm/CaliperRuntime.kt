@@ -33,7 +33,8 @@ data class CaliperConfig(
     val installSeed: String = UUID.randomUUID().toString(),
     val maxQueueSize: Int = 200,
     val maxConsecutiveFailures: Int = 5,
-    val spoolDir: File? = null
+    val spoolDir: File? = null,
+    val tracePropagationTargets: List<String> = emptyList(),
 )
 
 data class TelemetryEvent(

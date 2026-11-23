@@ -371,6 +371,8 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"network_type":      p.NetworkType,
 				"install_hash":      batch.Resource.InstallHash,
 				"user_hash":         batch.Resource.UserHash,
+				"trace_id":          p.TraceID,
+				"span_id":           p.SpanID,
 				"total_ms":          p.TotalMS,
 				"dns_buckets":       dns[:],
 				"tcp_buckets":       tcp[:],
@@ -831,7 +833,7 @@ func (s *Store) QueryNetworkSamples(ctx context.Context, f storage.QueryFilter, 
 	}
 	q := fmt.Sprintf(`
 SELECT event_id, occurred_at_ms, app_id, platform, env, app_version, build_number, adapter, scene,
-       device_model, os_version, install_hash, user_hash, operation, method, status_code, result,
+       device_model, os_version, install_hash, user_hash, trace_id, span_id, operation, method, status_code, result,
        connection_reused, protocol, network_type, total_ms
 FROM caliper_network_transport_events FINAL
 WHERE %s
@@ -852,6 +854,8 @@ LIMIT %d FORMAT JSON`, where, limit)
 		OSVersion        string    `json:"os_version"`
 		InstallHash      string    `json:"install_hash"`
 		UserHash         string    `json:"user_hash"`
+		TraceID          string    `json:"trace_id"`
+		SpanID           string    `json:"span_id"`
 		Operation        string    `json:"operation"`
 		Method           string    `json:"method"`
 		StatusCode       int       `json:"status_code"`
@@ -880,6 +884,8 @@ LIMIT %d FORMAT JSON`, where, limit)
 			OSVersion:        r.OSVersion,
 			InstallHash:      r.InstallHash,
 			UserHash:         r.UserHash,
+			TraceID:          r.TraceID,
+			SpanID:           r.SpanID,
 			Operation:        r.Operation,
 			Method:           r.Method,
 			StatusCode:       r.StatusCode,

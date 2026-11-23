@@ -122,3 +122,35 @@ test('wrapFetchForDenominator filters allowlist and classifies http/network/time
   assert.equal(net.failure_counts.http, 1);
   assert.equal(net.failure_counts.timeout, 1);
 });
+
+test('wrapFetchForDenominator injects W3C traceparent only on configured targets and preserves existing headers', async () => {
+  const seenHeaders: Array<{ url: string; headers?: Record<string, string> }> = [];
+  const bridge: CaliperNativeBridgeSpec = {
+    setScene: () => {},
+    addBreadcrumb: () => {},
+    notifyFirstFrameReady: () => {},
+    enqueueEvent: () => {},
+  };
+  const adapter = new CaliperReactNativeAdapter(bridge, () => 100_000);
+  const wrapped = wrapFetchForDenominator(
+    async (url: string, init?: Record<string, unknown>) => {
+      seenHeaders.push({ url, headers: init?.headers as Record<string, string> | undefined });
+      return { status: 200, ok: true };
+    },
+    adapter,
+    {
+      allowlist: ['/api/v1/'],
+      tracePropagationTargets: ['api.mycorp.com'],
+      nowMs: () => 100_000,
+    },
+  );
+
+  await wrapped('https://api.mycorp.com/api/v1/orders');
+  await wrapped('https://thirdparty.example.org/ping');
+  const preset = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+  await wrapped('https://api.mycorp.com/api/v1/preset', { headers: { Traceparent: preset } });
+
+  assert.match(seenHeaders[0].headers?.traceparent ?? '', /^00-[a-f0-9]{32}-[a-f0-9]{16}-01$/);
+  assert.equal(seenHeaders[1].headers?.traceparent, undefined);
+  assert.equal(seenHeaders[2].headers?.Traceparent, preset);
+});

@@ -410,6 +410,8 @@ public struct NetworkTransportPayload: Codable, Sendable {
     public let totalMS: Double
     public let connectionReused: Bool?
     public let protocolName: String?
+    public let traceID: String?
+    public let spanID: String?
 
     enum CodingKeys: String, CodingKey {
         case operation, method, result
@@ -422,9 +424,11 @@ public struct NetworkTransportPayload: Codable, Sendable {
         case totalMS = "total_ms"
         case connectionReused = "connection_reused"
         case protocolName = "protocol"
+        case traceID = "trace_id"
+        case spanID = "span_id"
     }
 
-    public init(operation: String, method: String, statusCode: Int? = nil, result: String, dnsMS: Double? = nil, tcpMS: Double? = nil, tlsMS: Double? = nil, ttfbMS: Double? = nil, bodyMS: Double? = nil, totalMS: Double, connectionReused: Bool? = nil, protocolName: String? = nil) {
+    public init(operation: String, method: String, statusCode: Int? = nil, result: String, dnsMS: Double? = nil, tcpMS: Double? = nil, tlsMS: Double? = nil, ttfbMS: Double? = nil, bodyMS: Double? = nil, totalMS: Double, connectionReused: Bool? = nil, protocolName: String? = nil, traceID: String? = nil, spanID: String? = nil) {
         self.operation = operation
         self.method = method
         self.statusCode = statusCode
@@ -437,6 +441,8 @@ public struct NetworkTransportPayload: Codable, Sendable {
         self.totalMS = totalMS
         self.connectionReused = connectionReused
         self.protocolName = protocolName
+        self.traceID = traceID
+        self.spanID = spanID
     }
 }
 

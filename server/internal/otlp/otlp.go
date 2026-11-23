@@ -10,6 +10,7 @@ import (
 
 	"github.com/caliper-apm/caliper/server/internal/analytics"
 	"github.com/caliper-apm/caliper/server/internal/protocol"
+	"github.com/caliper-apm/caliper/server/internal/storage"
 )
 
 // OpenTelemetry OTLP/HTTP JSON data model (opentelemetry-proto v1.x compatible, zero external deps).
@@ -45,6 +46,7 @@ type Span struct {
 	TraceID           string      `json:"traceId"`
 	SpanID            string      `json:"spanId"`
 	Name              string      `json:"name"`
+	Kind              int         `json:"kind,omitempty"` // 1=INTERNAL, 2=SERVER, 3=CLIENT
 	StartTimeUnixNano string      `json:"startTimeUnixNano"`
 	EndTimeUnixNano   string      `json:"endTimeUnixNano"`
 	Attributes        []KeyValue  `json:"attributes,omitempty"`
@@ -144,6 +146,8 @@ func TranslateTraces(req ExportTraceServiceRequest) ([]*protocol.BatchEnvelope, 
 						StatusCode: statusCode,
 						Result:     result,
 						TotalMS:    durMS,
+						TraceID:    normalizeW3CHex(sp.TraceID, 32),
+						SpanID:     normalizeW3CHex(sp.SpanID, 16),
 					})
 					events = append(events, protocol.Event{
 						EventID:         eventID,
@@ -333,6 +337,127 @@ func ExportOverviewAsOTLPMetrics(appID string, ov analytics.OverviewReport) map[
 			},
 		},
 	}
+}
+
+// ExportNetworkSamplesAsOTLPTraces renders mobile network_transport samples carrying W3C
+// trace_id/span_id (injected via `traceparent`) as standard OTLP/HTTP JSON CLIENT spans,
+// enabling direct correlation with backend Jaeger / Grafana Tempo / SkyWalking traces.
+func ExportNetworkSamplesAsOTLPTraces(appID string, samples []storage.NetworkTransportSample) ExportTraceServiceRequest {
+	type resKey struct {
+		appID      string
+		platform   string
+		appVersion string
+	}
+	grouped := make(map[resKey][]Span)
+	order := make([]resKey, 0)
+	for _, s := range samples {
+		if s.TraceID == "" {
+			continue
+		}
+		spanID := s.SpanID
+		if spanID == "" {
+			sum := sha256.Sum256([]byte(s.EventID))
+			spanID = hex.EncodeToString(sum[:8])
+		}
+		rk := resKey{
+			appID:      nonEmpty(s.AppID, nonEmpty(appID, "caliper.mobile")),
+			platform:   nonEmpty(s.Platform, "mobile"),
+			appVersion: nonEmpty(s.AppVersion, "unknown"),
+		}
+		if _, ok := grouped[rk]; !ok {
+			order = append(order, rk)
+		}
+		startNS := s.OccurredAtMS * 1_000_000
+		endNS := startNS + int64(s.TotalMS*1_000_000)
+		if endNS < startNS {
+			endNS = startNS
+		}
+		strVal := func(v string) AnyValue { return AnyValue{StringValue: &v} }
+		dblVal := func(v float64) AnyValue { return AnyValue{DoubleValue: &v} }
+		boolVal := func(v bool) AnyValue { return AnyValue{BoolValue: &v} }
+		attrs := []KeyValue{
+			{Key: "http.request.method", Value: strVal(s.Method)},
+			{Key: "url.path", Value: strVal(s.Operation)},
+			{Key: "caliper.network.result", Value: strVal(s.Result)},
+		}
+		if s.StatusCode > 0 {
+			attrs = append(attrs, KeyValue{Key: "http.response.status_code", Value: AnyValue{IntValue: s.StatusCode}})
+		}
+		if s.Scene != "" {
+			attrs = append(attrs, KeyValue{Key: "caliper.scene", Value: strVal(s.Scene)})
+		}
+		if s.Protocol != "" {
+			attrs = append(attrs, KeyValue{Key: "network.protocol.name", Value: strVal(s.Protocol)})
+		}
+		if s.ConnectionReused {
+			attrs = append(attrs, KeyValue{Key: "caliper.connection_reused", Value: boolVal(true)})
+		}
+		if s.DNSMS != nil {
+			attrs = append(attrs, KeyValue{Key: "caliper.dns_ms", Value: dblVal(*s.DNSMS)})
+		}
+		if s.TCPMS != nil {
+			attrs = append(attrs, KeyValue{Key: "caliper.tcp_ms", Value: dblVal(*s.TCPMS)})
+		}
+		if s.TLSMS != nil {
+			attrs = append(attrs, KeyValue{Key: "caliper.tls_ms", Value: dblVal(*s.TLSMS)})
+		}
+		if s.TTFBMS != nil {
+			attrs = append(attrs, KeyValue{Key: "caliper.ttfb_ms", Value: dblVal(*s.TTFBMS)})
+		}
+		if s.BodyMS != nil {
+			attrs = append(attrs, KeyValue{Key: "caliper.body_ms", Value: dblVal(*s.BodyMS)})
+		}
+		statusCode := 1 // OK
+		if s.Result != "success" || s.StatusCode >= 500 {
+			statusCode = 2 // ERROR
+		}
+		grouped[rk] = append(grouped[rk], Span{
+			TraceID:           s.TraceID,
+			SpanID:            spanID,
+			Name:              strings.TrimSpace(s.Method + " " + s.Operation),
+			Kind:              3, // SPAN_KIND_CLIENT
+			StartTimeUnixNano: strconv.FormatInt(startNS, 10),
+			EndTimeUnixNano:   strconv.FormatInt(endNS, 10),
+			Attributes:        attrs,
+			Status:            &SpanStatus{Code: statusCode},
+		})
+	}
+
+	rs := make([]ResourceSpans, 0, len(order))
+	for _, rk := range order {
+		svc := rk.appID
+		osName := rk.platform
+		ver := rk.appVersion
+		rs = append(rs, ResourceSpans{
+			Resource: Resource{
+				Attributes: []KeyValue{
+					{Key: "service.name", Value: AnyValue{StringValue: &svc}},
+					{Key: "os.name", Value: AnyValue{StringValue: &osName}},
+					{Key: "service.version", Value: AnyValue{StringValue: &ver}},
+				},
+			},
+			ScopeSpans: []ScopeSpans{{Spans: grouped[rk]}},
+		})
+	}
+	return ExportTraceServiceRequest{ResourceSpans: rs}
+}
+
+func normalizeW3CHex(raw string, wantLen int) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if len(s) != wantLen || !isLowerHex(s) {
+		return ""
+	}
+	allZero := true
+	for i := 0; i < len(s); i++ {
+		if s[i] != '0' {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		return ""
+	}
+	return s
 }
 
 func mapResource(kvs []KeyValue) protocol.Resource {

@@ -136,6 +136,8 @@ CREATE TABLE IF NOT EXISTS caliper_network_transport_events (
     network_type      LowCardinality(String) DEFAULT '',
     install_hash      String DEFAULT '',
     user_hash         String DEFAULT '',
+    trace_id          String DEFAULT '',
+    span_id           String DEFAULT '',
     total_ms          Float64 DEFAULT 0,
     dns_buckets       Array(UInt64),
     tcp_buckets       Array(UInt64),

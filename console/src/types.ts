@@ -237,6 +237,8 @@ export interface NetworkTransportSample {
   connection_reused?: boolean;
   protocol?: string;
   network_type?: string;
+  trace_id?: string;
+  span_id?: string;
 }
 
 export interface JourneyStageReport {

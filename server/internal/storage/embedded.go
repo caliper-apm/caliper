@@ -585,7 +585,7 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		op.TotalHist[contract.DurationBucketIndex(p.TotalMS)]++
 
 		isIssueSample := p.Result != "success" || p.StatusCode >= 400 || p.TotalMS >= 800
-		if isIssueSample || len(s.networkSamples) < 120 || s.totalEvents%7 == 0 {
+		if isIssueSample || p.TraceID != "" || len(s.networkSamples) < 120 || s.totalEvents%7 == 0 {
 			s.networkSamples = append(s.networkSamples, NetworkTransportSample{
 				EventID:          e.EventID,
 				OccurredAtMS:     e.OccurredAtMS,
@@ -613,6 +613,8 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 				ConnectionReused: p.ConnectionReused,
 				Protocol:         p.Protocol,
 				NetworkType:      p.NetworkType,
+				TraceID:          p.TraceID,
+				SpanID:           p.SpanID,
 			})
 			if len(s.networkSamples) > maxNetworkSamples {
 				s.networkSamples = s.networkSamples[len(s.networkSamples)-maxNetworkSamples:]

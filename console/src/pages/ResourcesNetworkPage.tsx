@@ -396,7 +396,7 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
                   const sum = Math.max(dns + tcp + tls + ttfb + body, s.total_ms, 1);
                   const bad = s.result !== 'success' || (s.status_code ?? 0) >= 400;
                   return (
-                    <div key={s.event_id} style={{ padding: 10, border: '1px solid var(--border)', borderRadius: 8, background: '#fff' }}>
+                    <div key={s.event_id} style={{ padding: 10, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--surface)' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
                         <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                           <span className={`badge ${bad ? 'red' : s.total_ms >= 800 ? 'amber' : 'green'}`}>
@@ -406,6 +406,17 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
                           <span className="badge slate">v{s.app_version}</span>
                           {s.protocol && <span className="badge blue">{s.protocol}</span>}
                           {s.network_type && <span className="badge slate">{s.network_type}</span>}
+                          {s.trace_id && (
+                            <button
+                              type="button"
+                              className="badge purple"
+                              style={{ border: 'none', cursor: 'pointer', fontFamily: 'var(--mono)' }}
+                              title={`W3C traceparent: 00-${s.trace_id}-${s.span_id || '0000000000000001'}-01 (click to copy trace_id)`}
+                              onClick={() => navigator.clipboard?.writeText(s.trace_id || '')}
+                            >
+                              trace:{s.trace_id.slice(0, 8)}…
+                            </button>
+                          )}
                         </div>
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                           <strong className="mono" style={{ color: bad ? 'var(--red)' : s.total_ms >= 800 ? 'var(--amber)' : 'var(--text)' }}>

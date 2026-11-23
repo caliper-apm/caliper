@@ -115,4 +115,144 @@ final class AutoInstrumentAndProbesTests: XCTestCase {
         CaliperIOSAgent.log(level: "INFO", tag: "Test", message: "one-line agent active")
         XCTAssertEqual(client.pendingCount(), 0)
     }
+
+    func testW3CTraceparentGenerationAllowlistAndURLRequestInjection() {
+        let ctx = CaliperTraceContext.newRoot(sampled: true)
+        XCTAssertEqual(ctx.traceID.count, 32)
+        XCTAssertEqual(ctx.spanID.count, 16)
+        XCTAssertNotEqual(ctx.traceID, String(repeating: "0", count: 32))
+        XCTAssertNotEqual(ctx.spanID, String(repeating: "0", count: 16))
+
+        let parsed = CaliperTraceContext.parse(traceparent: ctx.traceparentHeader)
+        XCTAssertEqual(parsed, ctx)
+
+        // Reject invalid / all-zero W3C traceparent headers
+        XCTAssertNil(CaliperTraceContext.parse(traceparent: "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"))
+        XCTAssertNil(CaliperTraceContext.parse(traceparent: "00-00000000000000000000000000000000-00f067aa0ba902b7-01"))
+        XCTAssertNil(CaliperTraceContext.parse(traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01"))
+
+        let collector = URL(string: "https://apm.mycorp.com/v1/ingest")!
+        let apiURL = URL(string: "https://checkout.mycorp.com/v1/pay")!
+        let thirdPartyURL = URL(string: "https://analytics.external.net/ping")!
+
+        XCTAssertTrue(CaliperTraceContext.shouldPropagate(url: apiURL, targets: [".mycorp.com"], collectorEndpointURL: collector))
+        XCTAssertFalse(CaliperTraceContext.shouldPropagate(url: thirdPartyURL, targets: [".mycorp.com"], collectorEndpointURL: collector))
+        // Wildcard must NOT leak or loop onto collector host itself
+        XCTAssertFalse(CaliperTraceContext.shouldPropagate(url: collector, targets: ["*"], collectorEndpointURL: collector))
+
+        // Inject fresh traceparent
+        let (injectedReq, injectedCtx) = CaliperTraceContext.inject(
+            into: URLRequest(url: apiURL),
+            targets: [".mycorp.com"],
+            collectorEndpointURL: collector
+        )
+        XCTAssertNotNil(injectedCtx)
+        XCTAssertEqual(injectedReq.value(forHTTPHeaderField: "traceparent"), injectedCtx?.traceparentHeader)
+
+        // Preserve existing host traceparent without overwriting
+        let existingHeader = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        var presetReq = URLRequest(url: apiURL)
+        presetReq.setValue(existingHeader, forHTTPHeaderField: "traceparent")
+        let (adoptedReq, adoptedCtx) = CaliperTraceContext.inject(
+            into: presetReq,
+            targets: [".mycorp.com"],
+            collectorEndpointURL: collector
+        )
+        XCTAssertEqual(adoptedReq.value(forHTTPHeaderField: "traceparent"), existingHeader)
+        XCTAssertEqual(adoptedCtx?.traceID, "4bf92f3577b34da6a3ce929d0e0e4736")
+        XCTAssertEqual(adoptedCtx?.spanID, "00f067aa0ba902b7")
+    }
+
+    func testAutoURLSessionDelegateRealLoopbackHTTPTraceparentEndToEnd() throws {
+        // Spin up a real ephemeral POSIX TCP HTTP/1.1 responder on 127.0.0.1:0
+        let listenFD = socket(AF_INET, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(listenFD, 0)
+        defer { close(listenFD) }
+        var yes: Int32 = 1
+        setsockopt(listenFD, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let bindRes = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(listenFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        XCTAssertEqual(bindRes, 0)
+        XCTAssertEqual(listen(listenFD, 4), 0)
+
+        var boundAddr = sockaddr_in()
+        var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &boundAddr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(listenFD, $0, &boundLen)
+            }
+        }
+        let port = UInt16(bigEndian: boundAddr.sin_port)
+
+        let capturedReqExpectation = expectation(description: "server received HTTP request")
+        var receivedRequestText = ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let connFD = accept(listenFD, nil, nil)
+            guard connFD >= 0 else { return }
+            defer { close(connFD) }
+            var buf = [UInt8](repeating: 0, count: 4096)
+            let n = recv(connFD, &buf, buf.count, 0)
+            if n > 0 {
+                receivedRequestText = String(decoding: buf.prefix(n), as: UTF8.self)
+            }
+            let body = #"{"ok":true}"#
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+            _ = resp.withCString { send(connFD, $0, strlen($0), 0) }
+            capturedReqExpectation.fulfill()
+        }
+
+        let client = CaliperClient(config: CaliperConfig(
+            endpointURL: URL(string: "https://collector.example.com/v1/ingest")!,
+            resource: ResourceIdentity(
+                appID: "dev.caliper.demo",
+                appVersion: "1.9.0",
+                buildNumber: "190",
+                installHash: "0123456789abcdef"
+            ),
+            tracePropagationTargets: ["127.0.0.1"]
+        ))
+        client.applyLease(PolicyLease(
+            policyID: "pol-trace-e2e",
+            ratePPM: 1_000_000,
+            issuedAtMS: Int64(Date().timeIntervalSince1970 * 1000) - 1000,
+            leaseTTLMS: 3_600_000,
+            maxEvents24h: 100,
+            enabledCollectors: ["network"]
+        ))
+
+        let (session, proxy) = CaliperAutoURLSessionDelegate.makeSession(client: client, configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+
+        let req = proxy.instrumentedRequest(URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/checkout/pay?token=secret")!))
+        let sentHeader = req.value(forHTTPHeaderField: "traceparent")
+        XCTAssertNotNil(sentHeader)
+        let expectedCtx = CaliperTraceContext.parse(traceparent: sentHeader)
+        XCTAssertNotNil(expectedCtx)
+
+        let done = expectation(description: "URLSession completed")
+        session.dataTask(with: req) { _, response, error in
+            XCTAssertNil(error)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            done.fulfill()
+        }.resume()
+
+        wait(for: [capturedReqExpectation, done], timeout: 5.0)
+        // Give URLSessionTaskMetrics delegate callback + worker queue a brief beat to enqueue
+        Thread.sleep(forTimeInterval: 0.1)
+
+        XCTAssertTrue(
+            receivedRequestText.lowercased().contains("traceparent: \(sentHeader!.lowercased())"),
+            "Server must receive exact W3C traceparent header over wire, got:\n\(receivedRequestText)"
+        )
+        XCTAssertEqual(client.pendingCount(), 1, "CaliperAutoURLSessionDelegate must enqueue 1 network_transport event")
+    }
 }

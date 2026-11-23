@@ -324,6 +324,7 @@ func (h *Handler) handleNetworkSamples(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	op := q.Get("operation")
+	traceID := strings.ToLower(strings.TrimSpace(q.Get("trace_id")))
 	onlyIssues := q.Get("only_issues") == "true" || q.Get("only_issues") == "1"
 	limit := 50
 	if raw := q.Get("limit"); raw != "" {
@@ -331,10 +332,23 @@ func (h *Handler) handleNetworkSamples(w http.ResponseWriter, r *http.Request) {
 			limit = parsed
 		}
 	}
-	samples, err := h.store.QueryNetworkSamples(r.Context(), f, op, onlyIssues, limit)
+	fetchLimit := limit
+	if traceID != "" && fetchLimit < 200 {
+		fetchLimit = 200
+	}
+	samples, err := h.store.QueryNetworkSamples(r.Context(), f, op, onlyIssues, fetchLimit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
 		return
+	}
+	if traceID != "" {
+		filtered := make([]storage.NetworkTransportSample, 0, len(samples))
+		for _, smp := range samples {
+			if strings.EqualFold(smp.TraceID, traceID) {
+				filtered = append(filtered, smp)
+			}
+		}
+		samples = filtered
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"samples": samples})
 }

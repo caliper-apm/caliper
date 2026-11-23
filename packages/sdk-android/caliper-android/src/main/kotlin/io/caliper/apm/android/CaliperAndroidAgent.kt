@@ -274,15 +274,14 @@ object CaliperAndroidAgent {
             )
         }
         CaliperAutoInstrumentHooks.okHttpBuilderHook = { builder ->
-            // Attach CaliperOkHttpEventListener safely when OkHttp is present on the host classpath.
+            // Attach W3C traceparent interceptor + OkHttp EventListener safely when OkHttp is on classpath.
             runCatching {
-                val okBuilderCls = Class.forName("okhttp3.OkHttpClient\$Builder")
-                if (okBuilderCls.isInstance(builder)) {
-                    val factoryCls = Class.forName("okhttp3.EventListener\$Factory")
-                    val listenerCls = Class.forName("io.caliper.apm.android.CaliperOkHttpEventListener")
-                    val factory = listenerCls.getMethod("factory", CaliperClient::class.java).invoke(null, client)
-                    okBuilderCls.getMethod("eventListenerFactory", factoryCls).invoke(builder, factory)
-                }
+                Class.forName("okhttp3.OkHttpClient")
+                CaliperOkHttpNetworkBridge.installOnBuilder(
+                    builderObj = builder,
+                    client = client,
+                    tracePropagationTargets = client.getConfig().tracePropagationTargets,
+                )
             }
         }
     }

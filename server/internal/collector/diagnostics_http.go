@@ -34,6 +34,7 @@ func (h *Handler) registerV1DiagnosticsRoutes() {
 	h.mux.HandleFunc("POST /v1/otlp/v1/traces", h.withPerm(auth.PermIngest, h.handleOTLPTraces))
 	h.mux.HandleFunc("POST /v1/otlp/v1/logs", h.withPerm(auth.PermIngest, h.handleOTLPLogs))
 	h.mux.HandleFunc("GET /v1/otlp/export", h.withPerm(auth.PermReadAnalytics, h.handleOTLPExportMetrics))
+	h.mux.HandleFunc("GET /v1/otlp/export/traces", h.withPerm(auth.PermReadAnalytics, h.handleOTLPExportTraces))
 }
 
 func (h *Handler) handleListCPUProfiles(w http.ResponseWriter, r *http.Request) {
@@ -376,4 +377,36 @@ func (h *Handler) handleOTLPExportMetrics(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, otlp.ExportOverviewAsOTLPMetrics(f.AppID, ov))
+}
+
+func (h *Handler) handleOTLPExportTraces(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	q := r.URL.Query()
+	op := q.Get("operation")
+	traceID := strings.ToLower(strings.TrimSpace(q.Get("trace_id")))
+	limit := 100
+	if raw := q.Get("limit"); raw != "" {
+		if parsed, convErr := strconv.Atoi(raw); convErr == nil && parsed > 0 && parsed <= 200 {
+			limit = parsed
+		}
+	}
+	samples, err := h.store.QueryNetworkSamples(r.Context(), f, op, false, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "export_failed", err.Error())
+		return
+	}
+	if traceID != "" {
+		filtered := make([]storage.NetworkTransportSample, 0, len(samples))
+		for _, smp := range samples {
+			if strings.EqualFold(smp.TraceID, traceID) {
+				filtered = append(filtered, smp)
+			}
+		}
+		samples = filtered
+	}
+	writeJSON(w, http.StatusOK, otlp.ExportNetworkSamplesAsOTLPTraces(f.AppID, samples))
 }

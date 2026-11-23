@@ -5,9 +5,10 @@ import (
 	"strings"
 )
 
-// DemangleNativeSymbol demangles Itanium C++ ABI symbols (_Z... / __Z...) and strips
-// Mach-O's leading underscore from plain C symbols while leaving Objective-C / Swift /
-// already-readable symbols intact. Zero external dependencies.
+// DemangleNativeSymbol demangles Itanium C++ ABI symbols (_Z... / __Z...) and Swift 5+
+// ABI symbols ($s... / _$s... / $S... / _$S... / _T0...), and strips Mach-O's leading
+// underscore from plain C symbols while leaving Objective-C selectors and already-readable
+// symbols intact. Zero external dependencies.
 func DemangleNativeSymbol(raw string) string {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -16,6 +17,15 @@ func DemangleNativeSymbol(raw string) string {
 	// Preserve Objective-C selectors like "-[FeedVC viewDidLoad]" or "+[Cache shared]"
 	if strings.HasPrefix(s, "-[") || strings.HasPrefix(s, "+[") {
 		return s
+	}
+	// Swift 5+ / 4.2 / 4.0 mangled linkage names.
+	if strings.HasPrefix(s, "_$s") || strings.HasPrefix(s, "$s") ||
+		strings.HasPrefix(s, "_$S") || strings.HasPrefix(s, "$S") ||
+		strings.HasPrefix(s, "_T0") {
+		if out, ok := demangleSwift(s); ok && out != "" {
+			return out
+		}
+		return raw
 	}
 	// Mach-O prepends one extra "_" to C and C++ linkage names (__Z... -> _Z..., _foo -> foo).
 	if strings.HasPrefix(s, "__Z") {
