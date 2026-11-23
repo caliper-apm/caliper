@@ -8,9 +8,17 @@ export interface GlobalFilters {
   appVersion: string;
   adapter: AdapterFilter;
   scene: string;
+  deviceModel: string;
+  osVersion: string;
   rangeDays: 0 | 7 | 14;
   startDayUtc?: string;
   endDayUtc?: string;
+}
+
+export interface DimensionsResponse {
+  devices: string[];
+  os_versions: string[];
+  scenes: string[];
 }
 
 export interface HistogramBucket {

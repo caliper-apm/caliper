@@ -1,10 +1,12 @@
 package collector
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +27,7 @@ func (h *Handler) registerOpsRoutes() {
 	h.mux.HandleFunc("POST /v1/analytics/release-gate", h.withPerm(auth.PermReadAnalytics, h.handleReleaseGate))
 	h.mux.HandleFunc("GET /v1/analytics/network/samples", h.withPerm(auth.PermReadAnalytics, h.handleNetworkSamples))
 	h.mux.HandleFunc("GET /v1/analytics/journeys", h.withPerm(auth.PermReadAnalytics, h.handleCustomJourneys))
+	h.mux.HandleFunc("GET /v1/ops/dimensions", h.withPerm(auth.PermReadAnalytics, h.handleDimensions))
 }
 
 // handlePrometheusMetrics exposes standard OpenMetrics/Prometheus text counters for self-monitoring.
@@ -348,4 +351,55 @@ func (h *Handler) handleCustomJourneys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"journeys": journeys})
+}
+
+func (h *Handler) handleDimensions(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	type dimLister interface {
+		ListDimensionValues(ctx context.Context, f storage.QueryFilter, dimension string) []string
+	}
+	devices := []string{}
+	osVersions := []string{}
+	scenesMap := map[string]struct{}{}
+	if lister, ok := h.store.(dimLister); ok {
+		if d := lister.ListDimensionValues(r.Context(), f, "device"); d != nil {
+			devices = d
+		}
+		if o := lister.ListDimensionValues(r.Context(), f, "os"); o != nil {
+			osVersions = o
+		}
+		for _, sc := range lister.ListDimensionValues(r.Context(), f, "scene") {
+			if sc != "" {
+				scenesMap[sc] = struct{}{}
+			}
+		}
+	}
+	if fl, flErr := h.store.QueryFluency(r.Context(), f); flErr == nil {
+		for _, row := range fl {
+			if row.Scene != "" {
+				scenesMap[row.Scene] = struct{}{}
+			}
+		}
+	}
+	if res, resErr := h.store.QueryResources(r.Context(), f); resErr == nil {
+		for _, row := range res {
+			if row.Scene != "" {
+				scenesMap[row.Scene] = struct{}{}
+			}
+		}
+	}
+	scenes := make([]string, 0, len(scenesMap))
+	for s := range scenesMap {
+		scenes = append(scenes, s)
+	}
+	sort.Strings(scenes)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"devices":     devices,
+		"os_versions": osVersions,
+		"scenes":      scenes,
+	})
 }

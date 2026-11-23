@@ -1125,7 +1125,23 @@ func (s *EmbeddedStore) QueryIssues(_ context.Context, f QueryFilter, limit int)
 				continue
 			}
 		}
-		out = append(out, s.toIssueSummaryLocked(ib))
+		if f.DeviceModel != "" {
+			if ib.Devices[f.DeviceModel] == 0 {
+				continue
+			}
+		}
+		if f.OSVersion != "" {
+			if ib.OSVersions[f.OSVersion] == 0 {
+				continue
+			}
+		}
+		sum := s.toIssueSummaryLocked(ib)
+		if f.DeviceModel != "" {
+			sum.EventCount = ib.Devices[f.DeviceModel]
+		} else if f.OSVersion != "" {
+			sum.EventCount = ib.OSVersions[f.OSVersion]
+		}
+		out = append(out, sum)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].EventCount != out[j].EventCount {
@@ -1563,6 +1579,8 @@ func (s *EmbeddedStore) ListDimensionValues(_ context.Context, f QueryFilter, di
 			v = k.DeviceModel
 		case "os":
 			v = k.OSVersion
+		case "scene":
+			v = k.Scene
 		}
 		if v != "" {
 			seen[v] = struct{}{}
@@ -1575,6 +1593,12 @@ func (s *EmbeddedStore) ListDimensionValues(_ context.Context, f QueryFilter, di
 		collect(k)
 	}
 	for k := range s.resources {
+		collect(k)
+	}
+	for k := range s.networks {
+		collect(k)
+	}
+	for k := range s.customScenes {
 		collect(k)
 	}
 	out := make([]string, 0, len(seen))

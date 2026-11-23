@@ -2,6 +2,12 @@
 
 All notable releases of **Caliper APM** are documented here.
 
+## v1.5.0 — Console 2.4 Enterprise UX Polish & Production OSS Documentation Suite
+- **Global Device Model / OS Version Filter Bar & Dynamic Dimensions API (`GET /v1/ops/dimensions`)**: Added live-discovered `devices`, `os_versions`, and `scenes` selectors directly in the sticky global filter bar; wired `device_model` and `os_version` query parameters through Overview, Stability (`QueryIssues` now honors honest per-device/OS event counts), Fluency, Startup, Network, and Journeys.
+- **Shareable URL Query State, Dark/Light Theme & 1-Click Diagnostic Export**: Synced active tab and all global filters (`platform`, `env`, `version`, `device`, `os`, `adapter`, `scene`, `range`) to URL query parameters with a 1-click "Share View" copy button, added persistent Dark/Light theme switching (`[data-theme="dark"]`), and added 1-click JSON Diagnostic Report export containing active filters, summary, top issues, source health, and release gate verdict.
+- **Vite 8 / Rolldown Vendor Code Splitting**: Split `echarts-vendor` (`194 KB` gz) and `react-vendor` (`68 KB` gz) from the `32 KB` gz application shell, eliminating all >500 KB chunk warnings.
+- **Production Open-Source Documentation Suite (`docs/`)**: Added five dedicated production guides with Mermaid diagrams and verified physical-device benchmarks — [`docs/architecture.md`](docs/architecture.md), [`docs/self-hosting.md`](docs/self-hosting.md), [`docs/sdk-android.md`](docs/sdk-android.md), [`docs/sdk-ios.md`](docs/sdk-ios.md), and [`docs/sdk-react-native.md`](docs/sdk-react-native.md).
+
 ## v1.4.1 — Dual Physical-Device Release Benchmarks Verified (Android + iOS) & Watchdog Tuning
 - **Android Physical Release AOT Verification (`vivo V2343A`, Snapdragon 6 Gen 1, Android 14 / API 34)**: Cold Start `+6.0 ms` P50 (`-1 ms` P95, n=20), 15-fling scroll jank `+0.00%` (0/518 jank frames), PSS `+2.67 MiB`, pre-R8 Release APK delta `+28.0 KiB`, `0` self-induced crashes, and live physical-device E2E telemetry ingestion (`0` rejected).
 - **iOS Physical Release Verification (`iPhone 13 Pro Max`, A15 Bionic, iOS 27.2.1, `-O wholemodule`)**: Cold Start `+3.98 ms` P50 (`+1.51 ms` P90, n=18), ProMotion scroll jank `+0.00%` aggregate (3/517 vs 3/516 frames), `phys_footprint` `+0.34 MiB`, active scroll CPU `+0.10%` of 1 core, stripped arm64 Mach-O binary delta `+247.5 KiB`, `0` self-induced crashes, and live physical-device E2E telemetry ingestion (`0` rejected).

@@ -2,7 +2,7 @@
 
 **Native 优先、React Native 一等兼容、统计零谎言（Evidence-First）的开源移动端 APM 平台。**
 
-[English](README.md) · [北极星宪章](NORTH_STAR.md) · [Zero-Lie 统计契约](spec/metrics-contract.md) · [更新日志](CHANGELOG.md) · [开销评测报告](benchmarks/REPORT.md)
+[English](README.md) · [系统架构](docs/architecture.md) · [自托管部署](docs/self-hosting.md) · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN 适配层](docs/sdk-react-native.md) · [评测报告](benchmarks/REPORT.md) · [更新日志](CHANGELOG.md)
 
 ---
 
@@ -76,17 +76,30 @@ docker compose up --build
 - **强审计远程日志捞取任务**：支持按 `user_hash` / `install_hash` 下发带 TTL 与字节上限的远程日志拉取任务，SDK 轮询 + Gzip 加密摘要回传，全链路 Fail-Closed 写入审计日志。
 - **全双工 OTLP 互通**：原生接收标准 OpenTelemetry Traces / Logs（`POST /v1/otlp/v1/traces`、`/v1/otlp/v1/logs`），并支持以标准 `resourceMetrics` 导出聚合指标（`GET /v1/otlp/export`）。
 
-## 企业级控制台 2.3、生产 SDK 与 CI 质量门禁（v1.1 – v1.4）
+## 企业级控制台 2.4、生产 SDK 与 CI 质量门禁（v1.1 – v1.5）
 
 详见 [`CHANGELOG.md`](CHANGELOG.md)：
-- **Console 2.3 企业级多维可视化**：中英双语、14 天版本放量趋势标注、**按版本 / 机型 / 系统版本 / Native vs RN** 多维切换拆解、19 桶分布直方图、5 域网络失败占比、HTTP 状态码分布、**慢请求/异常请求单次瀑布样本抽屉**、**核心业务链路自定义多阶段追踪（`GET /v1/analytics/journeys`）**、跨页下钻与可视化单用户会话时间线。
+- **Console 2.4 企业级多维可视化**：中英双语、**暗黑 / 亮色一键主题切换**、**全局机型 / 系统版本 / 场景 / 版本 / 适配层筛选栏（`GET /v1/ops/dimensions`）**、**可分享 URL 筛选状态**、**一键导出 JSON 诊断报告**、Vite vendor 拆包（首屏业务包仅 `32 KB` gz）、14 天版本放量趋势标注、19 桶分布直方图、5 域网络失败占比、HTTP 状态码分布、**慢请求/异常请求单次瀑布样本抽屉**、**核心业务链路自定义多阶段追踪（`GET /v1/analytics/journeys`）**、跨页下钻与可视化单用户会话时间线。
 - **CI/CD 灰度质量门禁（`caliper-gate` CLI + GitHub PR Comment Action）**：基于 Z 检验 + KS 检验 + 符号覆盖率的零谎言发版红绿灯（`POST /v1/analytics/release-gate`）及一键 PR 评论 Action（`packages/github-action/release-gate/action.yml`），退出码 `0`（PASS）、`2`（BLOCK 显著劣化）、`3`（GATED 样本不足）：
   ```bash
   caliper-gate --server http://127.0.0.1:8080 --platform android --baseline 1.0.0 --candidate 1.1.0 --format markdown
   ```
-- **稳定性异常流转与影响分布**：异常全生命周期处置（待处理 / 处理中 / 已修复 / 已忽略、负责人、修复版本、备注 + 审计留痕）、单异常的机型/系统/版本 ECharts 分布图，以及抽屉内一键跳转单点追查。
+- **稳定性异常流转与影响分布**：异常全生命周期处置（待处理 / 处理中 / 已修复 / 已忽略、负责人、修复版本、备注 + 审计留痕）、按机型/系统诚实计数筛选、单异常的机型/系统/版本 ECharts 分布图，以及抽屉内一键跳转单点追查。
 - **远程动态采样策略与运维自检**：控制台热更新采样率（% / PPM）、单设备 24h 上限、租约 TTL 与各探针开关（`GET/PUT /v1/policy`），配套告警规则一键测通/启停/删除、数据源健康自检（`GET /v1/ops/source-health`）与 Prometheus `GET /metrics`。
 - **生产端 SDK 深度与集群高可用**：Android/iOS 离线落盘队列与主线程 Watchdog、Android `CaliperAndroidAgent`（`FrameMetrics` / `ApplicationExitInfo` / `PSS`）、iOS `CaliperMetricKitBridge`、RN 原生桥、纯 Go AWS SigV4 S3/MinIO 对象存储（`--object-store=s3`）、ClickHouse 机型/系统切片、PostgreSQL 元数据 DDL 与 Kubernetes Helm Chart（`deploy/helm/caliper-apm`）。
+
+---
+
+## 文档中心
+
+| 文档 | 内容概览 |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | 端到端系统拓扑（Mermaid）、Zero-Lie 直方图与统计门禁原理、Clean-Room 架构设计 |
+| [`docs/self-hosting.md`](docs/self-hosting.md) | Embedded WAL 单二进制 vs ClickHouse + S3 高可用集群、Helm 部署、RBAC、PR 门禁与 Prometheus |
+| [`docs/sdk-android.md`](docs/sdk-android.md) | 纯 Kotlin Android 接入（`CaliperAndroidAgent`、`FrameMetrics`、Watchdog、Gradle R8 插件、`vivo V2343A` 实测） |
+| [`docs/sdk-ios.md`](docs/sdk-ios.md) | 纯 Swift SPM iOS 接入（`CaliperClient`、`CaliperMetricKitBridge`、Watchdog、Fastlane dSYM 插件、`iPhone 13 Pro Max` 实测） |
+| [`docs/sdk-react-native.md`](docs/sdk-react-native.md) | React Native 一等适配层（`wrapFetchForDenominator`、550× 过桥流量压缩、Hermes SourceMap v3、原生桥接） |
+| [`spec/metrics-contract.md`](spec/metrics-contract.md) & [`NORTH_STAR.md`](NORTH_STAR.md) | 冻结北极星宪章与 Zero-Lie 统计契约 |
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Native-First, React Native Compatible, Evidence-First Open-Source Mobile APM.**
 
-[简体中文](README.zh-CN.md) · [North Star Charter](NORTH_STAR.md) · [Zero-Lie Metrics Contract](spec/metrics-contract.md) · [Changelog](CHANGELOG.md) · [Benchmark Report](benchmarks/REPORT.md)
+[简体中文](README.zh-CN.md) · [Architecture](docs/architecture.md) · [Self-Hosting](docs/self-hosting.md) · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN Adapter](docs/sdk-react-native.md) · [Benchmarks](benchmarks/REPORT.md) · [Changelog](CHANGELOG.md)
 
 ---
 
@@ -150,17 +150,30 @@ See [`docs/roadmap-v1.0.md`](docs/roadmap-v1.0.md):
 - **Audited Remote Log Retrieval Tasks**: Pull bounded, PII-scrubbed diagnostic ring logs on demand (`POST /v1/diagnostics/log-tasks`, SDK poll + gzip upload, fail-closed immutable audit trail).
 - **Full OTLP/HTTP JSON Interoperability**: Ingest standard OpenTelemetry traces & logs (`POST /v1/otlp/v1/traces`, `POST /v1/otlp/v1/logs`) and export aggregated `resourceMetrics` (`GET /v1/otlp/export`).
 
-## Enterprise Console 2.3, Production SDKs & CI Release Gate (v1.1 – v1.4)
+## Enterprise Console 2.4, Production SDKs & CI Release Gate (v1.1 – v1.5)
 
 See [`CHANGELOG.md`](CHANGELOG.md):
-- **Console 2.3 (ECharts Multi-Dimension APM Workbench)**: Bilingual (`中文`/`EN`) dark-chrome enterprise console with 14-day release rollout trends, **Release / Device Model / OS Version / Native-vs-RN** slicing, 19-bucket histograms, 5-domain network error breakdown, HTTP status code distribution, clickable slow/error network sample waterfalls, multi-stage custom business journey traces (`GET /v1/analytics/journeys`), cross-page drill-down, and visual single-user session timelines.
+- **Console 2.4 (ECharts Multi-Dimension APM Workbench)**: Bilingual (`中文`/`EN`) **Dark & Light theme** enterprise console with **global Device Model / OS Version / Scene / Version / Adapter filter bar** (`GET /v1/ops/dimensions`), **shareable URL query state**, **1-click Export Diagnostic JSON Snapshot**, Vite vendor code-splitting (`32 KB` gz app shell), 14-day release rollout trends, 19-bucket histograms, 5-domain network error breakdown, HTTP status code distribution, clickable slow/error network sample waterfalls, multi-stage custom business journey traces (`GET /v1/analytics/journeys`), cross-page drill-down, and visual single-user session timelines.
 - **CI/CD Zero-Lie Release Quality Gate (`caliper-gate` + GitHub Action)**: Automated canary promotion gate (`POST /v1/analytics/release-gate`) + composite PR Comment Action (`packages/github-action/release-gate/action.yml`) returning exit code `0` (`PASS`), `2` (`BLOCK` on statistically significant regression), or `3` (`GATED` when under-sampled):
   ```bash
   caliper-gate --server http://127.0.0.1:8080 --platform android --baseline 1.0.0 --candidate 1.1.0 --format markdown
   ```
-- **Stability Issue Lifecycle Triage & Impact Charts**: Persistent status workflow (`open` / `in_progress` / `resolved` / `ignored`, assignee, resolved-in version, note via `PATCH /v1/stability/issues/{fp}`), per-issue Device/OS/Release ECharts charts, and 1-click jump into Single-User Trace.
+- **Stability Issue Lifecycle Triage & Impact Charts**: Persistent status workflow (`open` / `in_progress` / `resolved` / `ignored`, assignee, resolved-in version, note via `PATCH /v1/stability/issues/{fp}`), per-issue Device/OS/Release ECharts charts, honest device/OS-scoped issue counts, and 1-click jump into Single-User Trace.
 - **Dynamic Sampling & Collector Policy Control**: Hot-update sampling rate (`%` / PPM), 24h device quotas, lease TTL, and collector switches via `GET/PUT /v1/policy` with immutable audit logging, plus Data Source Health (`GET /v1/ops/source-health`) and Prometheus `GET /metrics`.
 - **Production Mobile SDK Depth & Cluster HA**: Offline disk queues, main-thread Watchdogs, Android `CaliperAndroidAgent` (`FrameMetrics`, `ApplicationExitInfo`, `Debug.MemoryInfo`), iOS `CaliperMetricKitBridge`, RN native bridges, pure-Go AWS SigV4 S3/MinIO `--object-store=s3`, ClickHouse `device_model`/`os_version` parity, PostgreSQL metadata DDL, and Kubernetes Helm Chart (`deploy/helm/caliper-apm`).
+
+---
+
+## Documentation Hub
+
+| Guide | What You'll Learn |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | System topology (Mermaid), Zero-Lie histogram & statistical gate architecture, Clean-Room design choices |
+| [`docs/self-hosting.md`](docs/self-hosting.md) | Embedded WAL single-binary vs ClickHouse + S3 HA Cluster, Kubernetes Helm, RBAC, GitHub PR Gate, Prometheus |
+| [`docs/sdk-android.md`](docs/sdk-android.md) | Pure-Kotlin Android integration (`CaliperAndroidAgent`, `FrameMetrics`, Watchdog, Gradle R8 plugin, `vivo V2343A` benchmarks) |
+| [`docs/sdk-ios.md`](docs/sdk-ios.md) | Pure-Swift SPM iOS integration (`CaliperClient`, `CaliperMetricKitBridge`, Watchdog, Fastlane dSYM plugin, `iPhone 13 Pro Max` benchmarks) |
+| [`docs/sdk-react-native.md`](docs/sdk-react-native.md) | React Native First-Class Adapter (`wrapFetchForDenominator`, 550× bridge compression, Hermes SourceMap v3, Kotlin/Swift bridges) |
+| [`spec/metrics-contract.md`](spec/metrics-contract.md) & [`NORTH_STAR.md`](NORTH_STAR.md) | Frozen architectural charter & Zero-Lie statistical metrics specification |
 
 ---
 

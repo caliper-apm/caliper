@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as echarts from 'echarts/core';
 import { LineChart, BarChart, PieChart } from 'echarts/charts';
 import {
@@ -23,6 +23,63 @@ echarts.use([
   CanvasRenderer,
 ]);
 
+const LIGHT_TO_DARK_COLOR: Record<string, string> = {
+  '#f2f3f5': '#263042',
+  '#e5e6eb': '#2e3a50',
+  '#4e5969': '#b4bfd1',
+  '#1d2129': '#e8edf5',
+  '#86909c': '#94a3b8',
+};
+
+function adaptOptionForDark(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(adaptOptionForDark);
+  if (!node || typeof node !== 'object') {
+    if (typeof node === 'string') {
+      const mapped = LIGHT_TO_DARK_COLOR[node.toLowerCase()];
+      return mapped ?? node;
+    }
+    return node;
+  }
+  const src = node as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(src)) {
+    out[k] = adaptOptionForDark(v);
+  }
+  return out;
+}
+
+function applyDarkTheme(option: ECBasicOption): ECBasicOption {
+  const cloned = adaptOptionForDark(option) as Record<string, unknown>;
+  cloned.textStyle = { color: '#b4bfd1', ...(cloned.textStyle as Record<string, unknown> | undefined) };
+  if (cloned.tooltip && typeof cloned.tooltip === 'object' && !Array.isArray(cloned.tooltip)) {
+    cloned.tooltip = {
+      backgroundColor: '#1e2533',
+      borderColor: '#334057',
+      textStyle: { color: '#e8edf5' },
+      ...(cloned.tooltip as Record<string, unknown>),
+    };
+  }
+  if (cloned.legend && typeof cloned.legend === 'object' && !Array.isArray(cloned.legend)) {
+    cloned.legend = {
+      textStyle: { color: '#b4bfd1' },
+      ...(cloned.legend as Record<string, unknown>),
+    };
+  }
+  return cloned as ECBasicOption;
+}
+
+function useIsDarkTheme(): boolean {
+  const [dark, setDark] = useState(() => document.documentElement.dataset.theme === 'dark');
+  useEffect(() => {
+    const mo = new MutationObserver(() => {
+      setDark(document.documentElement.dataset.theme === 'dark');
+    });
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    return () => mo.disconnect();
+  }, []);
+  return dark;
+}
+
 interface Props {
   option: ECBasicOption;
   height?: number;
@@ -32,6 +89,7 @@ interface Props {
 export function EChart({ option, height = 260, className }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const instRef = useRef<echarts.ECharts | null>(null);
+  const isDark = useIsDarkTheme();
 
   useEffect(() => {
     const el = hostRef.current;
@@ -52,8 +110,9 @@ export function EChart({ option, height = 260, className }: Props) {
   }, []);
 
   useEffect(() => {
-    instRef.current?.setOption(option, { notMerge: true, lazyUpdate: true });
-  }, [option]);
+    const themed = isDark ? applyDarkTheme(option) : option;
+    instRef.current?.setOption(themed, { notMerge: true, lazyUpdate: true });
+  }, [option, isDark]);
 
   return <div ref={hostRef} className={className} style={{ width: '100%', height }} />;
 }

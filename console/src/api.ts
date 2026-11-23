@@ -7,6 +7,7 @@ import type {
   CustomJourneyReport,
   DailyTrendPoint,
   DimensionSlice,
+  DimensionsResponse,
   FlamegraphReport,
   FluencySceneReport,
   GlobalFilters,
@@ -57,6 +58,8 @@ function filterQuery(f: GlobalFilters, extra?: Record<string, string | undefined
     app_version: f.appVersion || undefined,
     adapter: f.adapter || undefined,
     scene: f.scene || undefined,
+    device_model: f.deviceModel || undefined,
+    os_version: f.osVersion || undefined,
     start_day_utc: f.startDayUtc,
     end_day_utc: f.endDayUtc,
     ...extra,
@@ -65,6 +68,9 @@ function filterQuery(f: GlobalFilters, extra?: Record<string, string | undefined
 
 export const api = {
   health: () => requestJson<HealthResponse>('/healthz'),
+
+  dimensions: (platform: Platform, env = 'prod') =>
+    requestJson<DimensionsResponse>(`/v1/ops/dimensions${query({ platform, env })}`),
 
   releases: (platform: Platform, env = 'prod') =>
     requestJson<{ releases: ReleaseRecord[] }>(`/v1/releases${query({ platform, env })}`),
@@ -86,6 +92,8 @@ export const api = {
           appVersion: dimension === 'version' ? '' : f.appVersion,
           adapter: dimension === 'adapter' ? '' : f.adapter,
           scene: dimension === 'scene' ? '' : f.scene,
+          deviceModel: dimension === 'device' ? '' : f.deviceModel,
+          osVersion: dimension === 'os' ? '' : f.osVersion,
         },
         { dimension },
       )}`,

@@ -1319,6 +1319,8 @@ func (s *Store) ListDimensionValues(ctx context.Context, f storage.QueryFilter, 
 		col = "device_model"
 	case "os":
 		col = "os_version"
+	case "scene":
+		col = "scene"
 	default:
 		return nil
 	}
