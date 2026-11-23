@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "io.caliper.apm"
-version = "0.5.0"
+version = "1.8.0"
 
 kotlin {
     jvmToolchain(21)
@@ -18,9 +18,18 @@ gradlePlugin {
             description = "Automatically registers Android releases and uploads R8/Hermes symbol maps to Caliper APM."
             implementationClass = "io.caliper.apm.gradle.CaliperSymbolsPlugin"
         }
+        create("caliperAutoInstrument") {
+            id = "io.caliper.apm.autoinstrument"
+            displayName = "Caliper APM Zero-Boilerplate ASM Auto-Instrumentation Plugin"
+            description = "Compile-time allowlisted ASM bytecode weaving for OkHttp, @CaliperTrace, and Activity lifecycle TTID."
+            implementationClass = "io.caliper.apm.gradle.CaliperAutoInstrumentPlugin"
+        }
     }
 }
 
 dependencies {
+    implementation("org.ow2.asm:asm:9.7.1")
+    implementation("org.ow2.asm:asm-commons:9.7.1")
+    compileOnly("com.android.tools.build:gradle-api:8.7.3")
     testImplementation("junit:junit:4.13.2")
 }

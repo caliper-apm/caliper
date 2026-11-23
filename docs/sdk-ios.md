@@ -16,7 +16,7 @@ dependencies: [
 
 ---
 
-## 2. Quickstart (`AppDelegate` / `@main App`)
+## 2. One-Line Quickstart (`CaliperIOSAgent`)
 
 ```swift
 import CaliperSDK
@@ -24,8 +24,6 @@ import UIKit
 
 final class AppBootstrap {
     let client: CaliperClient
-    let watchdog: CaliperMainThreadWatchdog
-    let metricKit: CaliperMetricKitBridge?
 
     init() {
         let config = CaliperConfig(
@@ -37,47 +35,22 @@ final class AppBootstrap {
                 buildNumber: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1",
                 adapter: "native",
                 sdkName: "caliper-ios",
-                sdkVersion: "1.4.1",
+                sdkVersion: "1.8.0",
                 installHash: InstallationHash.stableHex16(), // Non-PII 16-64 hex
                 osVersion: "iOS \(UIDevice.current.systemVersion)",
                 deviceModel: DeviceHardware.modelName()
             )
         )
-        self.client = CaliperClient(config: config)
-        self.watchdog = CaliperMainThreadWatchdog(thresholdMS: 3000, pollIntervalMS: 1000) { durMS, stack in
-            // Enqueue main-thread hang / Watchdog diagnostic automatically
-            print("Main thread hang: \(durMS)ms (\(stack.count) frames)")
-        }
-        self.watchdog.start()
-
-        // Real-time C/Mach Exception + Unix Signal crash capture (zero 24h MetricKit delay!)
-        let crashDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("caliper-crashes")
-        let crashReporter = CaliperNativeCrashReporter(directoryURL: crashDir)
-        let priorCrashes = crashReporter.install(client: client, enableMachHandler: true, scene: "startup")
-
-        // Heuristic Foreground OOM (FOOM) state machine (excludes clean exit, crash, debugger, app/OS upgrade, reboot, background Jetsam)
-        let foom = CaliperFOOMDetector(directoryURL: crashDir)
-        _ = foom.startSession(
-            client: client,
-            appVersion: config.resource.appVersion,
-            buildNumber: config.resource.buildNumber,
-            osVersion: config.resource.osVersion ?? "",
-            previousCrashDetected: priorCrashes > 0
-        )
-
-        #if canImport(MetricKit) && os(iOS)
-        if #available(iOS 14.0, *) {
-            self.metricKit = CaliperMetricKitBridge(client: client)
-        } else {
-            self.metricKit = nil
-        }
-        #else
-        self.metricKit = nil
-        #endif
+        // Automatically wires C/Mach + Signal crash capture, 9-branch FOOM detector,
+        // Watchdog, MetricKit, UIViewController scene tracking, thermal observer, and daily disk audit!
+        self.client = CaliperIOSAgent.install(config: config)
     }
 }
 ```
+
+- **SwiftUI screens**: attach `.caliperScene("home_feed")` on root views.
+- **WKWebView / H5**: call `CaliperWKWebViewBridge.attach(to: webView.configuration.userContentController, client: client)` for NavigationTiming, FCP, JS errors, and blank-screen detection.
+- **URLSession auto-metrics**: wrap your existing delegate with `CaliperAutoURLSessionDelegate(client: client, forwardingTo: yourDelegate)` without disturbing SSL pinning or auth callbacks.
 
 ---
 

@@ -2,6 +2,16 @@
 
 All notable releases of **Caliper APM** are documented here.
 
+## v1.8.0 — Zero-Boilerplate ASM/iOS Auto-Instrumentation & Thermal/Disk/WebView Specialty Probes
+- **Android Gradle ASM9 Auto-Instrumentation Plugin (`io.caliper.apm.autoinstrument`)**:
+  - Added AGP 8.x `AsmClassVisitorFactory` (`packages/gradle-plugin/src/main/kotlin/io/caliper/apm/gradle/CaliperAsmWeaver.kt`) with strict package allowlist/denylist weaving `CaliperAutoInstrumentHooks.onOkHttpBuilder(...)` before `OkHttpClient$Builder.build()` and wrapping `@CaliperTrace` methods across normal returns and exception throws (`failed = true`), verified by live JVM bytecode execution (`CaliperAsmWeaverTest`).
+- **iOS One-Line Auto-Instrumentation Agent (`CaliperIOSAgent`)**:
+  - Added `CaliperIOSAgent.install(config:options:)` automatically coordinating C/Mach crash capture, 9-branch FOOM detection, Watchdog, MetricKit, zero-swizzle lifecycle/thermal observers, safe opt-in `UIViewController.viewDidAppear` scene tracking, forwarding `CaliperAutoURLSessionDelegate` (preserving host SSL pinning/auth delegates), and SwiftUI `.caliperScene(...)` modifier.
+- **Battery/Thermal, Zero-PII Bounded Disk Audit & WebView/H5 Probes (iOS + Android)**:
+  - Thermal/Battery escalation probes (`CaliperThermalMonitor` / `CaliperThermalBatteryProbe`) emitting `device_thermal_state` journeys.
+  - 24h rate-limited, max-depth/max-files bounded sandbox disk auditors (`CaliperDiskAuditor` / `CaliperDiskAuditProbe`) with Zero-PII regex path scrubbing (emails, UUIDs, hex hashes, numeric IDs) emitting `disk_storage_audit` with per-bucket MiB stages and `DISK_QUOTA_EXCEEDED` detection.
+  - Shared ~1.3 KB vanilla JS WebView/WKWebView probe (`CaliperWebViewBridge` / `CaliperWKWebViewBridge`) reporting NavigationTiming/FCP stages, URL query-stripped paths, `WEBVIEW_BLANK_SCREEN` detection, and JS errors with zero server schema breakage.
+
 ## v1.7.0 — Low-Level Mobile Native Crash, SIGQUIT ANR, Looper Tracer & iOS FOOM Engine
 - **iOS Real-Time C/Mach Exception + Unix Signal Crash Reporter (`CaliperCrashCore` + `CaliperNativeCrashReporter`)**:
   - Zero-dependency pure-C Mach exception port listener (`EXC_BAD_ACCESS`, `EXC_BAD_INSTRUCTION`, `EXC_ARITHMETIC`, `EXC_CRASH`, arm64e PAC-safe register/FP unwinding) + 64 KiB `sigaltstack` async-signal-safe Unix signal handler (`SIGSEGV`, `SIGABRT`, `SIGBUS`, `SIGFPE`, `SIGILL`, `SIGTRAP`, `SIGSYS`), adding only **8.4 KiB** of `__TEXT` machine code.

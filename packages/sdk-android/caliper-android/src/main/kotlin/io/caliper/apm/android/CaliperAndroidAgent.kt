@@ -15,6 +15,7 @@ import android.os.Process
 import android.os.SystemClock
 import android.view.FrameMetrics
 import android.view.Window
+import io.caliper.apm.CaliperAutoInstrumentHooks
 import io.caliper.apm.CaliperClient
 import io.caliper.apm.CaliperConfig
 import io.caliper.apm.CaliperDiagnosticRingLog
@@ -71,6 +72,8 @@ object CaliperAndroidAgent {
         reportHistoricalAbnormalExits(application)
         installLifecycleAndFrameMetrics(application)
         installWatchdog()
+        wireAutoInstrumentHooks()
+        CaliperDiskMonitor.scheduleDailyAuditAsync(application, client)
 
         nativeInitDoneElapsedMs = SystemClock.elapsedRealtime()
         ringLog.append("INFO", "Caliper", "installed android agent sdk=${config.resource.sdkVersion}")
@@ -249,6 +252,39 @@ object CaliperAndroidAgent {
                 client.enqueue(kind = "anr", payloadJson = payload, bypassSampling = true)
             },
         ).also { it.start() }
+    }
+
+    private fun wireAutoInstrumentHooks() {
+        CaliperAutoInstrumentHooks.traceSink = { name, scene, durMs, failed ->
+            client.recordCustomJourney(
+                journeyName = name,
+                status = if (failed) "failure" else "success",
+                durationMs = durMs,
+                errorCode = if (failed) "TRACE_EXCEPTION" else null,
+                scene = scene.ifEmpty { null },
+            )
+        }
+        CaliperAutoInstrumentHooks.activityStageSink = { activityName, stage, durMs ->
+            client.recordCustomJourney(
+                journeyName = "page_load_$activityName",
+                status = "success",
+                durationMs = durMs,
+                stages = listOf(stage to durMs),
+                scene = activityName,
+            )
+        }
+        CaliperAutoInstrumentHooks.okHttpBuilderHook = { builder ->
+            // Attach CaliperOkHttpEventListener safely when OkHttp is present on the host classpath.
+            runCatching {
+                val okBuilderCls = Class.forName("okhttp3.OkHttpClient\$Builder")
+                if (okBuilderCls.isInstance(builder)) {
+                    val factoryCls = Class.forName("okhttp3.EventListener\$Factory")
+                    val listenerCls = Class.forName("io.caliper.apm.android.CaliperOkHttpEventListener")
+                    val factory = listenerCls.getMethod("factory", CaliperClient::class.java).invoke(null, client)
+                    okBuilderCls.getMethod("eventListenerFactory", factoryCls).invoke(builder, factory)
+                }
+            }
+        }
     }
 
     private fun esc(s: String): String =

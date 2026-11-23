@@ -84,13 +84,21 @@ CaliperAndroidAgent.client().recordCustomJourney(
 
 ---
 
-## 4. Automated R8 / ProGuard & NDK ELF `.so` Symbol Upload
+## 4. Zero-Boilerplate ASM Auto-Instrumentation & R8/NDK Symbol Upload
 
-Apply [`packages/gradle-plugin`](../packages/gradle-plugin) (`io.caliper.apm.symbols`) in your `app/build.gradle.kts` for R8/ProGuard `mapping.txt`:
+Apply both Gradle plugins from [`packages/gradle-plugin`](../packages/gradle-plugin) in your `app/build.gradle.kts`:
 
 ```kotlin
 plugins {
     id("io.caliper.apm.symbols")
+    id("io.caliper.apm.autoinstrument")
+}
+
+caliperAutoInstrument {
+    enabled.set(true)
+    instrumentOkHttp.set(true)       // Auto-hooks OkHttpClient.Builder.build() across all modules
+    instrumentCaliperTrace.set(true) // Auto-wraps @CaliperTrace methods (normal + exception exits)
+    includePackages.set(listOf("com.example.app"))
 }
 
 caliperSymbols {
@@ -100,6 +108,8 @@ caliperSymbols {
     env.set("prod")
 }
 ```
+
+Annotate critical business methods with `@CaliperTrace("checkout_flow", scene = "checkout")` for zero-boilerplate `custom_scene` telemetry, and attach `CaliperWebViewBridge.attach(webView, client)` + `CaliperThermalMonitor.captureAndRecord(ctx, client)` as needed (`CaliperDiskMonitor.scheduleDailyAuditAsync` is already wired inside `CaliperAndroidAgent.install`).
 
 For apps shipping C/C++ JNI libraries, upload unstripped NDK ELF `.so` binaries directly (`--kind native_elf`) — Caliper extracts `.note.gnu.build-id`, parses DWARF line/function/inline tables + ELF symtabs in pure Go, and demangles Itanium C++ frames automatically:
 
