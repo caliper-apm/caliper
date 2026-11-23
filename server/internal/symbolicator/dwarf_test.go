@@ -343,3 +343,37 @@ func TestELFNoteGNUBuildIDExtraction(t *testing.T) {
 		t.Fatalf("expected ELF build-id 0123456789abcdef, got %q", tbl.BuildUUID)
 	}
 }
+
+func TestNativeModuleMatchingAndELFFileOffsetBias(t *testing.T) {
+	// 1. System library frames must NEVER be mis-symbolicated by an app's dSYM/.so bundle.
+	if nativeModuleMatches("libdispatch.dylib", "CaliperBenchHost") {
+		t.Fatal("libdispatch.dylib must not match app bundle CaliperBenchHost")
+	}
+	if nativeModuleMatches("libart.so", "libcaliper_e2e_crash.so") {
+		t.Fatal("libart.so must not match app NDK library")
+	}
+	if nativeModuleMatches("[vdso]", "libcaliper_e2e_crash.so") {
+		t.Fatal("[vdso] must not match app NDK library")
+	}
+	if !nativeModuleMatches("CaliperBenchHost", "CaliperBenchHost") {
+		t.Fatal("exact app module must match")
+	}
+	if !nativeModuleMatches("", "CaliperBenchHost") {
+		t.Fatal("empty frame module should remain backwards-compatible")
+	}
+
+	// 2. ELF FileOffsetBias (e.g. LLD PT_LOAD Vaddr=0x1650 Off=0x650 -> bias=0x1000) resolves file-offset 0x6b8 -> vaddr 0x16b8.
+	tbl := &NativeSymbolTable{
+		Format:         "elf-dwarf",
+		ModuleName:     "libcaliper_e2e_crash.so",
+		ImageBase:      0x1650,
+		FileOffsetBias: 0x1000,
+		Entries: []NativeSymbolEntry{
+			{Address: 0x16b8, Size: 0x20, Symbol: "caliper_e2e::NativeCrashDemo::triggerNullDeref(volatile int*)", File: "e2e_crash.cpp", Line: 9},
+		},
+	}
+	entry, ok := tbl.ResolveAddress("0x6b8")
+	if !ok || entry.Line != 9 || !strings.Contains(entry.Symbol, "triggerNullDeref") {
+		t.Fatalf("expected FileOffsetBias resolution for 0x6b8 -> 0x16b8, got ok=%v entry=%+v", ok, entry)
+	}
+}

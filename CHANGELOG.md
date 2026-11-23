@@ -2,6 +2,16 @@
 
 All notable releases of **Caliper APM** are documented here.
 
+## v1.8.1 — Dual Physical-Device E2E Hardening (vivo V2343A + iPhone 13 Pro Max)
+- **Android NDK `libcaliper_native.so` Zero `libc++_shared.so` Dependency & Live Signal Map Refresh**:
+  - Compiled with `-fno-exceptions -fno-rtti -nostdlib++` so pure Java/Kotlin host APKs load `libcaliper_native.so` cleanly (`NEEDED`: only `liblog.so`, `libm.so`, `libdl.so`, `libc.so`).
+  - Added async-signal-safe raw POSIX `/proc/self/maps` refresh and ARM64/ARM/x86_64 `ucontext` PC/LR capture inside `caliper_ndk_signal_handler` so dynamically `dlopen`'d feature `.so` libraries resolve accurately on crash; verified live on physical `vivo V2343A` (Android 14) with real ARM64 `SIGSEGV`, real ASM9-woven `@CaliperTrace`, real `821 ms` `Looper` slow dispatch, real Chromium `WebView`, and real zero-PII disk audit.
+- **ELF LLD `PT_LOAD` `FileOffsetBias` & Native Module Matching Guard (`server/internal/symbolicator`)**:
+  - Added `FileOffsetBias` (`PT_LOAD.Vaddr - PT_LOAD.Off`) so NDK 27 / LLD file-offset crash frames (e.g. `0x6b8` -> `0x16b8`) resolve to exact demangled C++ source lines (`caliper_e2e::NativeCrashDemo::triggerNullDeref`, `e2e_crash.cpp:9`).
+  - Added `nativeModuleMatches` guard preventing OS system frames (`libdispatch.dylib`, `libart.so`, `[vdso]`) from being mis-symbolicated against app `.dSYM`/`.so` bundles.
+- **iOS Offline Disk Spool Zero-Loss Hardening (`CaliperClient` + `CaliperIOSAgent`)**:
+  - Wired `CaliperDiskQueue` into `CaliperClient.flush()` so crashes, `FOOM_HEURISTIC` events, and probes survive offline boots without loss; verified live on physical `iPhone 13 Pro Max` (iOS 27.2.1) across 4 phases (1-line `CaliperIOSAgent` + VC Swizzle + Thermal + Disk + `WKWebView` + `FOOM_HEURISTIC` + real ARM64 Mach `EXC_BAD_ACCESS` -> pure-Go Mach-O DWARF symbolication to `caliper_ios_e2e_null_deref`, `ios_crash_trigger.c:4`).
+
 ## v1.8.0 — Zero-Boilerplate ASM/iOS Auto-Instrumentation & Thermal/Disk/WebView Specialty Probes
 - **Android Gradle ASM9 Auto-Instrumentation Plugin (`io.caliper.apm.autoinstrument`)**:
   - Added AGP 8.x `AsmClassVisitorFactory` (`packages/gradle-plugin/src/main/kotlin/io/caliper/apm/gradle/CaliperAsmWeaver.kt`) with strict package allowlist/denylist weaving `CaliperAutoInstrumentHooks.onOkHttpBuilder(...)` before `OkHttpClient$Builder.build()` and wrapping `@CaliperTrace` methods across normal returns and exception throws (`failed = true`), verified by live JVM bytecode execution (`CaliperAsmWeaverTest`).

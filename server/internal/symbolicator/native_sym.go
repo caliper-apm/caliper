@@ -22,11 +22,13 @@ type NativeSymbolEntry struct {
 // NativeSymbolTable resolves hex instruction addresses from native Mach-O (.dSYM / .dSYM.zip),
 // ELF (.so DWARF/symtab), Breakpad (.sym), or JSON dSYM symbol tables.
 type NativeSymbolTable struct {
-	Format    string // macho-dwarf | macho-symtab | elf-dwarf | elf-symtab | breakpad | json
-	BuildUUID string // Mach-O LC_UUID or ELF .note.gnu.build-id
-	ImageBase uint64 // Mach-O __TEXT vmaddr or ELF executable PT_LOAD vaddr
-	Entries   []NativeSymbolEntry
-	dwarf     *dwarfIndex
+	Format         string // macho-dwarf | macho-symtab | elf-dwarf | elf-symtab | breakpad | json
+	ModuleName     string // Optional binary module name (e.g. "CaliperBenchHost" or "libengine.so") for strict frame matching
+	BuildUUID      string // Mach-O LC_UUID or ELF .note.gnu.build-id
+	ImageBase      uint64 // Mach-O __TEXT vmaddr or ELF executable PT_LOAD vaddr
+	FileOffsetBias uint64 // ELF executable PT_LOAD (Vaddr - Off) for /proc/self/maps file-offset resolution (LLD/NDK)
+	Entries        []NativeSymbolEntry
+	dwarf          *dwarfIndex
 }
 
 type jsonNativeSymbol struct {
@@ -183,7 +185,10 @@ func (t *NativeSymbolTable) ResolveAddressChain(addrStr string) ([]NativeSymbolE
 	}
 
 	candidates := []uint64{addr}
-	if t.ImageBase > 0 && addr < t.ImageBase {
+	if t.FileOffsetBias > 0 {
+		candidates = append(candidates, addr+t.FileOffsetBias)
+	}
+	if t.ImageBase > 0 && addr < t.ImageBase && t.ImageBase != t.FileOffsetBias {
 		candidates = append(candidates, addr+t.ImageBase)
 	}
 

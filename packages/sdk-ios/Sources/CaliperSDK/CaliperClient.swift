@@ -7,6 +7,7 @@ public struct CaliperConfig: Sendable {
     public let installSeed: String
     public let maxQueueSize: Int
     public let maxConsecutiveFailures: Int
+    public let spoolDirectoryURL: URL?
 
     public init(
         endpointURL: URL,
@@ -14,7 +15,8 @@ public struct CaliperConfig: Sendable {
         resource: ResourceIdentity,
         installSeed: String = UUID().uuidString.lowercased(),
         maxQueueSize: Int = 200,
-        maxConsecutiveFailures: Int = 5
+        maxConsecutiveFailures: Int = 5,
+        spoolDirectoryURL: URL? = nil
     ) {
         self.endpointURL = endpointURL
         self.apiKey = apiKey
@@ -22,6 +24,7 @@ public struct CaliperConfig: Sendable {
         self.installSeed = installSeed
         self.maxQueueSize = max(1, min(maxQueueSize, 200))
         self.maxConsecutiveFailures = max(1, maxConsecutiveFailures)
+        self.spoolDirectoryURL = spoolDirectoryURL
     }
 }
 
@@ -30,6 +33,7 @@ public struct CaliperConfig: Sendable {
 public final class CaliperClient: @unchecked Sendable {
     private let config: CaliperConfig
     private let session: URLSession
+    private let diskSpool: CaliperDiskQueue?
     private let worker = DispatchQueue(label: "dev.caliper.apm.worker", qos: .utility)
 
     private var currentScene: String = "startup"
@@ -43,6 +47,7 @@ public final class CaliperClient: @unchecked Sendable {
     public init(config: CaliperConfig, session: URLSession = .shared) {
         self.config = config
         self.session = session
+        self.diskSpool = config.spoolDirectoryURL.map { CaliperDiskQueue(directoryURL: $0) }
     }
 
     public func applyLease(_ nextLease: PolicyLease) {
@@ -155,26 +160,72 @@ public final class CaliperClient: @unchecked Sendable {
         worker.sync { queue.count }
     }
 
+    public func spooledBatchCount() -> Int {
+        diskSpool?.count() ?? 0
+    }
+
     public func currentBreadcrumbs() -> [Breadcrumb] {
         worker.sync { breadcrumbs.snapshot() }
     }
 
-    /// Flushes queued events to POST /v1/ingest off the main thread.
+    /// Flushes queued events (plus any previously spooled offline batches) to POST /v1/ingest.
+    /// On network failure, persists the encoded batch to `diskSpool` so crashes/FOOMs survive offline boots.
     public func flush() async throws -> Int {
+        var sentCount = 0
+
+        // 1. Snapshot current in-memory queue up front so no crash/FOOM is lost if spool drain fails offline.
         let eventsToSend: [TelemetryEvent] = worker.sync {
             guard !circuitTripped, !queue.isEmpty else { return [] }
             let batch = queue
             queue.removeAll(keepingCapacity: true)
             return batch
         }
-        guard !eventsToSend.isEmpty else { return 0 }
+        let currentBody: Data? = if !eventsToSend.isEmpty {
+            try JSONEncoder().encode(BatchEnvelope(
+                sentAtMS: Int64(Date().timeIntervalSince1970 * 1000),
+                resource: config.resource,
+                events: eventsToSend
+            ))
+        } else {
+            nil
+        }
 
-        let envelope = BatchEnvelope(
-            sentAtMS: Int64(Date().timeIntervalSince1970 * 1000),
-            resource: config.resource,
-            events: eventsToSend
-        )
-        let body = try JSONEncoder().encode(envelope)
+        // 2. Drain any previously spooled offline batches first.
+        if let spool = diskSpool {
+            var spooledBatches: [Data] = []
+            _ = spool.drainEach { data in
+                spooledBatches.append(data)
+            }
+            for (idx, body) in spooledBatches.enumerated() {
+                do {
+                    try await postJSONBody(body)
+                    sentCount += 1
+                } catch {
+                    for rem in spooledBatches[idx...] {
+                        spool.enqueue(rem)
+                    }
+                    if let cur = currentBody {
+                        spool.enqueue(cur)
+                    }
+                    recordTransportFailure()
+                    throw error
+                }
+            }
+        }
+
+        guard let body = currentBody else { return sentCount }
+        do {
+            try await postJSONBody(body)
+            worker.sync { consecutiveFailures = 0 }
+            return sentCount + eventsToSend.count
+        } catch {
+            diskSpool?.enqueue(body)
+            recordTransportFailure()
+            throw error
+        }
+    }
+
+    private func postJSONBody(_ body: Data) async throws {
         var req = URLRequest(url: config.endpointURL.appendingPathComponent("v1/ingest"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -182,18 +233,9 @@ public final class CaliperClient: @unchecked Sendable {
             req.setValue(key, forHTTPHeaderField: "X-Caliper-Key")
         }
         req.httpBody = body
-
-        do {
-            let (_, response) = try await session.data(for: req)
-            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-                recordTransportFailure()
-                throw URLError(.badServerResponse)
-            }
-            worker.sync { consecutiveFailures = 0 }
-            return eventsToSend.count
-        } catch {
-            recordTransportFailure()
-            throw error
+        let (_, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw URLError(.badServerResponse)
         }
     }
 

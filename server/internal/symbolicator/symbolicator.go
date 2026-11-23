@@ -104,6 +104,9 @@ func (s *Service) ResolveFrames(ctx context.Context, scope LookupScope, frames [
 					}
 				}
 			case "dsym", "breakpad", "native_elf":
+				if !nativeModuleMatches(f.Module, b.nativeTbl.ModuleName) {
+					continue
+				}
 				addr := f.Address
 				if addr == "" && strings.HasPrefix(strings.TrimSpace(f.Symbol), "0x") {
 					addr = strings.TrimSpace(f.Symbol)
@@ -277,4 +280,29 @@ func (s *Service) getOrParse(rec storage.SymbolRecord, content []byte) *parsedBu
 	s.cache[cacheKey] = b
 	s.mu.Unlock()
 	return b
+}
+
+// nativeModuleMatches prevents app dSYM / ELF symbol bundles from mis-symbolicating
+// OS system library frames (e.g. libdispatch.dylib, libart.so, [vdso]) that happen to
+// share the same relative hex offset.
+func nativeModuleMatches(frameModule, bundleModule string) bool {
+	fm := strings.TrimSpace(frameModule)
+	if fm == "" {
+		return true
+	}
+	lower := strings.ToLower(fm)
+	if strings.HasSuffix(lower, ".dylib") ||
+		strings.HasPrefix(lower, "[") ||
+		lower == "libc.so" || lower == "libm.so" || lower == "libdl.so" ||
+		lower == "libart.so" || lower == "libsigchain.so" || lower == "libandroid_runtime.so" ||
+		lower == "corefoundation" || lower == "uikitcore" || lower == "foundation" || lower == "dyld" {
+		if bundleModule != "" && strings.EqualFold(fm, bundleModule) {
+			return true
+		}
+		return false
+	}
+	if bundleModule != "" && !strings.EqualFold(fm, bundleModule) {
+		return false
+	}
+	return true
 }

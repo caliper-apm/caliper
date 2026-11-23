@@ -139,7 +139,16 @@ public final class CaliperIOSAgent: @unchecked Sendable {
             .appendingPathComponent("caliper-apm-state")
         try? FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
 
-        let client = CaliperClient(config: config)
+        let effectiveConfig = CaliperConfig(
+            endpointURL: config.endpointURL,
+            apiKey: config.apiKey,
+            resource: config.resource,
+            installSeed: config.installSeed,
+            maxQueueSize: config.maxQueueSize,
+            maxConsecutiveFailures: config.maxConsecutiveFailures,
+            spoolDirectoryURL: config.spoolDirectoryURL ?? stateDir.appendingPathComponent("spool")
+        )
+        let client = CaliperClient(config: effectiveConfig)
         _client = client
 
         // 1. Native C/Mach + Signal Crash Reporter (always runs before FOOM check!)

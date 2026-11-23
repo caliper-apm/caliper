@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 namespace {
@@ -136,35 +137,119 @@ const char *signal_name(int sig) {
     }
 }
 
-// ===== Pre-cached /proc/self/maps loader (called outside signal context) =====
+// ===== Async-signal-safe /proc/self/maps parser (ZERO malloc, ZERO fopen/sscanf) =====
 
-void refresh_proc_maps() {
-    FILE *fp = fopen("/proc/self/maps", "r");
-    if (!fp) return;
-    char line[512];
-    uint32_t count = 0;
-    while (fgets(line, sizeof(line), fp) && count < kMaxMaps) {
-        unsigned long long start = 0, end = 0, offset = 0;
-        char perms[8] = {};
-        char path[256] = {};
-        int matched = sscanf(line, "%llx-%llx %7s %llx %*x:%*x %*u %255s",
-                             &start, &end, perms, &offset, path);
-        if (matched >= 4 && perms[2] == 'x') {
-            ExecMapEntry &e = g_maps[count++];
-            e.start = static_cast<uintptr_t>(start);
-            e.end = static_cast<uintptr_t>(end);
-            e.file_offset = static_cast<uint64_t>(offset);
-            const char *base = "anonymous";
-            if (matched == 5 && path[0] != '\0') {
-                const char *slash = strrchr(path, '/');
-                base = slash ? (slash + 1) : path;
+uint64_t parse_hex_span(const char *s, size_t len, size_t *consumed) {
+    uint64_t val = 0;
+    size_t i = 0;
+    while (i < len) {
+        char c = s[i];
+        uint64_t d;
+        if (c >= '0' && c <= '9') d = static_cast<uint64_t>(c - '0');
+        else if (c >= 'a' && c <= 'f') d = static_cast<uint64_t>(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = static_cast<uint64_t>(c - 'A' + 10);
+        else break;
+        val = (val << 4) | d;
+        i++;
+    }
+    if (consumed) *consumed = i;
+    return val;
+}
+
+void parse_maps_line(const char *line, size_t len, uint32_t &count) {
+    if (count >= kMaxMaps || len < 16) return;
+    size_t pos = 0, n = 0;
+    uint64_t start = parse_hex_span(line, len, &n);
+    if (n == 0 || pos + n >= len || line[pos + n] != '-') return;
+    pos += n + 1;
+    uint64_t end = parse_hex_span(line + pos, len - pos, &n);
+    if (n == 0 || pos + n >= len || line[pos + n] != ' ') return;
+    pos += n + 1;
+    // Perms: e.g. "r-xp" -> check executable bit [2] == 'x'
+    if (pos + 4 >= len || line[pos + 2] != 'x') return;
+    pos += 4;
+    while (pos < len && line[pos] == ' ') pos++;
+    uint64_t file_off = parse_hex_span(line + pos, len - pos, &n);
+    if (n == 0) return;
+    pos += n;
+
+    // Skip device (xx:xx) and inode fields to reach optional pathname.
+    for (int field = 0; field < 2; field++) {
+        while (pos < len && line[pos] == ' ') pos++;
+        while (pos < len && line[pos] != ' ') pos++;
+    }
+    while (pos < len && line[pos] == ' ') pos++;
+
+    ExecMapEntry &e = g_maps[count++];
+    e.start = static_cast<uintptr_t>(start);
+    e.end = static_cast<uintptr_t>(end);
+    e.file_offset = file_off;
+
+    const char *base = "anonymous";
+    size_t base_len = 9;
+    if (pos < len) {
+        // Trim trailing CR/LF/spaces
+        size_t end_pos = len;
+        while (end_pos > pos && (line[end_pos - 1] == '\r' || line[end_pos - 1] == '\n' || line[end_pos - 1] == ' ')) {
+            end_pos--;
+        }
+        size_t slash = pos;
+        bool found_slash = false;
+        for (size_t k = pos; k < end_pos; k++) {
+            if (line[k] == '/') {
+                slash = k;
+                found_slash = true;
             }
-            strncpy(e.module, base, sizeof(e.module) - 1);
-            e.module[sizeof(e.module) - 1] = '\0';
+        }
+        size_t name_start = found_slash ? (slash + 1) : pos;
+        if (end_pos > name_start) {
+            base = line + name_start;
+            base_len = end_pos - name_start;
         }
     }
-    fclose(fp);
+    if (base_len >= sizeof(e.module)) base_len = sizeof(e.module) - 1;
+    memcpy(e.module, base, base_len);
+    e.module[base_len] = '\0';
+}
+
+// Fully async-signal-safe: uses raw POSIX open/read/close and static buffers only.
+// Re-runs safely inside signal handler so dynamically dlopen'd .so libraries are always mapped!
+void refresh_proc_maps_async_safe() {
+    static char read_buf[4096];
+    static char line_buf[512];
+    int fd = open("/proc/self/maps", O_RDONLY);
+    if (fd < 0) return;
+
+    uint32_t count = 0;
+    size_t line_len = 0;
+    for (;;) {
+        ssize_t r = read(fd, read_buf, sizeof(read_buf));
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (r == 0) break;
+        for (ssize_t i = 0; i < r; i++) {
+            char c = read_buf[i];
+            if (c == '\n') {
+                parse_maps_line(line_buf, line_len, count);
+                line_len = 0;
+                if (count >= kMaxMaps) break;
+            } else if (line_len < sizeof(line_buf) - 1) {
+                line_buf[line_len++] = c;
+            }
+        }
+        if (count >= kMaxMaps) break;
+    }
+    if (line_len > 0 && count < kMaxMaps) {
+        parse_maps_line(line_buf, line_len, count);
+    }
+    close(fd);
     g_map_count.store(count, std::memory_order_release);
+}
+
+void refresh_proc_maps() {
+    refresh_proc_maps_async_safe();
 }
 
 const ExecMapEntry *find_map_for_pc(uintptr_t pc) {
@@ -288,10 +373,36 @@ void write_tombstone_file(
 // ===== Fatal NDK Signal Handler =====
 
 void caliper_ndk_signal_handler(int sig, siginfo_t *info, void *ucontext) {
-    (void)ucontext;
     if (g_crash_written.exchange(1, std::memory_order_acq_rel) == 0) {
+        // Refresh /proc/self/maps async-signal-safely so late-loaded feature .so libraries resolve!
+        refresh_proc_maps_async_safe();
         uintptr_t pcs[kMaxFrames];
         UnwindState st{pcs, 0, kMaxFrames};
+#if defined(__aarch64__)
+        if (ucontext) {
+            auto *uc = static_cast<ucontext_t *>(ucontext);
+            uintptr_t crash_pc = static_cast<uintptr_t>(uc->uc_mcontext.pc);
+            uintptr_t crash_lr = static_cast<uintptr_t>(uc->uc_mcontext.regs[30]);
+            if (crash_pc != 0 && st.count < kMaxFrames) pcs[st.count++] = crash_pc;
+            if (crash_lr != 0 && crash_lr != crash_pc && st.count < kMaxFrames) pcs[st.count++] = crash_lr;
+        }
+#elif defined(__arm__)
+        if (ucontext) {
+            auto *uc = static_cast<ucontext_t *>(ucontext);
+            uintptr_t crash_pc = static_cast<uintptr_t>(uc->uc_mcontext.arm_pc);
+            uintptr_t crash_lr = static_cast<uintptr_t>(uc->uc_mcontext.arm_lr);
+            if (crash_pc != 0 && st.count < kMaxFrames) pcs[st.count++] = crash_pc;
+            if (crash_lr != 0 && crash_lr != crash_pc && st.count < kMaxFrames) pcs[st.count++] = crash_lr;
+        }
+#elif defined(__x86_64__)
+        if (ucontext) {
+            auto *uc = static_cast<ucontext_t *>(ucontext);
+            uintptr_t crash_pc = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
+            if (crash_pc != 0 && st.count < kMaxFrames) pcs[st.count++] = crash_pc;
+        }
+#else
+        (void)ucontext;
+#endif
         _Unwind_Backtrace(unwind_cb, &st);
         uint64_t fault_addr = info ? static_cast<uint64_t>(reinterpret_cast<uintptr_t>(info->si_addr)) : 0;
         int64_t code = info ? static_cast<int64_t>(info->si_code) : 0;

@@ -128,6 +128,13 @@ func parseZipNativeArchive(raw []byte) (*NativeSymbolTable, error) {
 		if len(data) >= 4 && isNativeBinaryFormat(data) && !(data[0] == 'P' && data[1] == 'K') {
 			tbl, err := parseNativeBinary(data)
 			if err == nil && tbl != nil && (tbl.dwarf != nil || len(tbl.Entries) > 0) {
+				if tbl.ModuleName == "" {
+					base := strings.ReplaceAll(c.f.Name, "\\", "/")
+					if slash := strings.LastIndexByte(base, '/'); slash >= 0 {
+						base = base[slash+1:]
+					}
+					tbl.ModuleName = base
+				}
 				return tbl, nil
 			}
 		}
@@ -236,18 +243,26 @@ func parseELFBinary(raw []byte) (*NativeSymbolTable, error) {
 		Format:    "elf-symtab",
 		BuildUUID: extractELFBuildID(ef),
 	}
+	if sonames, err := ef.DynString(elf.DT_SONAME); err == nil && len(sonames) > 0 {
+		tbl.ModuleName = sonames[0]
+	}
 	var minExec uint64
+	var fileBias uint64
 	hasExec := false
 	for _, p := range ef.Progs {
 		if p.Type == elf.PT_LOAD && p.Flags&elf.PF_X != 0 {
 			if !hasExec || p.Vaddr < minExec {
 				minExec = p.Vaddr
+				if p.Vaddr >= p.Off {
+					fileBias = p.Vaddr - p.Off
+				}
 				hasExec = true
 			}
 		}
 	}
 	if hasExec {
 		tbl.ImageBase = minExec
+		tbl.FileOffsetBias = fileBias
 	}
 
 	if d, err := ef.DWARF(); err == nil && d != nil {
