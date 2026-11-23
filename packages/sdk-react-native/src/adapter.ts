@@ -109,6 +109,30 @@ export class CaliperReactNativeAdapter {
     this.bridge.enqueueEvent('crash', this.scene, null, JSON.stringify(payload));
   }
 
+  /** Records a custom multi-stage business journey trace via the Native bridge. */
+  recordCustomJourney(params: {
+    journeyName: string;
+    status?: 'success' | 'failure' | 'cancelled' | 'timeout';
+    durationMs?: number;
+    stages?: Array<{ name: string; duration_ms: number }>;
+    errorCode?: string;
+  }): void {
+    const payload: Record<string, unknown> = {
+      journey_name: params.journeyName,
+      status: params.status ?? 'success',
+    };
+    if (typeof params.durationMs === 'number' && Number.isFinite(params.durationMs) && params.durationMs >= 0) {
+      payload.duration_ms = params.durationMs;
+    }
+    if (params.errorCode) {
+      payload.error_code = params.errorCode;
+    }
+    if (params.stages && params.stages.length > 0) {
+      payload.stages = params.stages.slice(0, 16);
+    }
+    this.bridge.enqueueEvent('custom_scene', this.scene, null, JSON.stringify(payload));
+  }
+
   private resetObservation(): void {
     const t = this.now();
     this.observationStartMs = t;

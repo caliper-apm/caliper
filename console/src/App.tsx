@@ -276,7 +276,12 @@ export function App() {
               <FluencyPage filters={filters} refreshTick={refreshTick} lang={lang} />
             )}
             {tab === 'resources' && (
-              <ResourcesNetworkPage filters={filters} refreshTick={refreshTick} lang={lang} />
+              <ResourcesNetworkPage
+                filters={filters}
+                refreshTick={refreshTick}
+                lang={lang}
+                onTraceUser={traceUserSession}
+              />
             )}
             {tab === 'diagnostics' && (
               <DiagnosticsPage

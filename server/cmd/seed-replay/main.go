@@ -341,10 +341,36 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 		total := dns + tcp + tls + ttfb + body
 		res := "success"
 		status := 200
-		if rng.Float64() < p.apiFailRate {
-			res = "failed"
-			status = 502
+		if rng.Float64() < 0.08 {
+			status = 304
 		}
+		if rng.Float64() < p.apiFailRate*1.4 {
+			fr := rng.Float64()
+			switch {
+			case fr < 0.45:
+				res = "failed"
+				status = 502
+			case fr < 0.65:
+				res = "failed"
+				status = 504
+			case fr < 0.82:
+				res = "failed"
+				status = 429
+			case fr < 0.90:
+				res = "failed"
+				status = 401
+			default:
+				res = "timeout"
+				status = 0
+				total += 1800
+			}
+		}
+		proto := "h2"
+		if rng.Float64() < 0.28 {
+			proto = "h3"
+		}
+		netTypes := []string{"wifi", "5g", "4g"}
+		netType := netTypes[rng.Intn(len(netTypes))]
 		payload, _ := json.Marshal(protocol.NetworkTransportPayload{
 			Operation:        chosen.op,
 			Method:           chosen.method,
@@ -357,8 +383,8 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 			BodyMS:           &body,
 			TotalMS:          total,
 			ConnectionReused: rng.Float64() < 0.65,
-			Protocol:         "h2",
-			NetworkType:      "wifi",
+			Protocol:         proto,
+			NetworkType:      netType,
 		})
 		return protocol.Event{EventID: id, Kind: protocol.KindNetworkStage, OccurredAtMS: ts, ContractVersion: 1, Scene: scene, PolicyID: "default_v1", Payload: payload}
 
@@ -422,6 +448,49 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 				})
 				return protocol.Event{EventID: id, Kind: protocol.KindAbnormalExit, OccurredAtMS: ts, ContractVersion: 1, Scene: "media_gallery", PolicyID: "default_v1", Payload: payload}
 			}
+		}
+		if (seq/6)%2 == 0 {
+			type journeySpec struct {
+				name   string
+				scale  float64
+				stages []string
+			}
+			journeys := []journeySpec{
+				{"article_open_to_readable", 1.0, []string{"cache_lookup", "api_fetch", "markdown_parse", "layout_render"}},
+				{"feed_refresh_pipeline", 0.85, []string{"network_fetch", "json_decode", "image_prefetch", "list_diff"}},
+				{"media_decode_pipeline", 1.25, []string{"disk_read", "codec_decode", "gpu_upload"}},
+			}
+			j := journeys[(seq/12)%len(journeys)]
+			totalDur := p.apiBaseMS * 1.45 * j.scale * tier.startupScale * (0.75 + rng.Float64()*0.5)
+			jStatus := "success"
+			errCode := ""
+			if rng.Float64() < p.apiFailRate*1.1 {
+				if rng.Float64() < 0.65 {
+					jStatus = "failure"
+					errCode = "ERR_DECODE_OR_UPSTREAM"
+				} else {
+					jStatus = "timeout"
+					errCode = "ERR_STAGE_TIMEOUT"
+					totalDur += 1200
+				}
+			}
+			weights := []float64{0.15, 0.42, 0.25, 0.18}
+			stages := make([]protocol.SceneStage, 0, len(j.stages))
+			for idx, stName := range j.stages {
+				w := weights[idx%len(weights)]
+				stages = append(stages, protocol.SceneStage{
+					Name:       stName,
+					DurationMS: totalDur * w,
+				})
+			}
+			payload, _ := json.Marshal(protocol.CustomScenePayload{
+				JourneyName: j.name,
+				Status:      jStatus,
+				DurationMS:  &totalDur,
+				ErrorCode:   errCode,
+				Stages:      stages,
+			})
+			return protocol.Event{EventID: id, Kind: protocol.KindCustomScene, OccurredAtMS: ts, ContractVersion: 1, Scene: scene, PolicyID: "default_v1", Payload: payload}
 		}
 		cnt := int64(1 + rng.Intn(4))
 		blk := float64(cnt) * (65.0 + p.jankRate*900.0)

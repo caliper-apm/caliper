@@ -94,6 +94,7 @@ type NetworkReport struct {
 	DurationP50      contract.QuantileResult       `json:"duration_p50_ms"`
 	DurationP90      contract.QuantileResult       `json:"duration_p90_ms"`
 	DurationBuckets  []HistogramBucket             `json:"duration_buckets,omitempty"`
+	StatusCodes      map[string]int64              `json:"status_codes,omitempty"`
 	Operations       []TransportOpReport           `json:"operations"`
 }
 
@@ -244,6 +245,7 @@ func (e *Engine) Network(ctx context.Context, f storage.QueryFilter) (NetworkRep
 		DurationP50:      contract.QuantileDuration(agg.DurationHist, 0.50, contract.DefaultDisplayMinSamples),
 		DurationP90:      contract.QuantileDuration(agg.DurationHist, 0.90, contract.DefaultDisplayMinSamples),
 		DurationBuckets:  DurationBucketsSlice(agg.DurationHist),
+		StatusCodes:      agg.StatusCodes,
 		Operations:       make([]TransportOpReport, 0, len(agg.TransportSamples)),
 	}
 	if agg.TotalCalls == 0 {

@@ -364,14 +364,48 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"policy_id":         ev.PolicyID,
 				"operation":         p.Operation,
 				"method":            p.Method,
+				"status_code":       p.StatusCode,
 				"result":            p.Result,
 				"connection_reused": reused,
+				"protocol":          p.Protocol,
+				"network_type":      p.NetworkType,
+				"install_hash":      batch.Resource.InstallHash,
+				"user_hash":         batch.Resource.UserHash,
+				"total_ms":          p.TotalMS,
 				"dns_buckets":       dns[:],
 				"tcp_buckets":       tcp[:],
 				"tls_buckets":       tls[:],
 				"ttfb_buckets":      ttfb[:],
 				"body_buckets":      body[:],
 				"total_buckets":     tot[:],
+			})
+
+		case protocol.CustomScenePayload:
+			var dh contract.Histogram
+			dur := 0.0
+			if p.DurationMS != nil {
+				dur = *p.DurationMS
+				dh[contract.DurationBucketIndex(dur)] = 1
+			}
+			stagesJSON, _ := json.Marshal(p.Stages)
+			tableRows["caliper_custom_scene_events"] = append(tableRows["caliper_custom_scene_events"], map[string]any{
+				"event_id":         ev.EventID,
+				"ingested_at_ms":   nowMS,
+				"occurred_at_ms":   uint64(ev.OccurredAtMS),
+				"day_utc":          dayUTC,
+				"app_id":           batch.Resource.AppID,
+				"platform":         batch.Resource.Platform,
+				"env":              batch.Resource.Env,
+				"app_version":      batch.Resource.AppVersion,
+				"build_number":     batch.Resource.BuildNumber,
+				"adapter":          adapter,
+				"policy_id":        ev.PolicyID,
+				"journey_name":     p.JourneyName,
+				"status":           p.Status,
+				"error_code":       p.ErrorCode,
+				"duration_ms":      dur,
+				"duration_buckets": dh[:],
+				"stages_json":      string(stagesJSON),
 			})
 
 		case protocol.StabilityPayload:
@@ -780,6 +814,128 @@ FORMAT JSON`, s.database, where)
 			BodyHist:   toHistogram(r.BodyBuckets),
 			TotalHist:  toHistogram(r.TotalBuckets),
 		}
+	}
+	return out, nil
+}
+
+func (s *Store) QueryNetworkSamples(ctx context.Context, f storage.QueryFilter, operation string, onlyIssues bool, limit int) ([]storage.NetworkTransportSample, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	where := buildWhereClause(f, true, false)
+	if operation != "" {
+		where += " AND operation = " + quoteSQLString(operation)
+	}
+	if onlyIssues {
+		where += " AND (result != 'success' OR status_code >= 400 OR total_ms >= 800)"
+	}
+	q := fmt.Sprintf(`
+SELECT event_id, occurred_at_ms, app_id, platform, env, app_version, build_number, adapter, scene,
+       device_model, os_version, install_hash, user_hash, operation, method, status_code, result,
+       connection_reused, protocol, network_type, total_ms
+FROM caliper_network_transport_events FINAL
+WHERE %s
+ORDER BY occurred_at_ms DESC
+LIMIT %d FORMAT JSON`, where, limit)
+
+	var resp chJSONResp[struct {
+		EventID          string    `json:"event_id"`
+		OccurredAtMS     flexInt64 `json:"occurred_at_ms"`
+		AppID            string    `json:"app_id"`
+		Platform         string    `json:"platform"`
+		Env              string    `json:"env"`
+		AppVersion       string    `json:"app_version"`
+		BuildNumber      string    `json:"build_number"`
+		Adapter          string    `json:"adapter"`
+		Scene            string    `json:"scene"`
+		DeviceModel      string    `json:"device_model"`
+		OSVersion        string    `json:"os_version"`
+		InstallHash      string    `json:"install_hash"`
+		UserHash         string    `json:"user_hash"`
+		Operation        string    `json:"operation"`
+		Method           string    `json:"method"`
+		StatusCode       int       `json:"status_code"`
+		Result           string    `json:"result"`
+		ConnectionReused uint8     `json:"connection_reused"`
+		Protocol         string    `json:"protocol"`
+		NetworkType      string    `json:"network_type"`
+		TotalMS          float64   `json:"total_ms"`
+	}]
+	if err := s.queryJSON(ctx, q, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]storage.NetworkTransportSample, 0, len(resp.Data))
+	for _, r := range resp.Data {
+		out = append(out, storage.NetworkTransportSample{
+			EventID:          r.EventID,
+			OccurredAtMS:     int64(r.OccurredAtMS),
+			AppID:            r.AppID,
+			Platform:         r.Platform,
+			Env:              r.Env,
+			AppVersion:       r.AppVersion,
+			BuildNumber:      r.BuildNumber,
+			Adapter:          r.Adapter,
+			Scene:            r.Scene,
+			DeviceModel:      r.DeviceModel,
+			OSVersion:        r.OSVersion,
+			InstallHash:      r.InstallHash,
+			UserHash:         r.UserHash,
+			Operation:        r.Operation,
+			Method:           r.Method,
+			StatusCode:       r.StatusCode,
+			Result:           r.Result,
+			ConnectionReused: r.ConnectionReused != 0,
+			Protocol:         r.Protocol,
+			NetworkType:      r.NetworkType,
+			TotalMS:          r.TotalMS,
+		})
+	}
+	return out, nil
+}
+
+func (s *Store) QueryCustomScenes(ctx context.Context, f storage.QueryFilter) ([]storage.CustomSceneAggregate, error) {
+	where := buildWhereClause(f, false, false)
+	q := fmt.Sprintf(`
+SELECT
+    journey_name,
+    count() AS total_count,
+    countIf(status = 'success') AS success_count,
+    countIf(status = 'failure') AS failure_count,
+    countIf(status = 'timeout') AS timeout_count,
+    countIf(status = 'cancelled') AS cancelled_count,
+    sumForEach(duration_buckets) AS duration_buckets
+FROM caliper_custom_scene_events FINAL
+WHERE %s
+GROUP BY journey_name
+ORDER BY total_count DESC
+LIMIT 100 FORMAT JSON`, where)
+
+	var resp chJSONResp[struct {
+		JourneyName     string      `json:"journey_name"`
+		TotalCount      flexInt64   `json:"total_count"`
+		SuccessCount    flexInt64   `json:"success_count"`
+		FailureCount    flexInt64   `json:"failure_count"`
+		TimeoutCount    flexInt64   `json:"timeout_count"`
+		CancelledCount  flexInt64   `json:"cancelled_count"`
+		DurationBuckets []flexInt64 `json:"duration_buckets"`
+	}]
+	if err := s.queryJSON(ctx, q, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]storage.CustomSceneAggregate, 0, len(resp.Data))
+	for _, r := range resp.Data {
+		out = append(out, storage.CustomSceneAggregate{
+			JourneyName:    r.JourneyName,
+			TotalCount:     int64(r.TotalCount),
+			SuccessCount:   int64(r.SuccessCount),
+			FailureCount:   int64(r.FailureCount),
+			TimeoutCount:   int64(r.TimeoutCount),
+			CancelledCount: int64(r.CancelledCount),
+			DurationHist:   toHistogram(r.DurationBuckets),
+			StageHists:     map[string]contract.Histogram{},
+			ErrorCodes:     map[string]int64{},
+			PolicyIDs:      map[string]struct{}{},
+		})
 	}
 	return out, nil
 }

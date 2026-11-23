@@ -188,6 +188,36 @@ class CaliperClient(private val config: CaliperConfig) {
         runCatching { worker.awaitTermination(2, TimeUnit.SECONDS) }
     }
 
+    /** Records a custom multi-stage business journey trace (e.g. article_open_to_readable). */
+    fun recordCustomJourney(
+        journeyName: String,
+        status: String = "success",
+        durationMs: Double? = null,
+        stages: List<Pair<String, Double>> = emptyList(),
+        errorCode: String? = null,
+        scene: String? = null,
+    ): Boolean {
+        val sb = StringBuilder(128)
+        sb.append("""{"journey_name":${q(journeyName)},"status":${q(status)}""")
+        if (durationMs != null && durationMs.isFinite() && durationMs >= 0.0) {
+            sb.append(""","duration_ms":$durationMs""")
+        }
+        if (!errorCode.isNullOrEmpty()) {
+            sb.append(""","error_code":${q(errorCode)}""")
+        }
+        if (stages.isNotEmpty()) {
+            sb.append(""","stages":[""")
+            stages.take(16).forEachIndexed { idx, (name, ms) ->
+                if (idx > 0) sb.append(',')
+                val safeMs = if (ms.isFinite() && ms >= 0.0) ms else 0.0
+                sb.append("""{"name":${q(name)},"duration_ms":$safeMs}""")
+            }
+            sb.append(']')
+        }
+        sb.append('}')
+        return enqueue(kind = "custom_scene", payloadJson = sb.toString(), scene = scene)
+    }
+
     private fun recordFailure() = synchronized(lock) {
         consecutiveFailures += 1
         if (consecutiveFailures >= config.maxConsecutiveFailures) {

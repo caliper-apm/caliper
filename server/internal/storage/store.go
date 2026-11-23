@@ -111,8 +111,55 @@ type NetworkAggregate struct {
 	FailureCounts    protocol.NetworkFailureCounts
 	DurationHist     contract.Histogram
 	DurationSumMS    float64
+	StatusCodes      map[string]int64
 	TransportSamples map[string]*TransportOpAggregate
 	PolicyIDs        map[string]struct{}
+}
+
+// NetworkTransportSample preserves one bounded individual network waterfall observation
+// for slow/error request drill-down and single-user session correlation.
+type NetworkTransportSample struct {
+	EventID          string   `json:"event_id"`
+	OccurredAtMS     int64    `json:"occurred_at_ms"`
+	AppID            string   `json:"app_id"`
+	Platform         string   `json:"platform"`
+	Env              string   `json:"env"`
+	AppVersion       string   `json:"app_version"`
+	BuildNumber      string   `json:"build_number"`
+	Adapter          string   `json:"adapter,omitempty"`
+	Scene            string   `json:"scene,omitempty"`
+	DeviceModel      string   `json:"device_model,omitempty"`
+	OSVersion        string   `json:"os_version,omitempty"`
+	InstallHash      string   `json:"install_hash,omitempty"`
+	UserHash         string   `json:"user_hash,omitempty"`
+	Operation        string   `json:"operation"`
+	Method           string   `json:"method"`
+	StatusCode       int      `json:"status_code,omitempty"`
+	Result           string   `json:"result"`
+	DNSMS            *float64 `json:"dns_ms,omitempty"`
+	TCPMS            *float64 `json:"tcp_ms,omitempty"`
+	TLSMS            *float64 `json:"tls_ms,omitempty"`
+	TTFBMS           *float64 `json:"ttfb_ms,omitempty"`
+	BodyMS           *float64 `json:"body_ms,omitempty"`
+	TotalMS          float64  `json:"total_ms"`
+	ConnectionReused bool     `json:"connection_reused,omitempty"`
+	Protocol         string   `json:"protocol,omitempty"`
+	NetworkType      string   `json:"network_type,omitempty"`
+}
+
+// CustomSceneAggregate holds mergeable Zero-Lie histograms for custom business journey traces.
+type CustomSceneAggregate struct {
+	JourneyName    string
+	TotalCount     int64
+	SuccessCount   int64
+	FailureCount   int64
+	TimeoutCount   int64
+	CancelledCount int64
+	DurationHist   contract.Histogram
+	StageHists     map[string]contract.Histogram
+	StageOrder     []string
+	ErrorCodes     map[string]int64
+	PolicyIDs      map[string]struct{}
 }
 
 // TransportOpAggregate summarizes per-operation Native DNS/TCP/TLS/TTFB/Body observations.
@@ -300,6 +347,8 @@ type AnalyticsStore interface {
 	QueryFluency(ctx context.Context, f QueryFilter) ([]FluencyAggregate, error)
 	QueryResources(ctx context.Context, f QueryFilter) ([]ResourceAggregate, error)
 	QueryNetwork(ctx context.Context, f QueryFilter) (NetworkAggregate, error)
+	QueryNetworkSamples(ctx context.Context, f QueryFilter, operation string, onlyIssues bool, limit int) ([]NetworkTransportSample, error)
+	QueryCustomScenes(ctx context.Context, f QueryFilter) ([]CustomSceneAggregate, error)
 	QueryIssues(ctx context.Context, f QueryFilter, limit int) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, fingerprint string, f QueryFilter) (*IssueSummary, bool, error)
 	QueryDailyTrends(ctx context.Context, f QueryFilter) ([]DailyTrendPoint, error)

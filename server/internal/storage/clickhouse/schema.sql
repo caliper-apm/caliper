@@ -129,8 +129,14 @@ CREATE TABLE IF NOT EXISTS caliper_network_transport_events (
     policy_id         LowCardinality(String),
     operation         LowCardinality(String),
     method            LowCardinality(String),
+    status_code       UInt16 DEFAULT 0,
     result            LowCardinality(String),
     connection_reused UInt8,
+    protocol          LowCardinality(String) DEFAULT '',
+    network_type      LowCardinality(String) DEFAULT '',
+    install_hash      String DEFAULT '',
+    user_hash         String DEFAULT '',
+    total_ms          Float64 DEFAULT 0,
     dns_buckets       Array(UInt64),
     tcp_buckets       Array(UInt64),
     tls_buckets       Array(UInt64),
@@ -140,6 +146,31 @@ CREATE TABLE IF NOT EXISTS caliper_network_transport_events (
 ) ENGINE = ReplacingMergeTree(ingested_at_ms)
 PARTITION BY toYYYYMM(day_utc)
 ORDER BY (app_id, platform, env, app_version, operation, day_utc, event_id)
+TTL day_utc + INTERVAL 90 DAY;
+
+CREATE TABLE IF NOT EXISTS caliper_custom_scene_events (
+    event_id         String,
+    ingested_at_ms   UInt64,
+    occurred_at_ms   UInt64,
+    day_utc          Date,
+    app_id           LowCardinality(String),
+    platform         LowCardinality(String),
+    env              LowCardinality(String),
+    app_version      LowCardinality(String),
+    build_number     LowCardinality(String),
+    adapter          LowCardinality(String),
+    device_model     LowCardinality(String) DEFAULT '',
+    os_version       LowCardinality(String) DEFAULT '',
+    policy_id        LowCardinality(String),
+    journey_name     LowCardinality(String),
+    status           LowCardinality(String),
+    error_code       LowCardinality(String) DEFAULT '',
+    duration_ms      Float64 DEFAULT 0,
+    duration_buckets Array(UInt64),
+    stages_json      String DEFAULT '[]'
+) ENGINE = ReplacingMergeTree(ingested_at_ms)
+PARTITION BY toYYYYMM(day_utc)
+ORDER BY (app_id, platform, env, app_version, journey_name, day_utc, event_id)
 TTL day_utc + INTERVAL 90 DAY;
 
 CREATE TABLE IF NOT EXISTS caliper_stability_events (

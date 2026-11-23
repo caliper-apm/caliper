@@ -98,10 +98,12 @@ type EmbeddedStore struct {
 	userTimelines    map[string][]SessionTimelineEvent
 	cpuProfiles      []CPUProfileRecord
 	heapSnapshots    []HeapSnapshotRecord
+	networkSamples   []NetworkTransportSample
 	startups         map[rollupKey]*StartupAggregate
 	fluencies        map[rollupKey]*FluencyAggregate
 	resources        map[rollupKey]*ResourceAggregate
 	networks         map[rollupKey]*NetworkAggregate
+	customScenes     map[rollupKey]*CustomSceneAggregate
 	issues           map[string]*issueBucket // key: app|platform|env|fingerprint
 }
 
@@ -116,6 +118,7 @@ const (
 	maxTimelineEventsPerHash = 200
 	maxTrackedTimelineHashes = 10000
 	maxStoredDiagnostics     = 500
+	maxNetworkSamples        = 1000
 )
 
 // OpenEmbedded opens or initializes an embedded store in dataDir (empty dataDir = memory-only).
@@ -138,6 +141,7 @@ func OpenEmbedded(dataDir string) (*EmbeddedStore, error) {
 		fluencies:        make(map[rollupKey]*FluencyAggregate),
 		resources:        make(map[rollupKey]*ResourceAggregate),
 		networks:         make(map[rollupKey]*NetworkAggregate),
+		customScenes:     make(map[rollupKey]*CustomSceneAggregate),
 		issues:           make(map[string]*issueBucket),
 	}
 
@@ -531,9 +535,17 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 	case protocol.NetworkTransportPayload:
 		agg := s.networks[baseKey]
 		if agg == nil {
-			agg = &NetworkAggregate{TransportSamples: map[string]*TransportOpAggregate{}, PolicyIDs: map[string]struct{}{}}
+			agg = &NetworkAggregate{
+				StatusCodes:      map[string]int64{},
+				TransportSamples: map[string]*TransportOpAggregate{},
+				PolicyIDs:        map[string]struct{}{},
+			}
 			s.networks[baseKey] = agg
 		}
+		if agg.StatusCodes == nil {
+			agg.StatusCodes = map[string]int64{}
+		}
+		agg.StatusCodes[statusCodeBucket(p.StatusCode, p.Result)]++
 		if e.PolicyID != "" {
 			agg.PolicyIDs[e.PolicyID] = struct{}{}
 		}
@@ -571,6 +583,83 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 			op.BodyHist[contract.DurationBucketIndex(*p.BodyMS)]++
 		}
 		op.TotalHist[contract.DurationBucketIndex(p.TotalMS)]++
+
+		isIssueSample := p.Result != "success" || p.StatusCode >= 400 || p.TotalMS >= 800
+		if isIssueSample || len(s.networkSamples) < 120 || s.totalEvents%7 == 0 {
+			s.networkSamples = append(s.networkSamples, NetworkTransportSample{
+				EventID:          e.EventID,
+				OccurredAtMS:     e.OccurredAtMS,
+				AppID:            r.AppID,
+				Platform:         r.Platform,
+				Env:              r.Env,
+				AppVersion:       r.AppVersion,
+				BuildNumber:      r.BuildNumber,
+				Adapter:          baseKey.Adapter,
+				Scene:            baseKey.Scene,
+				DeviceModel:      r.DeviceModel,
+				OSVersion:        r.OSVersion,
+				InstallHash:      r.InstallHash,
+				UserHash:         r.UserHash,
+				Operation:        p.Operation,
+				Method:           p.Method,
+				StatusCode:       p.StatusCode,
+				Result:           p.Result,
+				DNSMS:            p.DNSMS,
+				TCPMS:            p.TCPMS,
+				TLSMS:            p.TLSMS,
+				TTFBMS:           p.TTFBMS,
+				BodyMS:           p.BodyMS,
+				TotalMS:          p.TotalMS,
+				ConnectionReused: p.ConnectionReused,
+				Protocol:         p.Protocol,
+				NetworkType:      p.NetworkType,
+			})
+			if len(s.networkSamples) > maxNetworkSamples {
+				s.networkSamples = s.networkSamples[len(s.networkSamples)-maxNetworkSamples:]
+			}
+		}
+
+	case protocol.CustomScenePayload:
+		ck := baseKey
+		ck.Scene = p.JourneyName
+		agg := s.customScenes[ck]
+		if agg == nil {
+			agg = &CustomSceneAggregate{
+				JourneyName: p.JourneyName,
+				StageHists:  map[string]contract.Histogram{},
+				ErrorCodes:  map[string]int64{},
+				PolicyIDs:   map[string]struct{}{},
+			}
+			s.customScenes[ck] = agg
+		}
+		agg.TotalCount++
+		switch p.Status {
+		case "success":
+			agg.SuccessCount++
+		case "failure":
+			agg.FailureCount++
+		case "timeout":
+			agg.TimeoutCount++
+		case "cancelled":
+			agg.CancelledCount++
+		}
+		if p.ErrorCode != "" {
+			agg.ErrorCodes[p.ErrorCode]++
+		}
+		if p.DurationMS != nil {
+			agg.DurationHist[contract.DurationBucketIndex(*p.DurationMS)]++
+		}
+		for _, st := range p.Stages {
+			h, exists := agg.StageHists[st.Name]
+			if !exists {
+				agg.StageOrder = append(agg.StageOrder, st.Name)
+			}
+			h[contract.DurationBucketIndex(st.DurationMS)]++
+			agg.StageHists[st.Name] = h
+		}
+		if e.PolicyID != "" {
+			agg.PolicyIDs[e.PolicyID] = struct{}{}
+		}
 
 	case protocol.StabilityPayload:
 		iKey := issueMapKey(r.AppID, r.Platform, r.Env, p.Fingerprint)
@@ -825,10 +914,35 @@ func (s *EmbeddedStore) QueryResources(_ context.Context, f QueryFilter) ([]Reso
 	return out, nil
 }
 
+func statusCodeBucket(code int, result string) string {
+	if result == "timeout" {
+		return "timeout"
+	}
+	switch {
+	case code >= 200 && code < 300:
+		return "2xx"
+	case code >= 300 && code < 400:
+		return "3xx"
+	case code >= 400 && code < 500:
+		return "4xx"
+	case code >= 500 && code < 600:
+		return "5xx"
+	default:
+		if result == "success" {
+			return "2xx"
+		}
+		return "other"
+	}
+}
+
 func (s *EmbeddedStore) QueryNetwork(_ context.Context, f QueryFilter) (NetworkAggregate, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := NetworkAggregate{TransportSamples: map[string]*TransportOpAggregate{}, PolicyIDs: map[string]struct{}{}}
+	out := NetworkAggregate{
+		StatusCodes:      map[string]int64{},
+		TransportSamples: map[string]*TransportOpAggregate{},
+		PolicyIDs:        map[string]struct{}{},
+	}
 	for k, agg := range s.networks {
 		if !matchesFilter(k, f) {
 			continue
@@ -842,6 +956,9 @@ func (s *EmbeddedStore) QueryNetwork(_ context.Context, f QueryFilter) (NetworkA
 		out.FailureCounts.Timeout += agg.FailureCounts.Timeout
 		out.DurationHist.Add(agg.DurationHist)
 		out.DurationSumMS += agg.DurationSumMS
+		for code, cnt := range agg.StatusCodes {
+			out.StatusCodes[code] += cnt
+		}
 		for pid := range agg.PolicyIDs {
 			out.PolicyIDs[pid] = struct{}{}
 		}
@@ -864,6 +981,117 @@ func (s *EmbeddedStore) QueryNetwork(_ context.Context, f QueryFilter) (NetworkA
 			dst.TotalHist.Add(src.TotalHist)
 		}
 	}
+	return out, nil
+}
+
+func (s *EmbeddedStore) QueryNetworkSamples(_ context.Context, f QueryFilter, operation string, onlyIssues bool, limit int) ([]NetworkTransportSample, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	out := make([]NetworkTransportSample, 0, limit)
+	for i := len(s.networkSamples) - 1; i >= 0; i-- {
+		smp := s.networkSamples[i]
+		if f.AppID != "" && smp.AppID != f.AppID {
+			continue
+		}
+		if f.Platform != "" && smp.Platform != f.Platform {
+			continue
+		}
+		if f.Env != "" && smp.Env != f.Env {
+			continue
+		}
+		if f.AppVersion != "" && smp.AppVersion != f.AppVersion {
+			continue
+		}
+		if f.BuildNumber != "" && smp.BuildNumber != f.BuildNumber {
+			continue
+		}
+		if f.Adapter != "" && smp.Adapter != f.Adapter {
+			continue
+		}
+		if f.Scene != "" && smp.Scene != f.Scene {
+			continue
+		}
+		if f.DeviceModel != "" && smp.DeviceModel != f.DeviceModel {
+			continue
+		}
+		if f.OSVersion != "" && smp.OSVersion != f.OSVersion {
+			continue
+		}
+		if operation != "" && smp.Operation != operation {
+			continue
+		}
+		dayUTC := time.UnixMilli(smp.OccurredAtMS).UTC().Format("2006-01-02")
+		if f.StartDayUTC != "" && dayUTC < f.StartDayUTC {
+			continue
+		}
+		if f.EndDayUTC != "" && dayUTC > f.EndDayUTC {
+			continue
+		}
+		if onlyIssues && smp.Result == "success" && smp.StatusCode < 400 && smp.TotalMS < 800 {
+			continue
+		}
+		out = append(out, smp)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *EmbeddedStore) QueryCustomScenes(_ context.Context, f QueryFilter) ([]CustomSceneAggregate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	grouped := map[string]*CustomSceneAggregate{}
+	for k, agg := range s.customScenes {
+		sub := f
+		sub.Scene = ""
+		if !matchesFilter(k, sub) {
+			continue
+		}
+		dst := grouped[agg.JourneyName]
+		if dst == nil {
+			dst = &CustomSceneAggregate{
+				JourneyName: agg.JourneyName,
+				StageHists:  map[string]contract.Histogram{},
+				ErrorCodes:  map[string]int64{},
+				PolicyIDs:   map[string]struct{}{},
+			}
+			grouped[agg.JourneyName] = dst
+		}
+		dst.TotalCount += agg.TotalCount
+		dst.SuccessCount += agg.SuccessCount
+		dst.FailureCount += agg.FailureCount
+		dst.TimeoutCount += agg.TimeoutCount
+		dst.CancelledCount += agg.CancelledCount
+		dst.DurationHist.Add(agg.DurationHist)
+		for _, stName := range agg.StageOrder {
+			h, exists := dst.StageHists[stName]
+			if !exists {
+				dst.StageOrder = append(dst.StageOrder, stName)
+			}
+			h.Add(agg.StageHists[stName])
+			dst.StageHists[stName] = h
+		}
+		for ec, cnt := range agg.ErrorCodes {
+			dst.ErrorCodes[ec] += cnt
+		}
+		for pid := range agg.PolicyIDs {
+			dst.PolicyIDs[pid] = struct{}{}
+		}
+	}
+	out := make([]CustomSceneAggregate, 0, len(grouped))
+	for _, v := range grouped {
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TotalCount != out[j].TotalCount {
+			return out[i].TotalCount > out[j].TotalCount
+		}
+		return out[i].JourneyName < out[j].JourneyName
+	})
 	return out, nil
 }
 

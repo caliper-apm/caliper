@@ -75,11 +75,11 @@ docker compose up --build
 - **强审计远程日志捞取任务**：支持按 `user_hash` / `install_hash` 下发带 TTL 与字节上限的远程日志拉取任务，SDK 轮询 + Gzip 加密摘要回传，全链路 Fail-Closed 写入审计日志。
 - **全双工 OTLP 互通**：原生接收标准 OpenTelemetry Traces / Logs（`POST /v1/otlp/v1/traces`、`/v1/otlp/v1/logs`），并支持以标准 `resourceMetrics` 导出聚合指标（`GET /v1/otlp/export`）。
 
-## 企业级控制台 2.2、生产 SDK 与 CI 质量门禁（v1.1 – v1.3）
+## 企业级控制台 2.3、生产 SDK 与 CI 质量门禁（v1.1 – v1.4）
 
 详见 [`CHANGELOG.md`](CHANGELOG.md)：
-- **Console 2.2 企业级多维可视化**：中英双语、14 天版本放量趋势标注、**按版本 / 机型 / 系统版本 / Native vs RN** 多维切换拆解、19 桶分布直方图、5 域网络失败占比、跨页下钻与可视化单用户会话时间线。
-- **CI/CD 灰度质量门禁（`caliper-gate` CLI）**：基于 Z 检验 + KS 检验 + 符号覆盖率的零谎言发版红绿灯（`POST /v1/analytics/release-gate`），退出码 `0`（PASS）、`2`（BLOCK 显著劣化）、`3`（GATED 样本不足），自动输出 PR Markdown 报告：
+- **Console 2.3 企业级多维可视化**：中英双语、14 天版本放量趋势标注、**按版本 / 机型 / 系统版本 / Native vs RN** 多维切换拆解、19 桶分布直方图、5 域网络失败占比、HTTP 状态码分布、**慢请求/异常请求单次瀑布样本抽屉**、**核心业务链路自定义多阶段追踪（`GET /v1/analytics/journeys`）**、跨页下钻与可视化单用户会话时间线。
+- **CI/CD 灰度质量门禁（`caliper-gate` CLI + GitHub PR Comment Action）**：基于 Z 检验 + KS 检验 + 符号覆盖率的零谎言发版红绿灯（`POST /v1/analytics/release-gate`）及一键 PR 评论 Action（`packages/github-action/release-gate/action.yml`），退出码 `0`（PASS）、`2`（BLOCK 显著劣化）、`3`（GATED 样本不足）：
   ```bash
   caliper-gate --server http://127.0.0.1:8080 --platform android --baseline 1.0.0 --candidate 1.1.0 --format markdown
   ```

@@ -73,6 +73,26 @@ public final class CaliperClient: @unchecked Sendable {
         }
     }
 
+    /// Records a custom multi-stage business journey trace (e.g. article_open_to_readable).
+    @discardableResult
+    public func recordCustomJourney(
+        journeyName: String,
+        status: String = "success",
+        durationMS: Double? = nil,
+        stages: [SceneStage]? = nil,
+        errorCode: String? = nil,
+        scene: String? = nil
+    ) -> Bool {
+        let payload = CustomScenePayload(
+            journeyName: journeyName,
+            status: status,
+            durationMS: durationMS,
+            errorCode: errorCode,
+            stages: stages?.isEmpty == true ? nil : stages
+        )
+        return enqueue(kind: "custom_scene", payload: .customScene(payload), scene: scene)
+    }
+
     /// Enqueues an event if lease is active, quota permits, and circuit breaker is closed.
     @discardableResult
     public func enqueue(

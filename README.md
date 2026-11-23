@@ -149,11 +149,11 @@ See [`docs/roadmap-v1.0.md`](docs/roadmap-v1.0.md):
 - **Audited Remote Log Retrieval Tasks**: Pull bounded, PII-scrubbed diagnostic ring logs on demand (`POST /v1/diagnostics/log-tasks`, SDK poll + gzip upload, fail-closed immutable audit trail).
 - **Full OTLP/HTTP JSON Interoperability**: Ingest standard OpenTelemetry traces & logs (`POST /v1/otlp/v1/traces`, `POST /v1/otlp/v1/logs`) and export aggregated `resourceMetrics` (`GET /v1/otlp/export`).
 
-## Enterprise Console 2.2, Production SDKs & CI Release Gate (v1.1 – v1.3)
+## Enterprise Console 2.3, Production SDKs & CI Release Gate (v1.1 – v1.4)
 
 See [`CHANGELOG.md`](CHANGELOG.md):
-- **Console 2.2 (ECharts Multi-Dimension APM Workbench)**: Bilingual (`中文`/`EN`) dark-chrome enterprise console with 14-day release rollout trends, **Release / Device Model / OS Version / Native-vs-RN** slicing, 19-bucket histograms, 5-domain network error breakdown, transport waterfalls, cross-page drill-down, and visual single-user session timelines.
-- **CI/CD Zero-Lie Release Quality Gate (`caliper-gate`)**: Automated canary promotion gate (`POST /v1/analytics/release-gate`) returning exit code `0` (`PASS`), `2` (`BLOCK` on statistically significant regression), or `3` (`GATED` when under-sampled) with Markdown PR summaries:
+- **Console 2.3 (ECharts Multi-Dimension APM Workbench)**: Bilingual (`中文`/`EN`) dark-chrome enterprise console with 14-day release rollout trends, **Release / Device Model / OS Version / Native-vs-RN** slicing, 19-bucket histograms, 5-domain network error breakdown, HTTP status code distribution, clickable slow/error network sample waterfalls, multi-stage custom business journey traces (`GET /v1/analytics/journeys`), cross-page drill-down, and visual single-user session timelines.
+- **CI/CD Zero-Lie Release Quality Gate (`caliper-gate` + GitHub Action)**: Automated canary promotion gate (`POST /v1/analytics/release-gate`) + composite PR Comment Action (`packages/github-action/release-gate/action.yml`) returning exit code `0` (`PASS`), `2` (`BLOCK` on statistically significant regression), or `3` (`GATED` when under-sampled):
   ```bash
   caliper-gate --server http://127.0.0.1:8080 --platform android --baseline 1.0.0 --candidate 1.1.0 --format markdown
   ```

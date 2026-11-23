@@ -1,0 +1,129 @@
+name: "Caliper APM Zero-Lie Release Quality Gate"
+description: "Runs statistical canary regression checks (Z-test + Wilson CI + KS test + symbol coverage) and posts a Markdown Release Gate verdict to PRs and Job Summary."
+author: "Caliper APM"
+
+inputs:
+  server-url:
+    description: "Caliper APM server base URL (e.g. https://apm.example.com)"
+    required: true
+  api-key:
+    description: "Optional Caliper API key (viewer/operator/admin)"
+    required: false
+    default: ""
+  app-id:
+    description: "Optional application bundle/package ID filter"
+    required: false
+    default: ""
+  platform:
+    description: "Target platform: android or ios"
+    required: true
+  env:
+    description: "Environment: prod, staging, or dev"
+    required: false
+    default: "prod"
+  baseline-version:
+    description: "Baseline release version (e.g. 1.0.0)"
+    required: true
+  candidate-version:
+    description: "Candidate release version (e.g. 1.1.0)"
+    required: true
+  min-samples:
+    description: "Override minimum sample gate (0 uses server Zero-Lie default)"
+    required: false
+    default: "0"
+  max-regressed:
+    description: "Maximum allowed regressed metrics before blocking"
+    required: false
+    default: "0"
+  require-symbols:
+    description: "Set true to block if candidate lacks bound symbols"
+    required: false
+    default: "true"
+  allow-gated:
+    description: "Set true to exit 0 instead of 3 when samples are insufficient"
+    required: false
+    default: "false"
+  post-pr-comment:
+    description: "Set true to post/update a Markdown comment on the active pull request (requires GITHUB_TOKEN)"
+    required: false
+    default: "false"
+
+outputs:
+  verdict:
+    description: "Gate verdict: pass | block | gated"
+    value: ${{ steps.gate.outputs.verdict }}
+  exit-code:
+    description: "caliper-gate exit code: 0 (pass), 2 (block), 3 (gated)"
+    value: ${{ steps.gate.outputs.exit_code }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Go 1.23 for caliper-gate
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.23"
+
+    - name: Evaluate Zero-Lie Release Quality Gate
+      id: gate
+      shell: bash
+      env:
+        CALIPER_API_KEY: ${{ inputs.api-key }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -uo pipefail
+        TMP_DIR="$(mktemp -d)"
+        GATE_BIN="$TMP_DIR/caliper-gate"
+        REPORT_MD="$TMP_DIR/gate-report.md"
+
+        (cd "${{ github.action_path }}/../../../server" && go build -o "$GATE_BIN" ./cmd/caliper-gate)
+
+        ARGS=(
+          --server "${{ inputs.server-url }}"
+          --platform "${{ inputs.platform }}"
+          --env "${{ inputs.env }}"
+          --baseline "${{ inputs.baseline-version }}"
+          --candidate "${{ inputs.candidate-version }}"
+          --min-samples "${{ inputs.min-samples }}"
+          --max-regressed "${{ inputs.max-regressed }}"
+          --format markdown
+        )
+        if [ -n "${{ inputs.app-id }}" ]; then
+          ARGS+=(--app-id "${{ inputs.app-id }}")
+        fi
+        if [ "${{ inputs.require-symbols }}" = "true" ]; then
+          ARGS+=(--require-symbols)
+        fi
+        if [ "${{ inputs.allow-gated }}" = "true" ]; then
+          ARGS+=(--allow-gated)
+        fi
+
+        set +e
+        "$GATE_BIN" "${ARGS[@]}" > "$REPORT_MD"
+        RC=$?
+        set -e
+
+        cat "$REPORT_MD"
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          cat "$REPORT_MD" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        VERDICT="pass"
+        if [ "$RC" -eq 2 ]; then
+          VERDICT="block"
+        elif [ "$RC" -eq 3 ]; then
+          VERDICT="gated"
+        elif [ "$RC" -ne 0 ]; then
+          VERDICT="error"
+        fi
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+        echo "exit_code=$RC" >> "$GITHUB_OUTPUT"
+
+        if [ "${{ inputs.post-pr-comment }}" = "true" ] && [ -n "${GITHUB_REF:-}" ] && command -v gh >/dev/null 2>&1; then
+          PR_NUM="${{ github.event.pull_request.number }}"
+          if [ -n "$PR_NUM" ]; then
+            gh pr comment "$PR_NUM" --body-file "$REPORT_MD" || true
+          fi
+        fi
+
+        exit "$RC"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ func (h *Handler) registerOpsRoutes() {
 	h.mux.HandleFunc("POST /v1/alerts/rules/{rule_id}/test", h.withPerm(auth.PermManageAlerts, h.handleTestAlertWebhook))
 	h.mux.HandleFunc("PATCH /v1/stability/issues/{fingerprint}", h.handleUpdateIssueState)
 	h.mux.HandleFunc("POST /v1/analytics/release-gate", h.withPerm(auth.PermReadAnalytics, h.handleReleaseGate))
+	h.mux.HandleFunc("GET /v1/analytics/network/samples", h.withPerm(auth.PermReadAnalytics, h.handleNetworkSamples))
+	h.mux.HandleFunc("GET /v1/analytics/journeys", h.withPerm(auth.PermReadAnalytics, h.handleCustomJourneys))
 }
 
 // handlePrometheusMetrics exposes standard OpenMetrics/Prometheus text counters for self-monitoring.
@@ -308,4 +311,41 @@ func (h *Handler) handleReleaseGate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rep)
+}
+
+func (h *Handler) handleNetworkSamples(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	q := r.URL.Query()
+	op := q.Get("operation")
+	onlyIssues := q.Get("only_issues") == "true" || q.Get("only_issues") == "1"
+	limit := 50
+	if raw := q.Get("limit"); raw != "" {
+		if parsed, convErr := strconv.Atoi(raw); convErr == nil {
+			limit = parsed
+		}
+	}
+	samples, err := h.store.QueryNetworkSamples(r.Context(), f, op, onlyIssues, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"samples": samples})
+}
+
+func (h *Handler) handleCustomJourneys(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	journeys, err := h.engine.CustomJourneys(r.Context(), f)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"journeys": journeys})
 }

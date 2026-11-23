@@ -2,6 +2,12 @@
 
 All notable releases of **Caliper APM** are documented here.
 
+## v1.4.0 — Deep Network Forensics, Multi-Stage Business Journeys, GitHub PR Gate Action & Device Bench Collector
+- **Deep Network Slow/Error Samples & HTTP Status Code Distribution**: Added `status_codes` (`2xx` / `3xx` / `4xx` / `5xx` / `timeout`) onto `GET /v1/analytics/network`, bounded per-request transport sample retention (`GET /v1/analytics/network/samples`), HTTP Status Code ECharts bar chart, and a clickable Endpoint Drill-Down Drawer displaying individual DNS/TCP/TLS/TTFB/Body waterfalls with 1-click jump to Single-User Trace.
+- **Custom Business Journey / Multi-Stage Transaction Traces (`custom_scene`)**: Extended `CustomScenePayload` with optional ordered `stages[]` across Go server, ClickHouse (`caliper_custom_scene_events`), Android Kotlin (`CaliperClient.recordCustomJourney`), iOS Swift (`CaliperClient.recordCustomJourney`), and RN TypeScript (`CaliperRNAdapter.recordCustomJourney`), served via `GET /v1/analytics/journeys` and visualized with multi-stage P90 waterfalls & 19-bucket distribution drawers in Console 2.3.
+- **GitHub Action Zero-Lie PR Release Gate**: Added `packages/github-action/release-gate/action.yml` to run `caliper-gate` directly in CI, write to `$GITHUB_STEP_SUMMARY`, optionally post Markdown PR comments, and enforce `PASS`/`BLOCK`/`GATED` exit codes.
+- **Physical Device Benchmark Collector**: Added `benchmarks/collect-device-bench.sh` to detect attached Android (`adb`) / iOS (`xcrun devicectl`) physical hardware and drive Release OFF-vs-ON Macrobenchmark/XCTMetric collection under Zero-Lie rules.
+
 ## v1.3.0 — Enterprise Actionability, CI/CD Release Quality Gate, S3 Wiring & Console 2.2
 - **CI/CD Zero-Lie Release Quality Gate (`POST /v1/analytics/release-gate` + `caliper-gate` CLI)**: Turns Z-test + Wilson CI + KS-test + symbol-coverage checks into a deterministic canary promotion gate (`exit 0` PASS, `exit 2` BLOCK, `exit 3` GATED on under-sampled releases) with transparent `0..100` health score and copy-paste Markdown PR summaries.
 - **Stability Issue Lifecycle Triage & Impact Breakdown**: Persistent issue states (`open` / `in_progress` / `resolved` / `ignored`, assignee, resolved-in version, note) via `PATCH /v1/stability/issues/{fp}` with immutable audit trail, per-issue Device / OS / Release ECharts impact charts, and 1-click "Trace Sample Session" drill-down into Single-User Trace.

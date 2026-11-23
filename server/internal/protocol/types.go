@@ -189,12 +189,20 @@ type NetworkTransportPayload struct {
 	NetworkType      string   `json:"network_type,omitempty"`
 }
 
-// CustomScenePayload tracks arbitrary business journeys with explicit start/terminal outcome.
+// SceneStage captures one ordered stage duration inside a custom business journey trace.
+type SceneStage struct {
+	Name       string  `json:"name"`
+	DurationMS float64 `json:"duration_ms"`
+}
+
+// CustomScenePayload tracks arbitrary business journeys with explicit start/terminal outcome
+// and optional ordered child stage durations for multi-stage waterfall attribution.
 type CustomScenePayload struct {
-	JourneyName string   `json:"journey_name"`
-	Status      string   `json:"status"` // "success" | "failure" | "cancelled" | "timeout"
-	DurationMS  *float64 `json:"duration_ms,omitempty"`
-	ErrorCode   string   `json:"error_code,omitempty"`
+	JourneyName string       `json:"journey_name"`
+	Status      string       `json:"status"` // "success" | "failure" | "cancelled" | "timeout"
+	DurationMS  *float64     `json:"duration_ms,omitempty"`
+	ErrorCode   string       `json:"error_code,omitempty"`
+	Stages      []SceneStage `json:"stages,omitempty"`
 }
 
 // ProfileStackSample holds one folded root-to-leaf callstack and sample count for CPU flamegraphs.
@@ -465,6 +473,17 @@ func ValidateEvent(e *Event) (any, error) {
 		}
 		if p.DurationMS != nil && (!isFiniteNonNeg(*p.DurationMS) || *p.DurationMS > 600_000) {
 			return nil, errors.New("custom_scene duration_ms out of bounds")
+		}
+		if len(p.Stages) > 16 {
+			return nil, errors.New("custom_scene stages exceed maximum of 16")
+		}
+		for _, st := range p.Stages {
+			if st.Name == "" || len(st.Name) > 48 {
+				return nil, errors.New("custom_scene stage name must be 1..48 chars")
+			}
+			if !isFiniteNonNeg(st.DurationMS) || st.DurationMS > 600_000 {
+				return nil, errors.New("custom_scene stage duration_ms out of bounds")
+			}
 		}
 		return p, nil
 

@@ -4,6 +4,7 @@ import type {
   AuditLogEntry,
   CompareReport,
   CPUProfileRecord,
+  CustomJourneyReport,
   DailyTrendPoint,
   DimensionSlice,
   FlamegraphReport,
@@ -16,6 +17,7 @@ import type {
   IssueStatus,
   IssueSummary,
   NetworkReport,
+  NetworkTransportSample,
   OverviewReport,
   Platform,
   RegressionScanReport,
@@ -148,6 +150,18 @@ export const api = {
 
   network: (f: GlobalFilters) =>
     requestJson<NetworkReport>(`/v1/analytics/network${filterQuery(f)}`),
+
+  networkSamples: (f: GlobalFilters, operation?: string, onlyIssues = false, limit = 50) =>
+    requestJson<{ samples: NetworkTransportSample[] }>(
+      `/v1/analytics/network/samples${filterQuery(f, {
+        operation: operation || undefined,
+        only_issues: onlyIssues ? 'true' : undefined,
+        limit: String(limit),
+      })}`,
+    ),
+
+  customJourneys: (f: GlobalFilters) =>
+    requestJson<{ journeys: CustomJourneyReport[] }>(`/v1/analytics/journeys${filterQuery(f)}`),
 
   issues: (f: GlobalFilters) =>
     requestJson<{ issues: IssueSummary[] }>(`/v1/stability/issues${filterQuery(f)}`),

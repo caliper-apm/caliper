@@ -437,24 +437,48 @@ public struct NetworkTransportPayload: Codable, Sendable {
     }
 }
 
+public struct SceneStage: Codable, Sendable {
+    public let name: String
+    public let durationMS: Double
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case durationMS = "duration_ms"
+    }
+
+    public init(name: String, durationMS: Double) {
+        self.name = name
+        self.durationMS = durationMS
+    }
+}
+
 public struct CustomScenePayload: Codable, Sendable {
     public let journeyName: String
     public let status: String
     public let durationMS: Double?
     public let errorCode: String?
+    public let stages: [SceneStage]?
 
     enum CodingKeys: String, CodingKey {
         case journeyName = "journey_name"
         case status
         case durationMS = "duration_ms"
         case errorCode = "error_code"
+        case stages
     }
 
-    public init(journeyName: String, status: String, durationMS: Double? = nil, errorCode: String? = nil) {
+    public init(
+        journeyName: String,
+        status: String,
+        durationMS: Double? = nil,
+        errorCode: String? = nil,
+        stages: [SceneStage]? = nil
+    ) {
         self.journeyName = journeyName
         self.status = status
         self.durationMS = durationMS
         self.errorCode = errorCode
+        self.stages = stages
     }
 }
 

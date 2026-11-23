@@ -198,7 +198,60 @@ export interface NetworkReport {
   duration_p50_ms: QuantileResult;
   duration_p90_ms: QuantileResult;
   duration_buckets?: HistogramBucket[];
+  status_codes?: Record<string, number>;
   operations: TransportOpReport[];
+}
+
+export interface NetworkTransportSample {
+  event_id: string;
+  occurred_at_ms: number;
+  app_id: string;
+  platform: Platform;
+  env: string;
+  app_version: string;
+  build_number: string;
+  adapter?: string;
+  scene?: string;
+  device_model?: string;
+  os_version?: string;
+  install_hash?: string;
+  user_hash?: string;
+  operation: string;
+  method: string;
+  status_code?: number;
+  result: string;
+  dns_ms?: number;
+  tcp_ms?: number;
+  tls_ms?: number;
+  ttfb_ms?: number;
+  body_ms?: number;
+  total_ms: number;
+  connection_reused?: boolean;
+  protocol?: string;
+  network_type?: string;
+}
+
+export interface JourneyStageReport {
+  name: string;
+  sample_count: number;
+  p50_ms: QuantileResult;
+  p90_ms: QuantileResult;
+}
+
+export interface CustomJourneyReport {
+  journey_name: string;
+  total_count: number;
+  success_count: number;
+  failure_count: number;
+  timeout_count: number;
+  cancelled_count: number;
+  success_rate_pct: number | null;
+  missing_reason?: string;
+  duration_p50_ms: QuantileResult;
+  duration_p90_ms: QuantileResult;
+  duration_buckets?: HistogramBucket[];
+  stages?: JourneyStageReport[];
+  error_codes?: Record<string, number>;
 }
 
 export interface StackFrame {
