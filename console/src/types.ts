@@ -228,11 +228,64 @@ export interface IssueSummary {
   first_seen_ms: number;
   last_seen_ms: number;
   releases: string[];
+  device_breakdown?: Record<string, number>;
+  os_breakdown?: Record<string, number>;
+  release_breakdown?: Record<string, number>;
+  sample_user_hash?: string;
+  sample_install_hash?: string;
+  status?: IssueStatus;
+  assignee?: string;
+  note?: string;
+  resolved_in_version?: string;
+  state_updated_at_ms?: number;
   sample_frames?: StackFrame[];
   sample_breadcrumbs?: Breadcrumb[];
   symbol_status?: string;
   resolved_frames?: number;
   matched_symbols?: string[];
+}
+
+export type IssueStatus = 'open' | 'in_progress' | 'resolved' | 'ignored';
+
+export interface IssueState {
+  fingerprint: string;
+  status: IssueStatus;
+  assignee?: string;
+  note?: string;
+  resolved_in_version?: string;
+  updated_at_ms: number;
+}
+
+export interface SamplingPolicy {
+  policy_id: string;
+  app_id: string;
+  platform: Platform;
+  env: string;
+  rate_ppm: number;
+  lease_ttl_ms: number;
+  max_events_24h: number;
+  enabled_collectors: string[];
+  updated_at_ms?: number;
+}
+
+export interface ReleaseGateReport {
+  platform: Platform;
+  env: string;
+  baseline_version: string;
+  candidate_version: string;
+  verdict: 'pass' | 'block' | 'gated';
+  exit_code: number;
+  health_score: number;
+  score_formula: string;
+  candidate_symbol_bound: boolean;
+  regressed_count: number;
+  gated_count: number;
+  evaluated_count: number;
+  blocking_reasons: string[];
+  warnings: string[];
+  metrics: MetricComparison[];
+  scene_findings: RegressionFinding[];
+  markdown_summary: string;
 }
 
 export interface OverviewReport {

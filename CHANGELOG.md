@@ -2,6 +2,14 @@
 
 All notable releases of **Caliper APM** are documented here.
 
+## v1.3.0 — Enterprise Actionability, CI/CD Release Quality Gate, S3 Wiring & Console 2.2
+- **CI/CD Zero-Lie Release Quality Gate (`POST /v1/analytics/release-gate` + `caliper-gate` CLI)**: Turns Z-test + Wilson CI + KS-test + symbol-coverage checks into a deterministic canary promotion gate (`exit 0` PASS, `exit 2` BLOCK, `exit 3` GATED on under-sampled releases) with transparent `0..100` health score and copy-paste Markdown PR summaries.
+- **Stability Issue Lifecycle Triage & Impact Breakdown**: Persistent issue states (`open` / `in_progress` / `resolved` / `ignored`, assignee, resolved-in version, note) via `PATCH /v1/stability/issues/{fp}` with immutable audit trail, per-issue Device / OS / Release ECharts impact charts, and 1-click "Trace Sample Session" drill-down into Single-User Trace.
+- **Dynamic Sampling & Collector Policy Control (`PUT /v1/policy`)**: Live remote sampling rate (`%` / PPM), 24h device quota, lease TTL, and per-collector switches directly from Console 2.2 with immutable audit logging.
+- **Alert Rule Management & Webhook Test Delivery**: Added `DELETE /v1/alerts/rules/{id}`, enable/pause toggle, and `POST /v1/alerts/rules/{id}/test` for 1-click Feishu/Slack/Discord delivery verification.
+- **Production Storage Wiring & ClickHouse Parity**: Wired pure-Go AWS SigV4 S3/MinIO object store (`--object-store=s3 --s3-endpoint ... --s3-bucket ...`) into `caliper` server & Helm Chart for symbols/remote logs, and added full `device_model` / `os_version` column & `ListDimensionValues` parity to ClickHouse.
+- **Console 2.2 Cross-Page Drill-Down & Visual Session Timeline**: Hardware-tier-differentiated seed telemetry, Release Quality Gate banner, clickable Overview -> Stability/Fluency drill-down, demo user presets, and color-coded chronological single-user timeline filters.
+
 ## v1.2.0 — Production Mobile SDK Depth, Cluster HA & Volcano-Grade Multi-Dimension Governance
 - **Android & iOS Production SDK Modules**: Bounded FIFO offline disk queues (`CaliperDiskQueue`), main-thread Watchdog ANR/hang stack capture (`CaliperWatchdog` / `CaliperMainThreadWatchdog`), PII-scrubbed diagnostic ring logs + remote pull poller, Android `CaliperAndroidAgent` (`ActivityLifecycleCallbacks`, API 31+/26-30 `FrameMetrics`, API 30+ `ApplicationExitInfo`, `UncaughtExceptionHandler` chain, `Debug.MemoryInfo` PSS), and iOS `CaliperMetricKitBridge`.
 - **React Native Native Bridges & Auto-Instrumentation**: `wrapFetchForDenominator` allowlisted logical API interceptor + Kotlin & Swift native bridges attaching directly onto Native `CaliperClient`.

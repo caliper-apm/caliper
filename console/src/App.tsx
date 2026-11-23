@@ -38,6 +38,23 @@ export function App() {
   const [releases, setReleases] = useState<ReleaseRecord[]>([]);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
+  const [focusIssueFP, setFocusIssueFP] = useState<string | null>(null);
+  const [focusTraceTarget, setFocusTraceTarget] = useState<{ targetType: 'user_hash' | 'install_hash'; hash: string } | null>(null);
+
+  function openIssueDetail(fingerprint: string) {
+    setFocusIssueFP(fingerprint);
+    setTab('stability');
+  }
+
+  function traceUserSession(targetType: 'user_hash' | 'install_hash', hash: string) {
+    setFocusTraceTarget({ targetType, hash });
+    setTab('diagnostics');
+  }
+
+  function drillToScene(targetScene: string) {
+    setScene(targetScene);
+    setTab('fluency');
+  }
 
   useEffect(() => {
     let active = true;
@@ -234,10 +251,26 @@ export function App() {
 
           <main className="content">
             {tab === 'overview' && (
-              <OverviewPage filters={filters} releases={releases} refreshTick={refreshTick} lang={lang} />
+              <OverviewPage
+                filters={filters}
+                releases={releases}
+                refreshTick={refreshTick}
+                lang={lang}
+                onOpenIssue={openIssueDetail}
+                onDrillScene={drillToScene}
+              />
             )}
             {tab === 'stability' && (
-              <StabilityPage filters={filters} refreshTick={refreshTick} lang={lang} />
+              <StabilityPage
+                filters={filters}
+                releases={releases}
+                refreshTick={refreshTick}
+                lang={lang}
+                initialFingerprint={focusIssueFP}
+                onClearInitialFingerprint={() => setFocusIssueFP(null)}
+                onTraceUser={traceUserSession}
+                onMutated={() => setRefreshTick(n => n + 1)}
+              />
             )}
             {tab === 'fluency' && (
               <FluencyPage filters={filters} refreshTick={refreshTick} lang={lang} />
@@ -251,6 +284,8 @@ export function App() {
                 releases={releases}
                 refreshTick={refreshTick}
                 lang={lang}
+                initialTarget={focusTraceTarget}
+                onClearInitialTarget={() => setFocusTraceTarget(null)}
                 onMutated={() => setRefreshTick(n => n + 1)}
               />
             )}

@@ -1,16 +1,27 @@
 package collector
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/caliper-apm/caliper/server/internal/alerts"
+	"github.com/caliper-apm/caliper/server/internal/analytics"
 	"github.com/caliper-apm/caliper/server/internal/auth"
+	"github.com/caliper-apm/caliper/server/internal/storage"
 )
 
 func (h *Handler) registerOpsRoutes() {
 	h.mux.HandleFunc("GET /metrics", h.handlePrometheusMetrics)
 	h.mux.HandleFunc("GET /v1/ops/source-health", h.withPerm(auth.PermReadAnalytics, h.handleSourceHealth))
+	h.mux.HandleFunc("PUT /v1/policy", h.handleUpsertPolicy)
+	h.mux.HandleFunc("DELETE /v1/alerts/rules/{rule_id}", h.withPerm(auth.PermManageAlerts, h.handleDeleteAlertRule))
+	h.mux.HandleFunc("POST /v1/alerts/rules/{rule_id}/test", h.withPerm(auth.PermManageAlerts, h.handleTestAlertWebhook))
+	h.mux.HandleFunc("PATCH /v1/stability/issues/{fingerprint}", h.handleUpdateIssueState)
+	h.mux.HandleFunc("POST /v1/analytics/release-gate", h.withPerm(auth.PermReadAnalytics, h.handleReleaseGate))
 }
 
 // handlePrometheusMetrics exposes standard OpenMetrics/Prometheus text counters for self-monitoring.
@@ -116,4 +127,185 @@ func (h *Handler) handleSourceHealth(w http.ResponseWriter, r *http.Request) {
 		"zero_frame_ratio_pct":  zeroFramePct,
 		"uptime_seconds":        int64(time.Since(h.startedAt).Seconds()),
 	})
+}
+
+// handleUpsertPolicy allows operators to update remote sampling & collector policies live.
+func (h *Handler) handleUpsertPolicy(w http.ResponseWriter, r *http.Request) {
+	var p storage.SamplingPolicy
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&p); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if p.AppID == "" || (p.Platform != "android" && p.Platform != "ios") {
+		writeError(w, http.StatusBadRequest, "invalid_policy", "app_id and platform (android|ios) are required")
+		return
+	}
+	if p.Env == "" {
+		p.Env = "prod"
+	}
+	if p.RatePPM > 1_000_000 {
+		writeError(w, http.StatusBadRequest, "invalid_policy", "rate_ppm must be in [0, 1000000]")
+		return
+	}
+	if p.LeaseTTLMS < 60_000 {
+		p.LeaseTTLMS = 60_000
+	}
+	if p.MaxEvents24h < 10 {
+		p.MaxEvents24h = 10
+	}
+	if p.PolicyID == "" {
+		p.PolicyID = fmt.Sprintf("pol-%s-%s-%d", p.Platform, p.Env, time.Now().Unix())
+	}
+	principal, status, code, msg := h.authz.Authorize(r, auth.PermManageAlerts, p.AppID)
+	if status != 0 {
+		writeError(w, status, code, msg)
+		return
+	}
+	if err := h.meta.UpsertPolicy(r.Context(), p); err != nil {
+		writeError(w, http.StatusInternalServerError, "policy_save_failed", err.Error())
+		return
+	}
+	_ = h.meta.AppendAuditLog(r.Context(), storage.AuditLogEntry{
+		AuditID:     fmt.Sprintf("aud-pol-%d", time.Now().UnixNano()),
+		TimestampMS: time.Now().UTC().UnixMilli(),
+		Actor:       principal.Actor,
+		Role:        string(principal.Role),
+		Action:      "policy_update",
+		TargetType:  "policy",
+		TargetHash:  p.PolicyID,
+		Reason:      fmt.Sprintf("%s/%s rate_ppm=%d max_24h=%d collectors=%d", p.AppID, p.Platform, p.RatePPM, p.MaxEvents24h, len(p.EnabledCollectors)),
+		RemoteIP:    r.RemoteAddr,
+		ResultCount: len(p.EnabledCollectors),
+	})
+	saved, _ := h.meta.GetPolicy(r.Context(), p.AppID, p.Platform, p.Env)
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (h *Handler) handleDeleteAlertRule(w http.ResponseWriter, r *http.Request) {
+	ruleID := r.PathValue("rule_id")
+	if err := h.meta.DeleteAlertRule(r.Context(), ruleID); err != nil {
+		writeError(w, http.StatusNotFound, "rule_not_found", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "rule_id": ruleID})
+}
+
+func (h *Handler) handleTestAlertWebhook(w http.ResponseWriter, r *http.Request) {
+	ruleID := r.PathValue("rule_id")
+	rules, err := h.meta.ListAlertRules(r.Context(), "", "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
+		return
+	}
+	var target *storage.AlertRule
+	for i := range rules {
+		if rules[i].RuleID == ruleID {
+			target = &rules[i]
+			break
+		}
+	}
+	if target == nil {
+		writeError(w, http.StatusNotFound, "rule_not_found", "alert rule not found")
+		return
+	}
+	if strings.TrimSpace(target.WebhookURL) == "" {
+		writeError(w, http.StatusBadRequest, "webhook_missing", "rule has no webhook_url configured")
+		return
+	}
+	nowMS := time.Now().UTC().UnixMilli()
+	obs := target.Threshold
+	if target.Operator == "gt" {
+		obs = target.Threshold * 1.15
+	} else {
+		obs = target.Threshold * 0.85
+	}
+	inc := storage.AlertIncident{
+		IncidentID:      fmt.Sprintf("test-%s-%d", ruleID, nowMS),
+		RuleID:          target.RuleID,
+		RuleName:        "[TEST] " + target.Name,
+		AppID:           target.AppID,
+		Platform:        target.Platform,
+		MetricID:        target.MetricID,
+		Status:          "firing",
+		ObservedValue:   &obs,
+		Threshold:       target.Threshold,
+		SampleSize:      int64(target.MinSamples),
+		TriggeredAtMS:   nowMS,
+		LastEvaluatedMS: nowMS,
+	}
+	dispatcher := alerts.NewWebhookDispatcher(5 * time.Second)
+	receipt := dispatcher.Send(r.Context(), *target, inc)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"rule_id":  target.RuleID,
+		"format":   target.WebhookFormat,
+		"receipt":  receipt,
+		"sent_at":  nowMS,
+	})
+}
+
+func (h *Handler) handleUpdateIssueState(w http.ResponseWriter, r *http.Request) {
+	fp := r.PathValue("fingerprint")
+	if fp == "" {
+		writeError(w, http.StatusBadRequest, "invalid_fingerprint", "fingerprint is required")
+		return
+	}
+	var body struct {
+		Status            string `json:"status"`
+		Assignee          string `json:"assignee"`
+		Note              string `json:"note"`
+		ResolvedInVersion string `json:"resolved_in_version"`
+		AppID             string `json:"app_id"`
+		Platform          string `json:"platform"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 32*1024)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	principal, status, code, msg := h.authz.Authorize(r, auth.PermManageAlerts, body.AppID)
+	if status != 0 {
+		writeError(w, status, code, msg)
+		return
+	}
+	saved, err := h.meta.UpsertIssueState(r.Context(), storage.IssueState{
+		Fingerprint:       fp,
+		Status:            body.Status,
+		Assignee:          strings.TrimSpace(body.Assignee),
+		Note:              strings.TrimSpace(body.Note),
+		ResolvedInVersion: strings.TrimSpace(body.ResolvedInVersion),
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_issue_state", err.Error())
+		return
+	}
+	_ = h.meta.AppendAuditLog(r.Context(), storage.AuditLogEntry{
+		AuditID:     fmt.Sprintf("aud-iss-%d", time.Now().UnixNano()),
+		TimestampMS: time.Now().UTC().UnixMilli(),
+		Actor:       principal.Actor,
+		Role:        string(principal.Role),
+		Action:      "issue_triage",
+		TargetType:  "issue",
+		TargetHash:  fp,
+		Reason:      fmt.Sprintf("status=%s assignee=%s", saved.Status, saved.Assignee),
+		RemoteIP:    r.RemoteAddr,
+		ResultCount: 1,
+	})
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (h *Handler) handleReleaseGate(w http.ResponseWriter, r *http.Request) {
+	var req analytics.ReleaseGateRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	if (req.Platform != "android" && req.Platform != "ios") || req.BaselineVersion == "" || req.CandidateVersion == "" {
+		writeError(w, http.StatusBadRequest, "invalid_gate_request", "platform (android|ios), baseline_version, and candidate_version are required")
+		return
+	}
+	rep, err := h.engine.EvaluateReleaseGate(r.Context(), h.meta, req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "gate_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }

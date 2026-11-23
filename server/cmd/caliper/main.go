@@ -14,6 +14,7 @@ import (
 	"github.com/caliper-apm/caliper/server/internal/collector"
 	"github.com/caliper-apm/caliper/server/internal/storage"
 	"github.com/caliper-apm/caliper/server/internal/storage/clickhouse"
+	"github.com/caliper-apm/caliper/server/internal/storage/objectstore"
 )
 
 func main() {
@@ -25,6 +26,12 @@ func main() {
 	chUser := flag.String("clickhouse-user", "", "Optional ClickHouse HTTP username")
 	chPass := flag.String("clickhouse-password", "", "Optional ClickHouse HTTP password")
 	chMigrate := flag.Bool("clickhouse-migrate", true, "Run idempotent ClickHouse DDL migration on startup")
+	objectStoreDriver := flag.String("object-store", "local", "Blob store for symbols & remote logs: local | s3")
+	s3Endpoint := flag.String("s3-endpoint", os.Getenv("CALIPER_S3_ENDPOINT"), "S3/MinIO endpoint URL (when --object-store=s3)")
+	s3Bucket := flag.String("s3-bucket", os.Getenv("CALIPER_S3_BUCKET"), "S3/MinIO bucket name")
+	s3Region := flag.String("s3-region", os.Getenv("CALIPER_S3_REGION"), "S3 region (default us-east-1)")
+	s3AccessKey := flag.String("s3-access-key", os.Getenv("CALIPER_S3_ACCESS_KEY"), "S3 access key")
+	s3SecretKey := flag.String("s3-secret-key", os.Getenv("CALIPER_S3_SECRET_KEY"), "S3 secret key")
 	apiKey := flag.String("api-key", "", "Optional single X-Caliper-Key for write endpoints (v0.1 compat mode)")
 	authConfig := flag.String("auth-config", "", "Optional JSON RBAC config file (--auth-config overrides --api-key)")
 	consoleDist := flag.String("console-dist", "", "Optional path to built console/dist static assets served at /")
@@ -40,6 +47,25 @@ func main() {
 			log.Printf("close metadata store error: %v", err)
 		}
 	}()
+
+	switch *objectStoreDriver {
+	case "local", "":
+		// Local filesystem (or in-memory when data-dir is empty).
+	case "s3":
+		s3Store, err := objectstore.NewS3(objectstore.S3Config{
+			Endpoint:  *s3Endpoint,
+			Bucket:    *s3Bucket,
+			Region:    *s3Region,
+			AccessKey: *s3AccessKey,
+			SecretKey: *s3SecretKey,
+		})
+		if err != nil {
+			log.Fatalf("init s3 object store: %v", err)
+		}
+		metaStore.SetObjectStore(s3Store)
+	default:
+		log.Fatalf("unsupported --object-store %q (expected local or s3)", *objectStoreDriver)
+	}
 
 	var analyticsStore storage.AnalyticsStore = metaStore
 	switch *storageDriver {

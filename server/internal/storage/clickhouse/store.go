@@ -458,6 +458,14 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 		if len(rows) == 0 {
 			continue
 		}
+		if table != "caliper_session_timeline" {
+			for _, row := range rows {
+				if m, ok := row.(map[string]any); ok {
+					m["device_model"] = batch.Resource.DeviceModel
+					m["os_version"] = batch.Resource.OSVersion
+				}
+			}
+		}
 		if err := s.insertJSONEachRow(ctx, table, rows); err != nil {
 			return res, fmt.Errorf("clickhouse insert %s: %w", table, err)
 		}
@@ -1147,6 +1155,43 @@ func (s *Store) Stats(_ context.Context) storage.Stats {
 	}
 }
 
+// ListDimensionValues discovers distinct device_model or os_version values for breakdown slicing.
+func (s *Store) ListDimensionValues(ctx context.Context, f storage.QueryFilter, dimension string) []string {
+	col := ""
+	switch dimension {
+	case "device":
+		col = "device_model"
+	case "os":
+		col = "os_version"
+	default:
+		return nil
+	}
+	sub := f
+	sub.DeviceModel = ""
+	sub.OSVersion = ""
+	where := buildWhereClause(sub, false, false)
+	q := fmt.Sprintf(`
+SELECT DISTINCT %s AS val FROM (
+  SELECT %s FROM caliper_startup_events FINAL WHERE %s AND %s != ''
+  UNION ALL
+  SELECT %s FROM caliper_fluency_events FINAL WHERE %s AND %s != ''
+) ORDER BY val ASC LIMIT 50 FORMAT JSON`, col, col, where, col, col, where, col)
+
+	var resp chJSONResp[struct {
+		Val string `json:"val"`
+	}]
+	if err := s.queryJSON(ctx, q, &resp); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(resp.Data))
+	for _, row := range resp.Data {
+		if row.Val != "" {
+			out = append(out, row.Val)
+		}
+	}
+	return out
+}
+
 func (s *Store) Close() error {
 	s.client.CloseIdleConnections()
 	return nil
@@ -1268,6 +1313,12 @@ func buildWhereClause(f storage.QueryFilter, withScene, withAlgo bool) string {
 	}
 	if f.Adapter != "" {
 		conds = append(conds, "adapter = "+quoteSQLString(f.Adapter))
+	}
+	if f.DeviceModel != "" {
+		conds = append(conds, "device_model = "+quoteSQLString(f.DeviceModel))
+	}
+	if f.OSVersion != "" {
+		conds = append(conds, "os_version = "+quoteSQLString(f.OSVersion))
 	}
 	if f.PolicyID != "" {
 		conds = append(conds, "policy_id = "+quoteSQLString(f.PolicyID))

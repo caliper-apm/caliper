@@ -9,11 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/caliper-apm/caliper/server/internal/contract"
 	"github.com/caliper-apm/caliper/server/internal/protocol"
+	"github.com/caliper-apm/caliper/server/internal/storage/objectstore"
 )
 
 type rollupKey struct {
@@ -33,23 +35,28 @@ type rollupKey struct {
 }
 
 type issueBucket struct {
-	AppID       string
-	Platform    string
-	Env         string
-	Fingerprint string
-	Kind        string
-	Title       string
-	Fatal       bool
-	ExcType     string
-	ExitReason  string
-	EventCount  int64
-	FirstSeenMS int64
-	LastSeenMS  int64
-	Installs    map[string]struct{}
-	Releases    map[string]struct{}
-	Days        map[string]int64
-	Frames      []protocol.StackFrame
-	Breadcrumbs []protocol.Breadcrumb
+	AppID             string
+	Platform          string
+	Env               string
+	Fingerprint       string
+	Kind              string
+	Title             string
+	Fatal             bool
+	ExcType           string
+	ExitReason        string
+	EventCount        int64
+	FirstSeenMS       int64
+	LastSeenMS        int64
+	Installs          map[string]struct{}
+	Releases          map[string]struct{}
+	Devices           map[string]int64
+	OSVersions        map[string]int64
+	ReleaseCounts     map[string]int64
+	SampleUserHash    string
+	SampleInstallHash string
+	Days              map[string]int64
+	Frames            []protocol.StackFrame
+	Breadcrumbs       []protocol.Breadcrumb
 }
 
 type walEntry struct {
@@ -64,6 +71,7 @@ type persistedMeta struct {
 	AlertRules     map[string]AlertRule      `json:"alert_rules"`
 	AlertIncidents map[string]AlertIncident  `json:"alert_incidents"`
 	RemoteLogTasks map[string]RemoteLogTask  `json:"remote_log_tasks"`
+	IssueStates    map[string]IssueState     `json:"issue_states,omitempty"`
 }
 
 // EmbeddedStore is a zero-CGO, WAL-durable, in-process columnar rollup store implementing
@@ -71,6 +79,7 @@ type persistedMeta struct {
 type EmbeddedStore struct {
 	mu               sync.RWMutex
 	dataDir          string
+	objectStore      objectstore.ObjectStore
 	walFile          *os.File
 	walWriter        *bufio.Writer
 	seenEvents       map[string]struct{}
@@ -83,6 +92,7 @@ type EmbeddedStore struct {
 	alertIncidents   map[string]AlertIncident
 	remoteLogTasks   map[string]RemoteLogTask
 	remoteLogBytes   map[string][]byte
+	issueStates      map[string]IssueState
 	auditLogs        []AuditLogEntry
 	installTimelines map[string][]SessionTimelineEvent
 	userTimelines    map[string][]SessionTimelineEvent
@@ -93,6 +103,13 @@ type EmbeddedStore struct {
 	resources        map[rollupKey]*ResourceAggregate
 	networks         map[rollupKey]*NetworkAggregate
 	issues           map[string]*issueBucket // key: app|platform|env|fingerprint
+}
+
+// SetObjectStore configures an external S3/MinIO-compatible object store for symbols and remote logs.
+func (s *EmbeddedStore) SetObjectStore(store objectstore.ObjectStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.objectStore = store
 }
 
 const (
@@ -114,6 +131,7 @@ func OpenEmbedded(dataDir string) (*EmbeddedStore, error) {
 		alertIncidents:   make(map[string]AlertIncident),
 		remoteLogTasks:   make(map[string]RemoteLogTask),
 		remoteLogBytes:   make(map[string][]byte),
+		issueStates:      make(map[string]IssueState),
 		installTimelines: make(map[string][]SessionTimelineEvent),
 		userTimelines:    make(map[string][]SessionTimelineEvent),
 		startups:         make(map[rollupKey]*StartupAggregate),
@@ -202,6 +220,9 @@ func (s *EmbeddedStore) loadMetaLocked() error {
 	if pm.RemoteLogTasks != nil {
 		s.remoteLogTasks = pm.RemoteLogTasks
 	}
+	if pm.IssueStates != nil {
+		s.issueStates = pm.IssueStates
+	}
 	return nil
 }
 
@@ -216,6 +237,7 @@ func (s *EmbeddedStore) saveMetaLocked() error {
 		AlertRules:     s.alertRules,
 		AlertIncidents: s.alertIncidents,
 		RemoteLogTasks: s.remoteLogTasks,
+		IssueStates:    s.issueStates,
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -555,20 +577,23 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		ib := s.issues[iKey]
 		if ib == nil {
 			ib = &issueBucket{
-				AppID:       r.AppID,
-				Platform:    r.Platform,
-				Env:         r.Env,
-				Fingerprint: p.Fingerprint,
-				Kind:        e.Kind,
-				Title:       p.Title,
-				Fatal:       p.Fatal,
-				ExcType:     p.ExceptionType,
-				ExitReason:  p.ExitReason,
-				FirstSeenMS: e.OccurredAtMS,
-				LastSeenMS:  e.OccurredAtMS,
-				Installs:    map[string]struct{}{},
-				Releases:    map[string]struct{}{},
-				Days:        map[string]int64{},
+				AppID:         r.AppID,
+				Platform:      r.Platform,
+				Env:           r.Env,
+				Fingerprint:   p.Fingerprint,
+				Kind:          e.Kind,
+				Title:         p.Title,
+				Fatal:         p.Fatal,
+				ExcType:       p.ExceptionType,
+				ExitReason:    p.ExitReason,
+				FirstSeenMS:   e.OccurredAtMS,
+				LastSeenMS:    e.OccurredAtMS,
+				Installs:      map[string]struct{}{},
+				Releases:      map[string]struct{}{},
+				Devices:       map[string]int64{},
+				OSVersions:    map[string]int64{},
+				ReleaseCounts: map[string]int64{},
+				Days:          map[string]int64{},
 			}
 			s.issues[iKey] = ib
 		}
@@ -580,7 +605,21 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 			ib.LastSeenMS = e.OccurredAtMS
 		}
 		ib.Installs[r.InstallHash] = struct{}{}
-		ib.Releases[r.AppVersion+"("+r.BuildNumber+")"] = struct{}{}
+		relTag := r.AppVersion + "(" + r.BuildNumber + ")"
+		ib.Releases[relTag] = struct{}{}
+		ib.ReleaseCounts[relTag]++
+		if r.DeviceModel != "" {
+			ib.Devices[r.DeviceModel]++
+		}
+		if r.OSVersion != "" {
+			ib.OSVersions[r.OSVersion]++
+		}
+		if r.UserHash != "" {
+			ib.SampleUserHash = r.UserHash
+		}
+		if r.InstallHash != "" && ib.SampleInstallHash == "" {
+			ib.SampleInstallHash = r.InstallHash
+		}
 		ib.Days[dayUTC]++
 		if len(p.Frames) > 0 && len(ib.Frames) == 0 {
 			ib.Frames = append([]protocol.StackFrame(nil), p.Frames...)
@@ -858,7 +897,7 @@ func (s *EmbeddedStore) QueryIssues(_ context.Context, f QueryFilter, limit int)
 				continue
 			}
 		}
-		out = append(out, toIssueSummary(ib))
+		out = append(out, s.toIssueSummaryLocked(ib))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].EventCount != out[j].EventCount {
@@ -885,33 +924,60 @@ func (s *EmbeddedStore) GetIssue(_ context.Context, fingerprint string, f QueryF
 		if f.Platform != "" && ib.Platform != f.Platform {
 			continue
 		}
-		summary := toIssueSummary(ib)
+		summary := s.toIssueSummaryLocked(ib)
 		return &summary, true, nil
 	}
 	return nil, false, nil
 }
 
-func toIssueSummary(ib *issueBucket) IssueSummary {
+func cloneCounts(src map[string]int64) map[string]int64 {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]int64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func (s *EmbeddedStore) toIssueSummaryLocked(ib *issueBucket) IssueSummary {
 	rels := make([]string, 0, len(ib.Releases))
 	for rel := range ib.Releases {
 		rels = append(rels, rel)
 	}
 	sort.Strings(rels)
-	return IssueSummary{
-		Fingerprint:      ib.Fingerprint,
-		Kind:             ib.Kind,
-		Title:            ib.Title,
-		Fatal:            ib.Fatal,
-		ExceptionType:    ib.ExcType,
-		ExitReason:       ib.ExitReason,
-		EventCount:       ib.EventCount,
-		AffectedInstalls: int64(len(ib.Installs)),
-		FirstSeenMS:      ib.FirstSeenMS,
-		LastSeenMS:       ib.LastSeenMS,
-		Releases:         rels,
-		SampleFrames:     ib.Frames,
-		SampleCrumbs:     ib.Breadcrumbs,
+	sum := IssueSummary{
+		Fingerprint:       ib.Fingerprint,
+		Kind:              ib.Kind,
+		Title:             ib.Title,
+		Fatal:             ib.Fatal,
+		ExceptionType:     ib.ExcType,
+		ExitReason:        ib.ExitReason,
+		EventCount:        ib.EventCount,
+		AffectedInstalls:  int64(len(ib.Installs)),
+		FirstSeenMS:       ib.FirstSeenMS,
+		LastSeenMS:        ib.LastSeenMS,
+		Releases:          rels,
+		DeviceBreakdown:   cloneCounts(ib.Devices),
+		OSBreakdown:       cloneCounts(ib.OSVersions),
+		ReleaseBreakdown:  cloneCounts(ib.ReleaseCounts),
+		SampleUserHash:    ib.SampleUserHash,
+		SampleInstallHash: ib.SampleInstallHash,
+		Status:            "open",
+		SampleFrames:      ib.Frames,
+		SampleCrumbs:      ib.Breadcrumbs,
 	}
+	if st, ok := s.issueStates[ib.Fingerprint]; ok {
+		if st.Status != "" {
+			sum.Status = st.Status
+		}
+		sum.Assignee = st.Assignee
+		sum.Note = st.Note
+		sum.ResolvedInVersion = st.ResolvedInVersion
+		sum.StateUpdatedAtMS = st.UpdatedAtMS
+	}
+	return sum
 }
 
 func (s *EmbeddedStore) RegisterRelease(_ context.Context, r ReleaseRecord) error {
@@ -992,7 +1058,7 @@ func (s *EmbeddedStore) UpsertPolicy(_ context.Context, p SamplingPolicy) error 
 	return s.saveMetaLocked()
 }
 
-func (s *EmbeddedStore) SaveSymbol(_ context.Context, sym SymbolRecord, content []byte) (SymbolRecord, error) {
+func (s *EmbeddedStore) SaveSymbol(ctx context.Context, sym SymbolRecord, content []byte) (SymbolRecord, error) {
 	if sym.SymbolID == "" || sym.AppID == "" || sym.AppVersion == "" || sym.BuildNumber == "" {
 		return SymbolRecord{}, errors.New("symbol_id, app_id, app_version, and build_number are required")
 	}
@@ -1009,23 +1075,37 @@ func (s *EmbeddedStore) SaveSymbol(_ context.Context, sym SymbolRecord, content 
 		sym.UploadedAtMS = time.Now().UnixMilli()
 	}
 
+	s.mu.RLock()
+	objStore := s.objectStore
+	s.mu.RUnlock()
+
+	if objStore != nil {
+		objKey := "symbols/" + sym.SymbolID + ".sym"
+		if err := objStore.PutObject(ctx, objKey, content, "application/octet-stream"); err != nil {
+			return SymbolRecord{}, fmt.Errorf("object store put symbol: %w", err)
+		}
+		sym.StoragePath = "obj://" + objKey
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.dataDir != "" {
-		symDir := filepath.Join(s.dataDir, "symbols")
-		if err := os.MkdirAll(symDir, 0o755); err != nil {
-			return SymbolRecord{}, err
+	if objStore == nil {
+		if s.dataDir != "" {
+			symDir := filepath.Join(s.dataDir, "symbols")
+			if err := os.MkdirAll(symDir, 0o755); err != nil {
+				return SymbolRecord{}, err
+			}
+			target := filepath.Join(symDir, sym.SymbolID+".sym")
+			if err := os.WriteFile(target, content, 0o644); err != nil {
+				return SymbolRecord{}, err
+			}
+			sym.StoragePath = target
+		} else {
+			cp := make([]byte, len(content))
+			copy(cp, content)
+			s.symbolBytes[sym.SymbolID] = cp
 		}
-		target := filepath.Join(symDir, sym.SymbolID+".sym")
-		if err := os.WriteFile(target, content, 0o644); err != nil {
-			return SymbolRecord{}, err
-		}
-		sym.StoragePath = target
-	} else {
-		cp := make([]byte, len(content))
-		copy(cp, content)
-		s.symbolBytes[sym.SymbolID] = cp
 	}
 
 	s.symbols[sym.SymbolID] = sym
@@ -1086,13 +1166,21 @@ func (s *EmbeddedStore) ListSymbols(_ context.Context, appID, platform, appVersi
 	return out, nil
 }
 
-func (s *EmbeddedStore) GetSymbolContent(_ context.Context, symbolID string) (SymbolRecord, []byte, bool, error) {
+func (s *EmbeddedStore) GetSymbolContent(ctx context.Context, symbolID string) (SymbolRecord, []byte, bool, error) {
 	s.mu.RLock()
 	sym, ok := s.symbols[symbolID]
 	memData := s.symbolBytes[symbolID]
+	objStore := s.objectStore
 	s.mu.RUnlock()
 	if !ok {
 		return SymbolRecord{}, nil, false, nil
+	}
+	if strings.HasPrefix(sym.StoragePath, "obj://") {
+		if objStore == nil {
+			return sym, nil, false, errors.New("symbol stored in external object store but none is configured")
+		}
+		raw, found, err := objStore.GetObject(ctx, strings.TrimPrefix(sym.StoragePath, "obj://"))
+		return sym, raw, found, err
 	}
 	if sym.StoragePath != "" {
 		raw, err := os.ReadFile(sym.StoragePath)
@@ -1135,6 +1223,56 @@ func (s *EmbeddedStore) UpsertAlertRule(_ context.Context, rule AlertRule) (Aler
 		return AlertRule{}, err
 	}
 	return rule, nil
+}
+
+func (s *EmbeddedStore) DeleteAlertRule(_ context.Context, ruleID string) error {
+	if ruleID == "" {
+		return errors.New("rule_id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.alertRules[ruleID]; !ok {
+		return errors.New("alert rule not found")
+	}
+	delete(s.alertRules, ruleID)
+	return s.saveMetaLocked()
+}
+
+func (s *EmbeddedStore) UpsertIssueState(_ context.Context, st IssueState) (IssueState, error) {
+	if st.Fingerprint == "" {
+		return IssueState{}, errors.New("fingerprint is required")
+	}
+	switch st.Status {
+	case "open", "in_progress", "resolved", "ignored":
+	default:
+		return IssueState{}, fmt.Errorf("invalid issue status %q (expected open, in_progress, resolved, or ignored)", st.Status)
+	}
+	st.UpdatedAtMS = time.Now().UTC().UnixMilli()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.issueStates[st.Fingerprint] = st
+	if err := s.saveMetaLocked(); err != nil {
+		return IssueState{}, err
+	}
+	return st, nil
+}
+
+func (s *EmbeddedStore) GetIssueState(_ context.Context, fingerprint string) (IssueState, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	st, ok := s.issueStates[fingerprint]
+	return st, ok, nil
+}
+
+func (s *EmbeddedStore) ListIssueStates(_ context.Context) ([]IssueState, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]IssueState, 0, len(s.issueStates))
+	for _, st := range s.issueStates {
+		out = append(out, st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Fingerprint < out[j].Fingerprint })
+	return out, nil
 }
 
 func (s *EmbeddedStore) ListAlertRules(_ context.Context, appID, platform string) ([]AlertRule, error) {
@@ -1770,10 +1908,27 @@ func (s *EmbeddedStore) PollPendingLogTasks(_ context.Context, appID, platform, 
 	return out, nil
 }
 
-func (s *EmbeddedStore) CompleteRemoteLogTask(_ context.Context, taskID string, content []byte, sha256Hex string, nowMS int64) (RemoteLogTask, error) {
+func (s *EmbeddedStore) CompleteRemoteLogTask(ctx context.Context, taskID string, content []byte, sha256Hex string, nowMS int64) (RemoteLogTask, error) {
 	if nowMS <= 0 {
 		nowMS = time.Now().UTC().UnixMilli()
 	}
+	s.mu.RLock()
+	objStore := s.objectStore
+	taskSnapshot, ok := s.remoteLogTasks[taskID]
+	s.mu.RUnlock()
+	if !ok {
+		return RemoteLogTask{}, errors.New("remote log task not found")
+	}
+	if taskSnapshot.Status != "pending" {
+		return RemoteLogTask{}, fmt.Errorf("remote log task %s already %s", taskID, taskSnapshot.Status)
+	}
+	if nowMS <= taskSnapshot.ExpiresAtMS && int64(len(content)) <= taskSnapshot.MaxBytes && objStore != nil {
+		objKey := "remotelog/" + taskID + ".log"
+		if err := objStore.PutObject(ctx, objKey, content, "text/plain; charset=utf-8"); err != nil {
+			return RemoteLogTask{}, fmt.Errorf("object store put remotelog: %w", err)
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	task, ok := s.remoteLogTasks[taskID]
@@ -1793,7 +1948,9 @@ func (s *EmbeddedStore) CompleteRemoteLogTask(_ context.Context, taskID string, 
 		return RemoteLogTask{}, fmt.Errorf("log payload %d bytes exceeds task max_bytes %d", len(content), task.MaxBytes)
 	}
 
-	if s.dataDir != "" {
+	if objStore != nil {
+		task.StoragePath = "obj://remotelog/" + taskID + ".log"
+	} else if s.dataDir != "" {
 		dir := filepath.Join(s.dataDir, "remotelog")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return RemoteLogTask{}, fmt.Errorf("mkdir remotelog: %w", err)
@@ -1819,10 +1976,11 @@ func (s *EmbeddedStore) CompleteRemoteLogTask(_ context.Context, taskID string, 
 	return task, nil
 }
 
-func (s *EmbeddedStore) GetRemoteLogContent(_ context.Context, taskID string) (RemoteLogTask, []byte, bool, error) {
+func (s *EmbeddedStore) GetRemoteLogContent(ctx context.Context, taskID string) (RemoteLogTask, []byte, bool, error) {
 	s.mu.RLock()
 	task, ok := s.remoteLogTasks[taskID]
 	memData := s.remoteLogBytes[taskID]
+	objStore := s.objectStore
 	s.mu.RUnlock()
 	if !ok {
 		return RemoteLogTask{}, nil, false, nil
@@ -1830,6 +1988,14 @@ func (s *EmbeddedStore) GetRemoteLogContent(_ context.Context, taskID string) (R
 	if task.Status != "completed" {
 		task.StoragePath = ""
 		return task, nil, true, nil
+	}
+	if strings.HasPrefix(task.StoragePath, "obj://") {
+		if objStore == nil {
+			return task, nil, false, errors.New("remote log stored in external object store but none is configured")
+		}
+		raw, found, err := objStore.GetObject(ctx, strings.TrimPrefix(task.StoragePath, "obj://"))
+		task.StoragePath = ""
+		return task, raw, found, err
 	}
 	if task.StoragePath != "" {
 		raw, err := os.ReadFile(task.StoragePath)

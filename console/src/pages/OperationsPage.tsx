@@ -2,7 +2,9 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { api } from '../api.ts';
 import { formatTime, formatValue } from '../format.ts';
 import { t, type Lang } from '../i18n.ts';
-import type { AlertIncident, AlertRule, AuditLogEntry, GlobalFilters, ReleaseRecord, SourceHealthReport, SymbolRecord } from '../types.ts';
+import type { AlertIncident, AlertRule, AuditLogEntry, GlobalFilters, ReleaseRecord, SamplingPolicy, SourceHealthReport, SymbolRecord } from '../types.ts';
+
+const ALL_COLLECTORS = ['startup', 'fluency', 'resources', 'network', 'stability', 'cpu_profile', 'heap_snapshot'] as const;
 
 interface Props {
   filters: GlobalFilters;
@@ -14,6 +16,11 @@ interface Props {
 
 export function OperationsPage({ filters, releases, refreshTick, lang, onMutated }: Props) {
   const [sourceHealth, setSourceHealth] = useState<SourceHealthReport | null>(null);
+  const [policy, setPolicy] = useState<SamplingPolicy | null>(null);
+  const [policyPct, setPolicyPct] = useState('100');
+  const [policyMax24h, setPolicyMax24h] = useState('500');
+  const [policyTtlMin, setPolicyTtlMin] = useState('60');
+  const [policyCollectors, setPolicyCollectors] = useState<string[]>([...ALL_COLLECTORS]);
   const [symbols, setSymbols] = useState<SymbolRecord[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [incidents, setIncidents] = useState<AlertIncident[]>([]);
@@ -31,19 +38,29 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
   const [webhookUrl, setWebhookUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
 
+  const activeAppId = releases[0]?.app_id || 'dev.caliper.demo';
+
   useEffect(() => {
     let active = true;
     setError('');
     Promise.all([
       api.sourceHealth(filters),
+      api.policy(activeAppId, filters.platform, filters.env).catch(() => null),
       api.symbols(filters.platform),
       api.alertRules(filters.platform),
       api.alertIncidents(),
       api.auditLogs(apiKey || undefined).catch(() => ({ audit_logs: [] as AuditLogEntry[] })),
     ])
-      .then(([healthRes, symRes, ruleRes, incRes, auditRes]) => {
+      .then(([healthRes, polRes, symRes, ruleRes, incRes, auditRes]) => {
         if (!active) return;
         setSourceHealth(healthRes);
+        if (polRes) {
+          setPolicy(polRes);
+          setPolicyPct(String(Number((polRes.rate_ppm / 10000).toFixed(2))));
+          setPolicyMax24h(String(polRes.max_events_24h || 500));
+          setPolicyTtlMin(String(Math.max(1, Math.round((polRes.lease_ttl_ms || 3600000) / 60000))));
+          setPolicyCollectors(polRes.enabled_collectors?.length ? polRes.enabled_collectors : [...ALL_COLLECTORS]);
+        }
         setSymbols(symRes.symbols ?? []);
         setRules(ruleRes.rules ?? []);
         setIncidents(incRes.incidents ?? []);
@@ -51,7 +68,78 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
       })
       .catch(err => { if (active) setError(String(err)); });
     return () => { active = false; };
-  }, [filters.platform, filters.env, refreshTick]);
+  }, [activeAppId, filters.platform, filters.env, refreshTick]);
+
+  function toggleCollector(c: string) {
+    setPolicyCollectors(prev => (prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]));
+  }
+
+  async function savePolicy(e: FormEvent) {
+    e.preventDefault();
+    setError('');
+    setStatusMsg('');
+    try {
+      const pct = Math.max(0, Math.min(100, Number(policyPct) || 0));
+      const saved = await api.upsertPolicy({
+        policy_id: policy?.policy_id || `pol-${filters.platform}-${filters.env}`,
+        app_id: activeAppId,
+        platform: filters.platform,
+        env: filters.env,
+        rate_ppm: Math.round(pct * 10000),
+        lease_ttl_ms: Math.max(60_000, Math.round((Number(policyTtlMin) || 60) * 60_000)),
+        max_events_24h: Math.max(10, Math.round(Number(policyMax24h) || 500)),
+        enabled_collectors: policyCollectors,
+      }, apiKey || undefined);
+      setPolicy(saved);
+      setStatusMsg(
+        lang === 'zh'
+          ? `远程采样策略已生效 (${saved.policy_id} · ${(saved.rate_ppm / 10000).toFixed(1)}% · ${saved.enabled_collectors.length} 个探针)，并已写入审计日志`
+          : `Published remote policy ${saved.policy_id} (${(saved.rate_ppm / 10000).toFixed(1)}%, ${saved.enabled_collectors.length} collectors)`,
+      );
+      onMutated();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function toggleRuleEnabled(rule: AlertRule) {
+    setError('');
+    setStatusMsg('');
+    try {
+      await api.upsertAlertRule({ ...rule, enabled: !rule.enabled }, apiKey || undefined);
+      setStatusMsg(`${rule.rule_id}: ${!rule.enabled ? 'enabled' : 'disabled'}`);
+      onMutated();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function removeRule(ruleId: string) {
+    setError('');
+    setStatusMsg('');
+    try {
+      await api.deleteAlertRule(ruleId, apiKey || undefined);
+      setStatusMsg(`${lang === 'zh' ? '已删除告警规则' : 'Deleted alert rule'} ${ruleId}`);
+      onMutated();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function sendTestWebhook(ruleId: string) {
+    setError('');
+    setStatusMsg('');
+    try {
+      const res = await api.testAlertWebhook(ruleId, apiKey || undefined);
+      setStatusMsg(
+        `${lang === 'zh' ? '测试 Webhook 投递回执' : 'Test webhook receipt'} [${res.format}]: ${res.receipt.delivery_status}` +
+          (res.receipt.delivery_http_status ? ` HTTP ${res.receipt.delivery_http_status}` : '') +
+          (res.receipt.delivery_error ? ` (${res.receipt.delivery_error})` : ''),
+      );
+    } catch (err) {
+      setError(String(err));
+    }
+  }
 
   async function saveRule(e: FormEvent) {
     e.preventDefault();
@@ -151,6 +239,67 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
           </div>
         </div>
       )}
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h2 className="card-title">{lang === 'zh' ? '动态采样与探针开关远程配置 (Dynamic Policy Control)' : 'Dynamic Sampling & Collector Policy Control'}</h2>
+            <p className="card-sub">
+              {lang === 'zh'
+                ? '对标火山 APM Plus 远程降级与动态采样：无需发版即可按平台/环境热更新采样率、日配额与各模块探针开关 (GET/PUT /v1/policy)'
+                : 'Live remote sampling rate, 24h device quota, and collector switches without shipping an app update (GET/PUT /v1/policy)'}
+            </p>
+          </div>
+          <span className="badge blue mono">
+            {policy?.policy_id || `default-${filters.platform}`} · {filters.platform}/{filters.env}
+          </span>
+        </div>
+        <form onSubmit={savePolicy}>
+          <div className="form-grid">
+            <label className="field">
+              {lang === 'zh' ? `全量采样率 (%) · ${Math.round((Number(policyPct) || 0) * 10000).toLocaleString('en-US')} PPM` : `Sampling Rate (%) · PPM`}
+              <input type="number" min="0" max="100" step="0.5" value={policyPct} onChange={e => setPolicyPct(e.target.value)} required />
+            </label>
+            <label className="field">
+              {lang === 'zh' ? '单设备 24h 上报上限' : 'Max Events / Device / 24h'}
+              <input type="number" min="10" max="50000" value={policyMax24h} onChange={e => setPolicyMax24h(e.target.value)} required />
+            </label>
+            <label className="field">
+              {lang === 'zh' ? '策略租约 TTL (分钟)' : 'Lease TTL (minutes)'}
+              <input type="number" min="1" max="1440" value={policyTtlMin} onChange={e => setPolicyTtlMin(e.target.value)} required />
+            </label>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
+            <span className="kpi-label">{lang === 'zh' ? '启用探针模块：' : 'Collectors:'}</span>
+            {ALL_COLLECTORS.map(col => {
+              const checked = policyCollectors.includes(col);
+              return (
+                <label
+                  key={col}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    padding: '4px 10px',
+                    borderRadius: 6,
+                    border: `1px solid ${checked ? '#165dff' : 'var(--border)'}`,
+                    background: checked ? '#e8f3ff' : '#fff',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                  }}
+                >
+                  <input type="checkbox" checked={checked} onChange={() => toggleCollector(col)} />
+                  <span className="mono">{col}</span>
+                </label>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button className="btn primary" type="submit">{lang === 'zh' ? '下发并生效远程策略' : 'Publish Live Policy'}</button>
+            <span className="kpi-meta">{lang === 'zh' ? '策略变更将写入不可篡改审计日志，客户端下次轮询 GET /v1/policy 即刻生效' : 'Audited immediately; mobile SDKs adopt on next GET /v1/policy lease refresh'}</span>
+          </div>
+        </form>
+      </div>
 
       <div className="grid-2">
         <div className="card">
@@ -253,13 +402,17 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
 
         <div className="table-wrap">
           <table>
-            <thead><tr><th>{lang === 'zh' ? '规则' : 'Rule'}</th><th>{lang === 'zh' ? '触发条件' : 'Condition'}</th><th>{lang === 'zh' ? '通道' : 'Channel'}</th><th>{lang === 'zh' ? '最新告警状态与投递回执' : 'Latest Incident & Delivery'}</th></tr></thead>
+            <thead><tr><th>{lang === 'zh' ? '规则' : 'Rule'}</th><th>{lang === 'zh' ? '触发条件' : 'Condition'}</th><th>{lang === 'zh' ? '通道' : 'Channel'}</th><th>{lang === 'zh' ? '最新告警状态与投递回执' : 'Latest Incident & Delivery'}</th><th>{lang === 'zh' ? '操作' : 'Actions'}</th></tr></thead>
             <tbody>
               {rules.map(r => {
                 const inc = incidents.find(i => i.rule_id === r.rule_id);
                 return (
                   <tr key={r.rule_id}>
-                    <td><strong>{r.name}</strong><div className="mono kpi-meta">{r.rule_id}</div></td>
+                    <td>
+                      <strong>{r.name}</strong>{' '}
+                      <span className={`badge ${r.enabled ? 'green' : 'slate'}`}>{r.enabled ? (lang === 'zh' ? '启用' : 'ON') : (lang === 'zh' ? '暂停' : 'OFF')}</span>
+                      <div className="mono kpi-meta">{r.rule_id}</div>
+                    </td>
                     <td className="mono">{r.metric_id} {r.operator} {r.threshold} (n≥{r.min_samples})</td>
                     <td><span className="badge slate">{r.webhook_format}</span></td>
                     <td>
@@ -270,10 +423,25 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
                         </>
                       ) : <span className="kpi-meta">{lang === 'zh' ? '未触发' : 'Idle'}</span>}
                     </td>
+                    <td>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        <button className="btn" onClick={() => toggleRuleEnabled(r)}>
+                          {r.enabled ? (lang === 'zh' ? '暂停' : 'Pause') : (lang === 'zh' ? '启用' : 'Enable')}
+                        </button>
+                        {r.webhook_url && (
+                          <button className="btn" onClick={() => sendTestWebhook(r.rule_id)}>
+                            {lang === 'zh' ? '测通' : 'Test'}
+                          </button>
+                        )}
+                        <button className="btn ghost" onClick={() => removeRule(r.rule_id)}>
+                          {lang === 'zh' ? '删除' : 'Delete'}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
-              {rules.length === 0 && <tr><td colSpan={4} className="empty">{lang === 'zh' ? '暂未配置告警规则。' : 'No alert rules configured.'}</td></tr>}
+              {rules.length === 0 && <tr><td colSpan={5} className="empty">{lang === 'zh' ? '暂未配置告警规则。' : 'No alert rules configured.'}</td></tr>}
             </tbody>
           </table>
         </div>

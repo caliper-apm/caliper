@@ -11,6 +11,7 @@ import type {
   GlobalFilters,
   OverviewReport,
   RegressionScanReport,
+  ReleaseGateReport,
   ReleaseRecord,
 } from '../types.ts';
 
@@ -19,11 +20,13 @@ interface Props {
   releases: ReleaseRecord[];
   refreshTick: number;
   lang: Lang;
+  onOpenIssue?: (fingerprint: string) => void;
+  onDrillScene?: (scene: string) => void;
 }
 
 type TrendMetricTab = 'startup' | 'fluency' | 'network' | 'resources' | 'stability';
 
-export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
+export function OverviewPage({ filters, releases, refreshTick, lang, onOpenIssue, onDrillScene }: Props) {
   const [overview, setOverview] = useState<OverviewReport | null>(null);
   const [trends, setTrends] = useState<DailyTrendPoint[]>([]);
   const [dimMode, setDimMode] = useState<'version' | 'device' | 'os'>('version');
@@ -31,6 +34,8 @@ export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
   const [adapterBreakdown, setAdapterBreakdown] = useState<DimensionSlice[]>([]);
   const [compare, setCompare] = useState<CompareReport | null>(null);
   const [scan, setScan] = useState<RegressionScanReport | null>(null);
+  const [gate, setGate] = useState<ReleaseGateReport | null>(null);
+  const [copiedGate, setCopiedGate] = useState(false);
   const [trendTab, setTrendTab] = useState<TrendMetricTab>('startup');
   const [error, setError] = useState('');
 
@@ -71,19 +76,30 @@ export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
     Promise.all([
       api.compare(filters, baseline, candidate),
       api.scanRegressions(filters, baseline, candidate),
+      api.releaseGate(filters, baseline, candidate),
     ])
-      .then(([cmpData, scanData]) => {
+      .then(([cmpData, scanData, gateData]) => {
         if (!active) return;
         setCompare(cmpData);
         setScan(scanData);
+        setGate(gateData);
       })
       .catch(() => {
         if (!active) return;
         setCompare(null);
         setScan(null);
+        setGate(null);
       });
     return () => { active = false; };
   }, [filters.platform, filters.env, filters.scene, filters.startDayUtc, filters.endDayUtc, baseline, candidate, refreshTick]);
+
+  function copyGateMarkdown() {
+    if (!gate?.markdown_summary) return;
+    navigator.clipboard?.writeText(gate.markdown_summary).then(() => {
+      setCopiedGate(true);
+      setTimeout(() => setCopiedGate(false), 1800);
+    }).catch(() => {});
+  }
 
   const startupP90 = formatQuantile(overview?.startup.total_p90_ms, 'ms');
   const netP90 = formatQuantile(overview?.network.duration_p90_ms, 'ms');
@@ -412,12 +428,36 @@ export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
 
         {compare ? (
           <>
-            <div className={`banner ${compare.verdict === 'regressed' ? 'red' : compare.verdict === 'improved' ? 'green' : 'amber'}`} style={{ marginBottom: 12 }}>
-              <strong>
-                {lang === 'zh' ? '回归结论' : 'Verdict'}: {compare.verdict.toUpperCase()} — {filters.platform.toUpperCase()} v{compare.baseline_version} → v{compare.candidate_version}
-              </strong>
-              <span>{compare.regressed_count} {lang === 'zh' ? '项劣化' : 'regressed'} · {compare.gated_count} {lang === 'zh' ? '项受门禁保护' : 'gated'}</span>
-            </div>
+            {gate && (
+              <div
+                className={`banner ${gate.verdict === 'block' ? 'red' : gate.verdict === 'pass' ? 'green' : 'amber'}`}
+                style={{ marginBottom: 12, flexWrap: 'wrap', gap: 10 }}
+              >
+                <div>
+                  <strong>
+                    {lang === 'zh' ? 'CI/CD 灰度质量门禁 (Release Gate)' : 'CI/CD Release Quality Gate'}:{' '}
+                    {gate.verdict.toUpperCase()} (exit={gate.exit_code}) · {lang === 'zh' ? '健康分' : 'Score'} {gate.health_score}/100
+                  </strong>
+                  <div className="mono kpi-meta" style={{ marginTop: 3 }}>
+                    caliper-gate --platform {filters.platform} --baseline {gate.baseline_version} --candidate {gate.candidate_version}
+                    {' · '}
+                    {gate.candidate_symbol_bound
+                      ? (lang === 'zh' ? '符号表已绑定' : 'symbols bound')
+                      : (lang === 'zh' ? '缺少符号表' : 'symbols missing')}
+                  </div>
+                </div>
+                <div className="filter-group">
+                  <span className="badge slate">
+                    {compare.regressed_count} {lang === 'zh' ? '项劣化' : 'regressed'} · {compare.gated_count} {lang === 'zh' ? '项门禁保护' : 'gated'}
+                  </span>
+                  <button className="btn" onClick={copyGateMarkdown}>
+                    {copiedGate
+                      ? (lang === 'zh' ? '已复制 Markdown ✓' : 'Copied ✓')
+                      : (lang === 'zh' ? '复制 PR 门禁报告' : 'Copy PR Report')}
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="table-wrap">
               <table>
                 <thead>
@@ -492,8 +532,16 @@ export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
               </thead>
               <tbody>
                 {scan.findings.slice(0, 10).map((f, idx) => (
-                  <tr key={`${f.scope}-${f.comparison.metric_id}-${idx}`}>
-                    <td className="mono"><strong>{f.scope}</strong></td>
+                  <tr
+                    key={`${f.scope}-${f.comparison.metric_id}-${idx}`}
+                    className={f.scene && onDrillScene ? 'clickable' : undefined}
+                    onClick={() => { if (f.scene && onDrillScene) onDrillScene(f.scene); }}
+                    title={f.scene ? (lang === 'zh' ? '点击下钻该业务场景的流畅度详情' : 'Click to drill into this scene') : undefined}
+                  >
+                    <td className="mono">
+                      <strong>{f.scope}</strong>
+                      {f.scene && onDrillScene && <span className="kpi-meta" style={{ marginLeft: 6 }}>↗</span>}
+                    </td>
                     <td>{metricLabel(f.comparison.metric_id)}</td>
                     <td className="mono">{formatDelta(f.comparison.absolute_delta, f.comparison.unit, f.comparison.relative_pct)}</td>
                     <td className="mono">{formatPValue(f.comparison.p_value)}</td>
@@ -503,6 +551,52 @@ export function OverviewPage({ filters, releases, refreshTick, lang }: Props) {
                         {f.comparison.status}
                       </span>
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {(overview?.top_issues?.length ?? 0) > 0 && (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h2 className="card-title">{lang === 'zh' ? 'Top 稳定性异常快捷下钻' : 'Top Stability Issues (Quick Drill-Down)'}</h2>
+              <p className="card-sub">{lang === 'zh' ? '点击任意异常直达符号化堆栈、机型/系统分布与流转处置抽屉' : 'Click any issue to inspect symbolicated stack, device/OS impact, and triage workflow'}</p>
+            </div>
+            <span className="badge red">{overview?.top_issues.length ?? 0}</span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>{lang === 'zh' ? '类型' : 'Kind'}</th>
+                  <th>{lang === 'zh' ? '状态' : 'Status'}</th>
+                  <th>{lang === 'zh' ? '异常标题' : 'Issue'}</th>
+                  <th>{lang === 'zh' ? '事件数' : 'Events'}</th>
+                  <th>{lang === 'zh' ? '影响设备' : 'Devices'}</th>
+                  <th>{lang === 'zh' ? '负责人' : 'Assignee'}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(overview?.top_issues ?? []).slice(0, 6).map(iss => (
+                  <tr
+                    key={iss.fingerprint}
+                    className={onOpenIssue ? 'clickable' : undefined}
+                    onClick={() => onOpenIssue?.(iss.fingerprint)}
+                  >
+                    <td><span className={`badge ${iss.kind === 'crash' ? 'red' : iss.kind === 'anr' ? 'amber' : 'purple'}`}>{iss.kind}</span></td>
+                    <td>
+                      <span className={`badge ${iss.status === 'resolved' ? 'green' : iss.status === 'in_progress' ? 'blue' : iss.status === 'ignored' ? 'slate' : 'amber'}`}>
+                        {iss.status || 'open'}
+                      </span>
+                    </td>
+                    <td><strong>{iss.title}</strong></td>
+                    <td className="mono"><strong>{iss.event_count.toLocaleString('en-US')}</strong></td>
+                    <td className="mono">{iss.affected_installs.toLocaleString('en-US')}</td>
+                    <td className="mono">{iss.assignee || '—'}</td>
                   </tr>
                 ))}
               </tbody>

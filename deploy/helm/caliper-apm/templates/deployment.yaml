@@ -29,6 +29,12 @@ spec:
             - "--clickhouse-db={{ .Values.storage.clickhouseDatabase }}"
             - "--console-dist=/app/console-dist"
             - "--alert-interval={{ .Values.storage.alertInterval }}"
+            - "--object-store={{ .Values.objectStore.driver }}"
+            {{- if eq .Values.objectStore.driver "s3" }}
+            - "--s3-endpoint={{ .Values.objectStore.s3Endpoint }}"
+            - "--s3-bucket={{ .Values.objectStore.s3Bucket }}"
+            - "--s3-region={{ .Values.objectStore.s3Region }}"
+            {{- end }}
           ports:
             - name: http
               containerPort: 8080

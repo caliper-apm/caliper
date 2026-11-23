@@ -187,3 +187,35 @@ func TestClickHouseMigrateIngestAndQueries(t *testing.T) {
 		t.Fatalf("unexpected timeline: %+v", tl)
 	}
 }
+
+func TestClickHouseDeviceOSFiltersAndDimensions(t *testing.T) {
+	where := buildWhereClause(storage.QueryFilter{
+		Platform:    "android",
+		DeviceModel: "Redmi Note 13",
+		OSVersion:   "Android 12",
+	}, false, false)
+	if !strings.Contains(where, "device_model = 'Redmi Note 13'") || !strings.Contains(where, "os_version = 'Android 12'") {
+		t.Fatalf("expected device_model and os_version in WHERE, got: %s", where)
+	}
+
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotQuery = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"val":"Galaxy A54"},{"val":"Pixel 8"},{"val":"Redmi Note 13"}]}`))
+	}))
+	defer srv.Close()
+
+	store, err := New(Config{Endpoint: srv.URL, Database: "caliper"})
+	if err != nil {
+		t.Fatalf("new clickhouse store: %v", err)
+	}
+	vals := store.ListDimensionValues(context.Background(), storage.QueryFilter{Platform: "android"}, "device")
+	if len(vals) != 3 || vals[0] != "Galaxy A54" || vals[2] != "Redmi Note 13" {
+		t.Fatalf("unexpected dimension values: %+v", vals)
+	}
+	if !strings.Contains(gotQuery, "SELECT DISTINCT device_model AS val") {
+		t.Fatalf("unexpected dimension query: %s", gotQuery)
+	}
+}

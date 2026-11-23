@@ -20,6 +20,8 @@ interface Props {
   releases: ReleaseRecord[];
   refreshTick: number;
   lang: Lang;
+  initialTarget?: { targetType: 'user_hash' | 'install_hash'; hash: string } | null;
+  onClearInitialTarget?: () => void;
   onMutated: () => void;
 }
 
@@ -57,7 +59,7 @@ function barColor(runtime: 'native' | 'hermes', selfPct: number, depth: number):
   return depth % 2 === 0 ? '#165dff' : '#0fc6c2';
 }
 
-export function DiagnosticsPage({ filters, releases, refreshTick, lang, onMutated }: Props) {
+export function DiagnosticsPage({ filters, releases, refreshTick, lang, initialTarget, onClearInitialTarget, onMutated }: Props) {
   const [profiles, setProfiles] = useState<CPUProfileRecord[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState('');
   const [flamegraph, setFlamegraph] = useState<FlamegraphReport | null>(null);
@@ -71,6 +73,7 @@ export function DiagnosticsPage({ filters, releases, refreshTick, lang, onMutate
   const [lookupHash, setLookupHash] = useState('0000111122223333');
   const [lookupReason, setLookupReason] = useState('');
   const [lookupResult, setLookupResult] = useState<SessionLookupResponse | null>(null);
+  const [timelineKindFilter, setTimelineKindFilter] = useState<string>('all');
 
   // Remote log retrieval tasks
   const [tasks, setTasks] = useState<RemoteLogTask[]>([]);
@@ -79,6 +82,32 @@ export function DiagnosticsPage({ filters, releases, refreshTick, lang, onMutate
 
   const [error, setError] = useState('');
   const [statusMsg, setStatusMsg] = useState('');
+
+  useEffect(() => {
+    if (!initialTarget) return;
+    setLookupType(initialTarget.targetType);
+    setLookupHash(initialTarget.hash);
+    if (!lookupReason) {
+      setLookupReason('INC-TRIAGE 异常样本单点追查');
+    }
+    setStatusMsg(
+      lang === 'zh'
+        ? `已从异常详情带入目标 ${initialTarget.targetType}=${initialTarget.hash}，确认工单原因后点击「执行强审计单点追查」`
+        : `Pre-filled ${initialTarget.targetType}=${initialTarget.hash} from issue drawer — confirm audit reason and run lookup`,
+    );
+    onClearInitialTarget?.();
+  }, [initialTarget]);
+
+  const filteredTimelineEvents = useMemo(() => {
+    const evs = lookupResult?.events ?? [];
+    if (timelineKindFilter === 'all') return evs;
+    return evs.filter(ev => {
+      if (timelineKindFilter === 'stability') return ev.kind === 'crash' || ev.kind === 'anr' || ev.kind === 'abnormal_exit';
+      if (timelineKindFilter === 'network') return ev.kind.startsWith('network_');
+      if (timelineKindFilter === 'resource') return ev.kind === 'resource_window' || ev.kind === 'js_longtask';
+      return ev.kind === timelineKindFilter;
+    });
+  }, [lookupResult, timelineKindFilter]);
 
   const uniqueVersions = useMemo(() => Array.from(new Set(releases.map(r => r.app_version))).sort(), [releases]);
 
@@ -346,6 +375,28 @@ export function DiagnosticsPage({ filters, releases, refreshTick, lang, onMutate
             <span className="badge amber">RBAC + Audit</span>
           </div>
           <form onSubmit={runSessionLookup} style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8, alignItems: 'center' }}>
+              <span className="kpi-meta">{lang === 'zh' ? '内置演示哈希：' : 'Demo hashes:'}</span>
+              {[
+                { hash: '0000111122223333', label: lang === 'zh' ? '中端机 VIP (0000…3333)' : 'Mid-tier VIP' },
+                { hash: '1111222233334444', label: lang === 'zh' ? '旗舰机健康 (1111…4444)' : 'Flagship OK' },
+                { hash: '2222333344445555', label: lang === 'zh' ? '低端机高崩 (2222…5555)' : 'Budget Crash' },
+              ].map(preset => (
+                <button
+                  key={preset.hash}
+                  type="button"
+                  className="btn ghost"
+                  style={{ padding: '2px 8px', fontSize: 11 }}
+                  onClick={() => {
+                    setLookupType('user_hash');
+                    setLookupHash(preset.hash);
+                    if (!lookupReason) setLookupReason('INC-1042 单点用户体验排查');
+                  }}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
             <div className="form-grid">
               <label className="field">{lang === 'zh' ? '标识类型' : 'Target Type'}
                 <select value={lookupType} onChange={e => setLookupType(e.target.value as 'user_hash' | 'install_hash')}>
@@ -360,26 +411,63 @@ export function DiagnosticsPage({ filters, releases, refreshTick, lang, onMutate
                 <input value={lookupReason} onChange={e => setLookupReason(e.target.value)} placeholder="INC-1042 VIP 卡顿排查" required />
               </label>
             </div>
-            <div style={{ marginTop: 10 }}>
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button className="btn primary" type="submit">{lang === 'zh' ? '执行强审计单点追查' : 'Run Audited Lookup'}</button>
+              {lookupResult && (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => setTaskReason(lookupReason || `INC-LOG-${lookupHash.slice(0, 6)}`)}
+                >
+                  {lang === 'zh' ? '填入右侧远程日志捞取 →' : 'Prefill Remote Log Pull →'}
+                </button>
+              )}
             </div>
           </form>
           {lookupResult && (
-            <div className="table-wrap" style={{ maxHeight: 240, overflowY: 'auto' }}>
-              <table>
-                <thead><tr><th>{lang === 'zh' ? '时间' : 'Time'}</th><th>{lang === 'zh' ? '类型' : 'Kind'}</th><th>{lang === 'zh' ? '场景' : 'Scene'}</th><th>{lang === 'zh' ? '摘要' : 'Summary'}</th></tr></thead>
-                <tbody>
-                  {lookupResult.events.slice(0, 30).map(ev => (
-                    <tr key={ev.event_id}>
-                      <td className="mono">{formatTime(ev.occurred_at_ms).slice(5, 19)}</td>
-                      <td><span className="badge blue">{ev.kind}</span></td>
-                      <td className="mono">{ev.scene || '—'}</td>
-                      <td className="mono">{ev.summary}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <>
+              <div className="sub-tabs" style={{ marginBottom: 10 }}>
+                {[
+                  { id: 'all', label: lang === 'zh' ? `全部 (${lookupResult.events.length})` : `All (${lookupResult.events.length})` },
+                  { id: 'startup', label: lang === 'zh' ? '启动' : 'Startup' },
+                  { id: 'fluency_window', label: lang === 'zh' ? '流畅度' : 'Fluency' },
+                  { id: 'network', label: lang === 'zh' ? '网络' : 'Network' },
+                  { id: 'stability', label: lang === 'zh' ? '崩溃/ANR' : 'Stability' },
+                  { id: 'resource', label: lang === 'zh' ? '资源' : 'Resource' },
+                ].map(f => (
+                  <button key={f.id} className={timelineKindFilter === f.id ? 'active' : ''} onClick={() => setTimelineKindFilter(f.id)}>
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              <div className="timeline" style={{ maxHeight: 300, overflowY: 'auto', paddingRight: 4 }}>
+                {filteredTimelineEvents.slice(0, 40).map(ev => {
+                  const badgeCls = ev.kind === 'crash' || ev.kind === 'anr' || ev.kind === 'abnormal_exit'
+                    ? 'red'
+                    : ev.kind === 'startup'
+                      ? 'purple'
+                      : ev.kind === 'fluency_window'
+                        ? 'amber'
+                        : ev.kind.startsWith('network_')
+                          ? 'green'
+                          : 'blue';
+                  return (
+                    <div key={ev.event_id} className="timeline-item">
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <span className={`badge ${badgeCls}`}>{ev.kind}</span>
+                        <span className="badge slate">v{ev.app_version}</span>
+                        {ev.scene && <span className="mono kpi-meta">{ev.scene}</span>}
+                        <span className="mono kpi-meta">{formatTime(ev.occurred_at_ms).slice(5, 19)}</span>
+                      </div>
+                      <div className="mono" style={{ marginTop: 3, fontSize: 12 }}>{ev.summary}</div>
+                    </div>
+                  );
+                })}
+                {filteredTimelineEvents.length === 0 && (
+                  <div className="empty">{lang === 'zh' ? '该事件类型下无时间线记录。' : 'No events for this filter.'}</div>
+                )}
+              </div>
+            </>
           )}
         </div>
 

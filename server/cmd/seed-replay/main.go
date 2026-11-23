@@ -30,6 +30,31 @@ type releaseProfile struct {
 	crashRate     float64
 }
 
+type deviceTier struct {
+	model        string
+	osVersion    string
+	startupScale float64
+	jankScale    float64
+	memScale     float64
+	crashScale   float64
+	demoUser     string
+}
+
+func devicePoolFor(platform string) []deviceTier {
+	if platform == "ios" {
+		return []deviceTier{
+			{model: "iPhone 16 Pro", osVersion: "iOS 18.1", startupScale: 0.70, jankScale: 0.60, memScale: 0.85, crashScale: 0.55, demoUser: "1111222233334444"},
+			{model: "iPhone 15 Pro", osVersion: "iOS 18.0", startupScale: 0.98, jankScale: 0.95, memScale: 0.98, crashScale: 0.95, demoUser: "0000111122223333"},
+			{model: "iPhone 13", osVersion: "iOS 17.5", startupScale: 1.55, jankScale: 1.55, memScale: 1.22, crashScale: 1.75, demoUser: "2222333344445555"},
+		}
+	}
+	return []deviceTier{
+		{model: "Pixel 8", osVersion: "Android 14", startupScale: 0.72, jankScale: 0.65, memScale: 0.85, crashScale: 0.60, demoUser: "1111222233334444"},
+		{model: "Galaxy A54", osVersion: "Android 13", startupScale: 1.05, jankScale: 1.05, memScale: 1.00, crashScale: 1.00, demoUser: "0000111122223333"},
+		{model: "Redmi Note 13", osVersion: "Android 12", startupScale: 1.65, jankScale: 1.65, memScale: 1.25, crashScale: 1.80, demoUser: "2222333344445555"},
+	}
+}
+
 func main() {
 	target := flag.String("target", "http://127.0.0.1:8080", "Caliper server base URL")
 	totalEvents := flag.Int("events", 100000, "Total telemetry events to replay via POST /v1/ingest")
@@ -69,9 +94,11 @@ func main() {
 	epochStart := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
 
 	for _, platform := range []string{"android", "ios"} {
+		pool := devicePoolFor(platform)
 		for _, prof := range profiles {
 			dw := releaseDays[prof.version]
 			var batchEvents []protocol.Event
+			activeTier := pool[batchesSent%len(pool)]
 			flush := func() {
 				if len(batchEvents) == 0 {
 					return
@@ -82,23 +109,10 @@ func main() {
 				}
 				installHash := fmt.Sprintf("%016x", rng.Uint64())
 				userHash := ""
-				if batchesSent%10 == 0 {
-					// Deterministic non-PII sample user_hash for testing Audited Session Lookup out of the box.
-					userHash = "0000111122223333"
+				if batchesSent%4 == 0 {
+					// Deterministic non-PII sample user_hash per hardware tier for Audited Session Lookup.
+					userHash = activeTier.demoUser
 				}
-				devicePool := [][2]string{
-					{"Pixel 8", "Android 14"},
-					{"Galaxy A54", "Android 13"},
-					{"Redmi Note 13", "Android 12"},
-				}
-				if platform == "ios" {
-					devicePool = [][2]string{
-						{"iPhone 16 Pro", "iOS 18.1"},
-						{"iPhone 15 Pro", "iOS 18.0"},
-						{"iPhone 13", "iOS 17.5"},
-					}
-				}
-				devChoice := devicePool[batchesSent%len(devicePool)]
 				env := protocol.BatchEnvelope{
 					SchemaVersion: 1,
 					SentAtMS:      baseTime.UnixMilli(),
@@ -112,11 +126,11 @@ func main() {
 						SymbolID:    fmt.Sprintf("sym-%s-%s-%s", platform, prof.version, prof.build),
 						Adapter:     adapter,
 						SDKName:     "caliper-" + platform,
-						SDKVersion:  "1.1.0",
+						SDKVersion:  "1.3.0",
 						InstallHash: installHash,
 						UserHash:    userHash,
-						DeviceModel: devChoice[0],
-						OSVersion:   devChoice[1],
+						DeviceModel: activeTier.model,
+						OSVersion:   activeTier.osVersion,
 					},
 					Events: batchEvents,
 				}
@@ -126,13 +140,14 @@ func main() {
 				sentEvents += len(batchEvents)
 				batchesSent++
 				batchEvents = batchEvents[:0]
+				activeTier = pool[batchesSent%len(pool)]
 			}
 
 			for i := 0; i < perGroup; i++ {
 				seq++
 				dayOffset := dw.startDay + ((i / 6) % dw.numDays)
 				ts := epochStart.AddDate(0, 0, dayOffset).Add(time.Duration(rng.Intn(24*60)) * time.Minute).UnixMilli()
-				ev := buildSyntheticEvent(rng, seq, platform, prof, ts)
+				ev := buildSyntheticEvent(rng, seq, platform, prof, activeTier, ts)
 				batchEvents = append(batchEvents, ev)
 				if len(batchEvents) >= protocol.MaxBatchEvents {
 					flush()
@@ -187,14 +202,14 @@ func main() {
 	}
 }
 
-func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProfile, ts int64) protocol.Event {
+func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProfile, tier deviceTier, ts int64) protocol.Event {
 	id := fmt.Sprintf("replay-%s-%s-%07d", platform, p.version, seq)
 	scenes := []string{"home_feed", "streaming_reader", "media_gallery"}
 	scene := scenes[seq%len(scenes)]
 
 	switch seq % 6 {
 	case 0: // startup
-		total := p.startupBaseMS * (0.75 + rng.Float64()*0.6)
+		total := p.startupBaseMS * tier.startupScale * (0.75 + rng.Float64()*0.55)
 		native := total * 0.30
 		firstFrame := total * 0.25
 		anchor := "application_on_create"
@@ -218,7 +233,10 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 			algo = "ios_display_link"
 		}
 		frames := int64(900 + rng.Intn(600))
-		jank := int64(float64(frames) * p.jankRate * (0.7 + rng.Float64()*0.6))
+		jank := int64(float64(frames) * p.jankRate * tier.jankScale * (0.7 + rng.Float64()*0.6))
+		if jank > frames {
+			jank = frames
+		}
 		if seq%50 == 0 {
 			frames, jank = 0, 0 // verify zero-frame windows remain isolated & never inflate smoothness
 		}
@@ -250,8 +268,11 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 		if platform == "ios" {
 			memKind = "ios_phys_footprint_kib"
 		}
-		cpu := p.cpuBasePct * (0.8 + rng.Float64()*0.5)
-		memKiB := p.memBaseMiB * 1024 * (0.85 + rng.Float64()*0.35)
+		cpu := p.cpuBasePct * tier.memScale * (0.8 + rng.Float64()*0.5)
+		if cpu > 95 {
+			cpu = 95
+		}
+		memKiB := p.memBaseMiB * tier.memScale * 1024 * (0.85 + rng.Float64()*0.35)
 		payload, _ := json.Marshal(protocol.ResourceWindowPayload{
 			WindowDurationMS: 30000,
 			CPUPct:           cpu,
@@ -342,7 +363,7 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 		return protocol.Event{EventID: id, Kind: protocol.KindNetworkStage, OccurredAtMS: ts, ContractVersion: 1, Scene: scene, PolicyID: "default_v1", Payload: payload}
 
 	default: // js_longtask or crash/ANR/abnormal_exit
-		if rng.Float64() < p.crashRate*3.0 {
+		if rng.Float64() < p.crashRate*3.0*tier.crashScale {
 			switch (seq / 6) % 3 {
 			case 0: // Crash with build-bound obfuscated frames on 1.1.0 for live symbolication!
 				frames := []protocol.StackFrame{

@@ -545,6 +545,32 @@ func (h *Handler) handleIssues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
 		return
 	}
+	if states, stErr := h.meta.ListIssueStates(r.Context()); stErr == nil && len(states) > 0 {
+		byFP := make(map[string]storage.IssueState, len(states))
+		for _, st := range states {
+			byFP[st.Fingerprint] = st
+		}
+		for i := range issues {
+			if issues[i].Status == "" {
+				issues[i].Status = "open"
+			}
+			if st, ok := byFP[issues[i].Fingerprint]; ok {
+				if st.Status != "" {
+					issues[i].Status = st.Status
+				}
+				issues[i].Assignee = st.Assignee
+				issues[i].Note = st.Note
+				issues[i].ResolvedInVersion = st.ResolvedInVersion
+				issues[i].StateUpdatedAtMS = st.UpdatedAtMS
+			}
+		}
+	} else {
+		for i := range issues {
+			if issues[i].Status == "" {
+				issues[i].Status = "open"
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"issues": issues})
 }
 
@@ -565,6 +591,18 @@ func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeError(w, http.StatusNotFound, "issue_not_found", "issue fingerprint not found")
 		return
+	}
+	if issue.Status == "" {
+		issue.Status = "open"
+	}
+	if st, found, stErr := h.meta.GetIssueState(r.Context(), fp); stErr == nil && found {
+		if st.Status != "" {
+			issue.Status = st.Status
+		}
+		issue.Assignee = st.Assignee
+		issue.Note = st.Note
+		issue.ResolvedInVersion = st.ResolvedInVersion
+		issue.StateUpdatedAtMS = st.UpdatedAtMS
 	}
 
 	// Auto-symbolicate sample frames when matching uploaded symbols exist.
@@ -587,22 +625,32 @@ func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	issue.SampleFrames = symRes.Frames
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"fingerprint":       issue.Fingerprint,
-		"kind":              issue.Kind,
-		"title":             issue.Title,
-		"fatal":             issue.Fatal,
-		"exception_type":    issue.ExceptionType,
-		"exit_reason":       issue.ExitReason,
-		"event_count":       issue.EventCount,
-		"affected_installs": issue.AffectedInstalls,
-		"first_seen_ms":     issue.FirstSeenMS,
-		"last_seen_ms":      issue.LastSeenMS,
-		"releases":          issue.Releases,
-		"sample_frames":     issue.SampleFrames,
-		"sample_breadcrumbs": issue.SampleCrumbs,
-		"symbol_status":     symRes.Status,
-		"resolved_frames":   symRes.ResolvedCount,
-		"matched_symbols":   symRes.MatchedSymbolID,
+		"fingerprint":         issue.Fingerprint,
+		"kind":                issue.Kind,
+		"title":               issue.Title,
+		"fatal":               issue.Fatal,
+		"exception_type":      issue.ExceptionType,
+		"exit_reason":         issue.ExitReason,
+		"event_count":         issue.EventCount,
+		"affected_installs":   issue.AffectedInstalls,
+		"first_seen_ms":       issue.FirstSeenMS,
+		"last_seen_ms":        issue.LastSeenMS,
+		"releases":            issue.Releases,
+		"device_breakdown":    issue.DeviceBreakdown,
+		"os_breakdown":        issue.OSBreakdown,
+		"release_breakdown":   issue.ReleaseBreakdown,
+		"sample_user_hash":    issue.SampleUserHash,
+		"sample_install_hash": issue.SampleInstallHash,
+		"status":              issue.Status,
+		"assignee":            issue.Assignee,
+		"note":                issue.Note,
+		"resolved_in_version": issue.ResolvedInVersion,
+		"state_updated_at_ms": issue.StateUpdatedAtMS,
+		"sample_frames":       issue.SampleFrames,
+		"sample_breadcrumbs":  issue.SampleCrumbs,
+		"symbol_status":       symRes.Status,
+		"resolved_frames":     symRes.ResolvedCount,
+		"matched_symbols":     symRes.MatchedSymbolID,
 	})
 }
 

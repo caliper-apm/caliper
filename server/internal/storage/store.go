@@ -132,21 +132,41 @@ type TransportOpAggregate struct {
 	TotalHist   contract.Histogram
 }
 
+// IssueState stores mutable enterprise triage workflow metadata per stability fingerprint.
+type IssueState struct {
+	Fingerprint       string `json:"fingerprint"`
+	Status            string `json:"status"` // open | in_progress | resolved | ignored
+	Assignee          string `json:"assignee,omitempty"`
+	Note              string `json:"note,omitempty"`
+	ResolvedInVersion string `json:"resolved_in_version,omitempty"`
+	UpdatedAtMS       int64  `json:"updated_at_ms"`
+}
+
 // IssueSummary aggregates crash, ANR, and abnormal_exit events by fingerprint.
 type IssueSummary struct {
-	Fingerprint      string                `json:"fingerprint"`
-	Kind             string                `json:"kind"`
-	Title            string                `json:"title"`
-	Fatal            bool                  `json:"fatal"`
-	ExceptionType    string                `json:"exception_type,omitempty"`
-	ExitReason       string                `json:"exit_reason,omitempty"`
-	EventCount       int64                 `json:"event_count"`
-	AffectedInstalls int64                 `json:"affected_installs"`
-	FirstSeenMS      int64                 `json:"first_seen_ms"`
-	LastSeenMS       int64                 `json:"last_seen_ms"`
-	Releases         []string              `json:"releases"`
-	SampleFrames     []protocol.StackFrame `json:"sample_frames,omitempty"`
-	SampleCrumbs     []protocol.Breadcrumb `json:"sample_breadcrumbs,omitempty"`
+	Fingerprint       string                `json:"fingerprint"`
+	Kind              string                `json:"kind"`
+	Title             string                `json:"title"`
+	Fatal             bool                  `json:"fatal"`
+	ExceptionType     string                `json:"exception_type,omitempty"`
+	ExitReason        string                `json:"exit_reason,omitempty"`
+	EventCount        int64                 `json:"event_count"`
+	AffectedInstalls  int64                 `json:"affected_installs"`
+	FirstSeenMS       int64                 `json:"first_seen_ms"`
+	LastSeenMS        int64                 `json:"last_seen_ms"`
+	Releases          []string              `json:"releases"`
+	DeviceBreakdown   map[string]int64      `json:"device_breakdown,omitempty"`
+	OSBreakdown       map[string]int64      `json:"os_breakdown,omitempty"`
+	ReleaseBreakdown  map[string]int64      `json:"release_breakdown,omitempty"`
+	SampleUserHash    string                `json:"sample_user_hash,omitempty"`
+	SampleInstallHash string                `json:"sample_install_hash,omitempty"`
+	Status            string                `json:"status,omitempty"`
+	Assignee          string                `json:"assignee,omitempty"`
+	Note              string                `json:"note,omitempty"`
+	ResolvedInVersion string                `json:"resolved_in_version,omitempty"`
+	StateUpdatedAtMS  int64                 `json:"state_updated_at_ms,omitempty"`
+	SampleFrames      []protocol.StackFrame `json:"sample_frames,omitempty"`
+	SampleCrumbs      []protocol.Breadcrumb `json:"sample_breadcrumbs,omitempty"`
 }
 
 // Stats exposes runtime store metrics for /healthz.
@@ -358,9 +378,13 @@ type MetaStore interface {
 	GetPolicy(ctx context.Context, appID, platform, env string) (SamplingPolicy, error)
 	UpsertPolicy(ctx context.Context, p SamplingPolicy) error
 	UpsertAlertRule(ctx context.Context, rule AlertRule) (AlertRule, error)
+	DeleteAlertRule(ctx context.Context, ruleID string) error
 	ListAlertRules(ctx context.Context, appID, platform string) ([]AlertRule, error)
 	SaveAlertIncident(ctx context.Context, inc AlertIncident) error
 	ListAlertIncidents(ctx context.Context, ruleID string) ([]AlertIncident, error)
+	UpsertIssueState(ctx context.Context, state IssueState) (IssueState, error)
+	GetIssueState(ctx context.Context, fingerprint string) (IssueState, bool, error)
+	ListIssueStates(ctx context.Context) ([]IssueState, error)
 	AppendAuditLog(ctx context.Context, entry AuditLogEntry) error
 	ListAuditLogs(ctx context.Context, limit int) ([]AuditLogEntry, error)
 	CreateRemoteLogTask(ctx context.Context, task RemoteLogTask) (RemoteLogTask, error)

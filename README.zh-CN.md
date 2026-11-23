@@ -2,7 +2,7 @@
 
 **Native 优先、React Native 一等兼容、统计零谎言（Evidence-First）的开源移动端 APM 平台。**
 
-[English](README.md) · [北极星宪章](NORTH_STAR.md) · [Zero-Lie 统计契约](spec/metrics-contract.md) · [v0.1 路线图](docs/roadmap-v0.1.md) · [开销评测报告](benchmarks/REPORT.md)
+[English](README.md) · [北极星宪章](NORTH_STAR.md) · [Zero-Lie 统计契约](spec/metrics-contract.md) · [更新日志](CHANGELOG.md) · [开销评测报告](benchmarks/REPORT.md)
 
 ---
 
@@ -74,6 +74,18 @@ docker compose up --build
 - **裁剪式堆内存 / OOM 深度诊断**：零 PII 类级别 Dominator 摘要（`heap_snapshot`），支持跨版本内存增量对比与自动泄漏嫌疑识别（`POST /v1/diagnostics/heap/compare`）。
 - **强审计远程日志捞取任务**：支持按 `user_hash` / `install_hash` 下发带 TTL 与字节上限的远程日志拉取任务，SDK 轮询 + Gzip 加密摘要回传，全链路 Fail-Closed 写入审计日志。
 - **全双工 OTLP 互通**：原生接收标准 OpenTelemetry Traces / Logs（`POST /v1/otlp/v1/traces`、`/v1/otlp/v1/logs`），并支持以标准 `resourceMetrics` 导出聚合指标（`GET /v1/otlp/export`）。
+
+## 企业级控制台 2.2、生产 SDK 与 CI 质量门禁（v1.1 – v1.3）
+
+详见 [`CHANGELOG.md`](CHANGELOG.md)：
+- **Console 2.2 企业级多维可视化**：中英双语、14 天版本放量趋势标注、**按版本 / 机型 / 系统版本 / Native vs RN** 多维切换拆解、19 桶分布直方图、5 域网络失败占比、跨页下钻与可视化单用户会话时间线。
+- **CI/CD 灰度质量门禁（`caliper-gate` CLI）**：基于 Z 检验 + KS 检验 + 符号覆盖率的零谎言发版红绿灯（`POST /v1/analytics/release-gate`），退出码 `0`（PASS）、`2`（BLOCK 显著劣化）、`3`（GATED 样本不足），自动输出 PR Markdown 报告：
+  ```bash
+  caliper-gate --server http://127.0.0.1:8080 --platform android --baseline 1.0.0 --candidate 1.1.0 --format markdown
+  ```
+- **稳定性异常流转与影响分布**：异常全生命周期处置（待处理 / 处理中 / 已修复 / 已忽略、负责人、修复版本、备注 + 审计留痕）、单异常的机型/系统/版本 ECharts 分布图，以及抽屉内一键跳转单点追查。
+- **远程动态采样策略与运维自检**：控制台热更新采样率（% / PPM）、单设备 24h 上限、租约 TTL 与各探针开关（`GET/PUT /v1/policy`），配套告警规则一键测通/启停/删除、数据源健康自检（`GET /v1/ops/source-health`）与 Prometheus `GET /metrics`。
+- **生产端 SDK 深度与集群高可用**：Android/iOS 离线落盘队列与主线程 Watchdog、Android `CaliperAndroidAgent`（`FrameMetrics` / `ApplicationExitInfo` / `PSS`）、iOS `CaliperMetricKitBridge`、RN 原生桥、纯 Go AWS SigV4 S3/MinIO 对象存储（`--object-store=s3`）、ClickHouse 机型/系统切片、PostgreSQL 元数据 DDL 与 Kubernetes Helm Chart（`deploy/helm/caliper-apm`）。
 
 ---
 

@@ -12,14 +12,18 @@ import type {
   HealthResponse,
   HeapCompareReport,
   HeapSnapshotRecord,
+  IssueState,
+  IssueStatus,
   IssueSummary,
   NetworkReport,
   OverviewReport,
   Platform,
   RegressionScanReport,
+  ReleaseGateReport,
   ReleaseRecord,
   RemoteLogTask,
   ResourceSceneReport,
+  SamplingPolicy,
   SessionLookupResponse,
   SourceHealthReport,
   StartupReport,
@@ -117,6 +121,22 @@ export const api = {
       }),
     }),
 
+  releaseGate: (f: GlobalFilters, baseline: string, candidate: string, requireSymbolBound = false) =>
+    requestJson<ReleaseGateReport>('/v1/analytics/release-gate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        platform: f.platform,
+        env: f.env,
+        baseline_version: baseline,
+        candidate_version: candidate,
+        scene: f.scene || undefined,
+        start_day_utc: f.startDayUtc,
+        end_day_utc: f.endDayUtc,
+        require_symbol_bound: requireSymbolBound,
+      }),
+    }),
+
   startup: (f: GlobalFilters) =>
     requestJson<StartupReport>(`/v1/analytics/startup${filterQuery(f)}`),
 
@@ -134,6 +154,33 @@ export const api = {
 
   issueDetail: (fingerprint: string, f: GlobalFilters) =>
     requestJson<IssueSummary>(`/v1/stability/issues/${encodeURIComponent(fingerprint)}${filterQuery(f)}`),
+
+  updateIssueState: (
+    fingerprint: string,
+    payload: { status: IssueStatus; assignee?: string; note?: string; resolved_in_version?: string; app_id?: string; platform?: Platform },
+    apiKey?: string,
+  ) =>
+    requestJson<IssueState>(`/v1/stability/issues/${encodeURIComponent(fingerprint)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { 'X-Caliper-Key': apiKey } : {}),
+      },
+      body: JSON.stringify(payload),
+    }),
+
+  policy: (appId: string, platform: Platform, env = 'prod') =>
+    requestJson<SamplingPolicy>(`/v1/policy${query({ app_id: appId, platform, env })}`),
+
+  upsertPolicy: (policy: SamplingPolicy, apiKey?: string) =>
+    requestJson<SamplingPolicy>('/v1/policy', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { 'X-Caliper-Key': apiKey } : {}),
+      },
+      body: JSON.stringify(policy),
+    }),
 
   lookupSession: (params: { installHash?: string; userHash?: string; reason: string; platform?: Platform }, apiKey?: string) =>
     requestJson<SessionLookupResponse>(
@@ -217,6 +264,21 @@ export const api = {
       },
       body: JSON.stringify(rule),
     }),
+
+  deleteAlertRule: (ruleId: string, apiKey?: string) =>
+    requestJson<{ status: string; rule_id: string }>(`/v1/alerts/rules/${encodeURIComponent(ruleId)}`, {
+      method: 'DELETE',
+      headers: apiKey ? { 'X-Caliper-Key': apiKey } : undefined,
+    }),
+
+  testAlertWebhook: (ruleId: string, apiKey?: string) =>
+    requestJson<{ rule_id: string; format: string; receipt: { delivery_status: string; delivery_http_status?: number; delivery_error?: string } }>(
+      `/v1/alerts/rules/${encodeURIComponent(ruleId)}/test`,
+      {
+        method: 'POST',
+        headers: apiKey ? { 'X-Caliper-Key': apiKey } : undefined,
+      },
+    ),
 
   evaluateAlerts: (apiKey?: string) =>
     requestJson<{ outcomes: Array<{ rule_id: string; state: string; gate_reason?: string; sample_size: number }> }>(
