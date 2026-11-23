@@ -248,6 +248,7 @@ public struct StabilityPayload: Codable, Sendable {
     public let exceptionType: String?
     public let threadName: String?
     public let exitReason: String?
+    public let processImportance: String?
     public let frames: [StackFrame]
     public let breadcrumbs: [Breadcrumb]?
 
@@ -256,15 +257,17 @@ public struct StabilityPayload: Codable, Sendable {
         case exceptionType = "exception_type"
         case threadName = "thread_name"
         case exitReason = "exit_reason"
+        case processImportance = "process_importance"
     }
 
-    public init(fingerprint: String, title: String, fatal: Bool, exceptionType: String? = nil, threadName: String? = nil, exitReason: String? = nil, frames: [StackFrame], breadcrumbs: [Breadcrumb]? = nil) {
+    public init(fingerprint: String, title: String, fatal: Bool, exceptionType: String? = nil, threadName: String? = nil, exitReason: String? = nil, processImportance: String? = nil, frames: [StackFrame], breadcrumbs: [Breadcrumb]? = nil) {
         self.fingerprint = fingerprint
         self.title = title
         self.fatal = fatal
         self.exceptionType = exceptionType
         self.threadName = threadName
         self.exitReason = exitReason
+        self.processImportance = processImportance
         self.frames = frames
         self.breadcrumbs = breadcrumbs
     }

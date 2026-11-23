@@ -50,6 +50,22 @@ final class AppBootstrap {
         }
         self.watchdog.start()
 
+        // Real-time C/Mach Exception + Unix Signal crash capture (zero 24h MetricKit delay!)
+        let crashDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("caliper-crashes")
+        let crashReporter = CaliperNativeCrashReporter(directoryURL: crashDir)
+        let priorCrashes = crashReporter.install(client: client, enableMachHandler: true, scene: "startup")
+
+        // Heuristic Foreground OOM (FOOM) state machine (excludes clean exit, crash, debugger, app/OS upgrade, reboot, background Jetsam)
+        let foom = CaliperFOOMDetector(directoryURL: crashDir)
+        _ = foom.startSession(
+            client: client,
+            appVersion: config.resource.appVersion,
+            buildNumber: config.resource.buildNumber,
+            osVersion: config.resource.osVersion ?? "",
+            previousCrashDetected: priorCrashes > 0
+        )
+
         #if canImport(MetricKit) && os(iOS)
         if #available(iOS 14.0, *) {
             self.metricKit = CaliperMetricKitBridge(client: client)

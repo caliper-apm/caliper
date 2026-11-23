@@ -2,5 +2,5 @@ apiVersion: v2
 name: caliper-apm
 description: Self-hosted Native-First Mobile APM (Go collector, Zero-Lie analytics, Native DWARF symbolicator, ClickHouse + PostgreSQL + S3 stateless HA)
 type: application
-version: 1.6.0
-appVersion: "1.6.0"
+version: 1.7.0
+appVersion: "1.7.0"

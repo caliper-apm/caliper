@@ -15,8 +15,13 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "CaliperCrashCore",
+            dependencies: [],
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "CaliperSDK",
-            dependencies: []
+            dependencies: ["CaliperCrashCore"]
         ),
         .testTarget(
             name: "CaliperSDKTests",

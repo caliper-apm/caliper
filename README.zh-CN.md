@@ -86,7 +86,7 @@ docker compose up --build
   ```
 - **稳定性异常流转与影响分布**：异常全生命周期处置（待处理 / 处理中 / 已修复 / 已忽略、负责人、修复版本、备注 + 审计留痕）、按机型/系统诚实计数筛选、单异常的机型/系统/版本 ECharts 分布图，以及抽屉内一键跳转单点追查。
 - **远程动态采样策略与运维自检**：控制台热更新采样率（% / PPM）、单设备 24h 上限、租约 TTL 与各探针开关（`GET/PUT /v1/policy`），配套告警规则一键测通/启停/删除、数据源健康自检（`GET /v1/ops/source-health`）与 Prometheus `GET /metrics`。
-- **生产端 SDK 深度与无状态多副本集群高可用（`v1.6`）**：Android/iOS 离线落盘队列与主线程 Watchdog、Android `CaliperAndroidAgent`（`FrameMetrics` / `ApplicationExitInfo` / `PSS`）、iOS `CaliperMetricKitBridge`、RN 原生桥、**运行时零 CGO PostgreSQL `MetaStore` 驱动（`--meta-driver=postgres`）**、纯 Go AWS SigV4 S3/MinIO 对象存储（`--object-store=s3`）、ClickHouse 机型/系统切片、原生 `.dSYM`/`.so` DWARF 符号化与 Kubernetes Helm Chart（`deploy/helm/caliper-apm`）。
+- **生产端 SDK 底层深度与无状态多副本集群高可用（`v1.6 – v1.7`）**：**iOS 实时 C/Mach 异常 + Unix Signal 崩溃捕获（仅 `8.4 KiB` C 内核）与 9 分支 FOOM 状态机**、**Android NDK C++ 信号崩溃 & `SIGQUIT` ANR 拦截库（`libcaliper_native.so`，arm64 stripped `45 KiB`）与主线程 `Looper` 消息队列调度耗时回溯**、离线落盘队列、主线程 Watchdog、`CaliperAndroidAgent`、`CaliperMetricKitBridge`、RN 原生桥、**运行时零 CGO PostgreSQL `MetaStore` 驱动（`--meta-driver=postgres`）**、纯 Go AWS SigV4 S3/MinIO 对象存储（`--object-store=s3`）、ClickHouse 机型/系统切片、原生 `.dSYM`/`.so` DWARF 符号化与 Kubernetes Helm Chart（`deploy/helm/caliper-apm`）。
 
 ---
 

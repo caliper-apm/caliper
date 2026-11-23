@@ -2,6 +2,17 @@
 
 All notable releases of **Caliper APM** are documented here.
 
+## v1.7.0 — Low-Level Mobile Native Crash, SIGQUIT ANR, Looper Tracer & iOS FOOM Engine
+- **iOS Real-Time C/Mach Exception + Unix Signal Crash Reporter (`CaliperCrashCore` + `CaliperNativeCrashReporter`)**:
+  - Zero-dependency pure-C Mach exception port listener (`EXC_BAD_ACCESS`, `EXC_BAD_INSTRUCTION`, `EXC_ARITHMETIC`, `EXC_CRASH`, arm64e PAC-safe register/FP unwinding) + 64 KiB `sigaltstack` async-signal-safe Unix signal handler (`SIGSEGV`, `SIGABRT`, `SIGBUS`, `SIGFPE`, `SIGILL`, `SIGTRAP`, `SIGSYS`), adding only **8.4 KiB** of `__TEXT` machine code.
+  - Lock-free dyld image cache computes ASLR-subtracted relative hex offsets (`0x...`) + Mach-O `LC_UUID` with zero heap allocations in the crash path, verified end-to-end against `v1.6.0` Mach-O DWARF symbolication (`crash_app.c:4` exact source line).
+- **iOS Heuristic Foreground OOM State Machine (`CaliperFOOMDetector`)**:
+  - Deterministic 9-branch exclusion classifier ruling out first launch, clean exit, detected crash, debugger (`P_TRACED`), app upgrade, OS upgrade, device reboot (`kern.boottime`), and background Jetsam before attributing `abnormal_exit` (`FOOM_HEURISTIC`) with last `phys_footprint` & active scene.
+- **Android NDK C++ Signal Crash & `SIGQUIT` ANR Library (`libcaliper_native.so` + `CaliperNativeBridge`)**:
+  - Cross-compiled and verified with Android NDK 27.1 (`arm64-v8a`, `45 KiB` stripped, zero `-Wall -Wextra` warnings): 64 KiB `sigaltstack` fatal signal handler using `_Unwind_Backtrace` + pre-cached `/proc/self/maps` ELF-relative offsets directly consumable by `native_elf` DWARF symbolication, plus non-blocking `SIGQUIT` ANR pipe interceptor that forwards cleanly to ART's Signal Catcher.
+- **Android Main-Thread `Looper` Message-Dispatch Latency & History Tracer (`LooperDispatchTracker` + `CaliperLooperMonitor`)**:
+  - Zero-regex, zero-reflection `Looper.setMessageLogging` monitor recording slow UI dispatches (`>= 700 ms`) and attaching in-flight + 20-message `MessageQueue` history breadcrumbs to Watchdog and `SIGQUIT` ANR reports.
+
 ## v1.6.0 — Stateless Multi-Replica PostgreSQL HA & Native Mach-O/ELF DWARF Symbolicator
 - **Runtime PostgreSQL `MetaStore` Driver (`--meta-driver=postgres`, zero-CGO `pgx/v5`)**: Implemented all 22 `storage.MetaStore` methods over PostgreSQL 15+ (`server/internal/storage/postgres/store.go`) with embedded idempotent startup migrations (`//go:embed schema.sql`, including `caliper_issue_states` and `native_elf`), atomic `ON CONFLICT` upserts, S3/Local `ObjectStore` blob integration, live `/healthz` DB ping probes, `docker-compose --profile cluster` PostgreSQL 16 service, and Helm Chart `metaStore` templates. Running `--storage-driver=clickhouse --meta-driver=postgres --object-store=s3` requires zero local disk state across N collector replicas.
 - **Pure-Go Native Mach-O `.dSYM`/`.dSYM.zip` & Android NDK ELF `.so` DWARF Symbolicator (`server/internal/symbolicator/{dwarf.go,demangle.go}`)**:

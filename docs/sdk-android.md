@@ -56,8 +56,8 @@ window.decorView.post {
 |---|---|---|
 | **Cold Start** | `Process.getStartElapsedRealtime()` -> `Application.onCreate` -> `markFirstContentFrame()` | Single monotonic anchor; `native_init + runtime + first_frame <= total` |
 | **Fluency** | `Window.OnFrameMetricsAvailableListener` on background `HandlerThread` | API 31+ `FrameMetrics.DEADLINE` strictly separated from API 26–30 `heuristic`; zero-frame windows isolated |
-| **Crashes & Abnormal Exits** | Chained `UncaughtExceptionHandler` + API 30+ `ApplicationExitInfo` (`REASON_LOW_MEMORY`, `REASON_ANR`, `REASON_CRASH_NATIVE`) | Never swallows existing crash handlers; synchronous spool fallback on crash |
-| **ANR / Watchdog** | Off-main-thread `CaliperWatchdog` (1000 ms poll, 3000 ms hang threshold) | Captures main-thread stack without blocking UI |
+| **Crashes & Abnormal Exits** | Chained `UncaughtExceptionHandler` + **NDK C++ Signal Handler** (`libcaliper_native.so`: `sigaltstack`, `SIGSEGV`/`SIGABRT`/`SIGBUS`/`SIGFPE`/`SIGILL`, `_Unwind_Backtrace` + `/proc/self/maps` relative offsets) + API 30+ `ApplicationExitInfo` | Never swallows existing handlers; zero-malloc POSIX tombstone feeds directly into server `native_elf` DWARF symbolicator |
+| **ANR / Watchdog / Looper** | **NDK `SIGQUIT` ANR Interceptor** (forwards to ART Signal Catcher) + **Main-Thread `Looper` Message-Dispatch Latency & History Tracer** (`CaliperLooperMonitor`) + `CaliperWatchdog` (1000 ms poll) | Captures blocking `Handler`/`Runnable` + 20-message `MessageQueue` history without reflection or blocking UI |
 | **Memory & CPU** | `Debug.MemoryInfo.totalPss` (`android_pss_kib`) + process CPU sampling | Explicit `memory_kind` tag prevents cross-platform confusion |
 | **Offline Durability** | Bounded FIFO `CaliperDiskQueue` + exponential backoff circuit breaker | Drops oldest when byte cap exceeded; never OOMs or loops forever |
 | **Remote Logs** | `CaliperDiagnosticRingLog` (automatic email/phone/token PII scrubbing) + `CaliperRemoteLogAgent` | Pulls bounded logs only when authorized task exists |

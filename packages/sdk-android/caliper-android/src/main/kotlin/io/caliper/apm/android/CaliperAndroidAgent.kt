@@ -40,6 +40,7 @@ object CaliperAndroidAgent {
     private lateinit var client: CaliperClient
     private val ringLog = CaliperDiagnosticRingLog(maxLines = 500)
     private var watchdog: CaliperWatchdog? = null
+    private var looperMonitor: CaliperLooperMonitor? = null
     private var processStartElapsedMs: Long = 0L
     private var nativeInitDoneElapsedMs: Long = 0L
     private val firstFrameReported = AtomicBoolean(false)
@@ -58,6 +59,14 @@ object CaliperAndroidAgent {
         client = CaliperClient(config.copy(spoolDir = spool))
         defaultLease?.let { client.applyLease(it) }
 
+        looperMonitor = CaliperLooperMonitor(client).also { it.start() }
+        val tombstoneDir = File(application.filesDir, "caliper-tombstones")
+        CaliperNativeBridge.install(
+            tombstoneDir = tombstoneDir,
+            client = client,
+            looperTracker = looperMonitor?.tracker,
+            enableSigQuitAnr = true,
+        )
         installUncaughtExceptionChain()
         reportHistoricalAbnormalExits(application)
         installLifecycleAndFrameMetrics(application)
@@ -176,6 +185,7 @@ object CaliperAndroidAgent {
             override fun onActivityResumed(activity: Activity) {
                 val scene = activity.javaClass.simpleName
                 client.setScene(scene)
+                CaliperNativeBridge.setScene(scene)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                     val algo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         "android_frame_metrics_deadline"
@@ -228,7 +238,14 @@ object CaliperAndroidAgent {
             pollIntervalMs = 1000L,
             onHangDetected = { durMs, frames ->
                 val framesJson = frames.joinToString(",") { f -> """{"symbol":"${esc(f)}","in_app":true}""" }
-                val payload = """{"fingerprint":"android-anr-${frames.firstOrNull()?.hashCode() ?: 0}","title":"Main Thread Stall (${durMs}ms)","fatal":false,"exception_type":"ANR","thread_name":"main","frames":[$framesJson]}"""
+                val crumbs = ArrayList<String>()
+                looperMonitor?.tracker?.currentInFlight(SystemClock.elapsedRealtime())?.let { inf ->
+                    crumbs.add("""{"timestamp_ms":${inf.startedAtMs},"category":"looper_inflight","message":"${esc("${inf.target} (${inf.callback}:${inf.what}) blocked ${inf.elapsedMs}ms")}"}""")
+                }
+                looperMonitor?.tracker?.snapshotHistory()?.takeLast(6)?.forEach { rec ->
+                    crumbs.add("""{"timestamp_ms":${rec.endedAtMs},"category":"looper_history","message":"${esc("${rec.target} (${rec.callback}:${rec.what}) ${rec.durationMs}ms")}"}""")
+                }
+                val payload = """{"fingerprint":"android-anr-${frames.firstOrNull()?.hashCode() ?: 0}","title":"Main Thread Stall (${durMs}ms)","fatal":false,"exception_type":"ANR","thread_name":"main","frames":[$framesJson],"breadcrumbs":[${crumbs.joinToString(",")}]}"""
                 client.enqueue(kind = "anr", payloadJson = payload, bypassSampling = true)
             },
         ).also { it.start() }
