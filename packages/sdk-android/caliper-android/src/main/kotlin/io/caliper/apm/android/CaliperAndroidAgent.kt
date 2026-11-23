@@ -171,7 +171,7 @@ object CaliperAndroidAgent {
         val metricsHandler = Handler(metricsThread.looper)
 
         application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
-            private val listeners = HashMap<Int, Pair<FluencyWindowAccumulator, Window.OnFrameMetricsAvailableListener>>()
+            private val listeners = HashMap<Int, Triple<String, FluencyWindowAccumulator, Window.OnFrameMetricsAvailableListener>>()
 
             override fun onActivityResumed(activity: Activity) {
                 val scene = activity.javaClass.simpleName
@@ -182,7 +182,7 @@ object CaliperAndroidAgent {
                     } else {
                         "android_frame_metrics_heuristic"
                     }
-                    val acc = FluencyWindowAccumulator(algo)
+                    val acc = FluencyWindowAccumulator()
                     val listener = Window.OnFrameMetricsAvailableListener { _, frameMetrics, _ ->
                         val totalMs = frameMetrics.getMetric(FrameMetrics.TOTAL_DURATION) / 1_000_000.0
                         val targetMs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -194,19 +194,19 @@ object CaliperAndroidAgent {
                     }
                     runCatching {
                         activity.window?.addOnFrameMetricsAvailableListener(listener, metricsHandler)
-                        listeners[System.identityHashCode(activity)] = acc to listener
+                        listeners[System.identityHashCode(activity)] = Triple(algo, acc, listener)
                     }
                 }
             }
 
             override fun onActivityPaused(activity: Activity) {
-                val pair = listeners.remove(System.identityHashCode(activity)) ?: return
+                val entry = listeners.remove(System.identityHashCode(activity)) ?: return
+                val (algo, acc, listener) = entry
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    runCatching { activity.window?.removeOnFrameMetricsAvailableListener(pair.second) }
+                    runCatching { activity.window?.removeOnFrameMetricsAvailableListener(listener) }
                 }
-                val snap = pair.first.snapshotAndReset()
-                val buckets = snap.frameDurationBuckets.joinToString(",")
-                val payload = """{"algorithm":"${snap.algorithm}","window_duration_ms":10000,"frame_count":${snap.frameCount},"jank_frame_count":${snap.jankFrameCount},"severe_jank_frame_count":${snap.severeJankFrameCount},"frame_duration_buckets":[$buckets]}"""
+                val buckets = acc.frameDurationBuckets.joinToString(",")
+                val payload = """{"algorithm":"$algo","window_duration_ms":10000,"frame_count":${acc.frameCount},"jank_frame_count":${acc.jankFrameCount},"severe_jank_frame_count":${acc.severeJankFrameCount},"frame_duration_buckets":[$buckets]}"""
                 client.enqueue(kind = "fluency_window", payloadJson = payload, scene = activity.javaClass.simpleName)
                 client.flushAsync()
             }
@@ -225,7 +225,7 @@ object CaliperAndroidAgent {
             mainThread = Looper.getMainLooper().thread,
             postToMain = { mainHandler.post(it) },
             hangThresholdMs = 3000L,
-            pollIntervalMs = 500L,
+            pollIntervalMs = 1000L,
             onHangDetected = { durMs, frames ->
                 val framesJson = frames.joinToString(",") { f -> """{"symbol":"${esc(f)}","in_app":true}""" }
                 val payload = """{"fingerprint":"android-anr-${frames.firstOrNull()?.hashCode() ?: 0}","title":"Main Thread Stall (${durMs}ms)","fatal":false,"exception_type":"ANR","thread_name":"main","frames":[$framesJson]}"""
