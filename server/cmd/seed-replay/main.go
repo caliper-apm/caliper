@@ -337,8 +337,20 @@ func main() {
 
 func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProfile, tier deviceTier, dayFactor float64, ts int64) protocol.Event {
 	id := fmt.Sprintf("replay-%s-%s-%07d", platform, p.version, seq)
-	scenes := []string{"home_feed", "streaming_reader", "media_gallery"}
-	scene := scenes[seq%len(scenes)]
+	slot := seq / 6
+	type sceneSpec struct {
+		name     string
+		jankMult float64
+		memMult  float64
+		cpuMult  float64
+	}
+	scenes := []sceneSpec{
+		{name: "home_feed", jankMult: 1.00, memMult: 1.00, cpuMult: 1.00},
+		{name: "streaming_reader", jankMult: 0.68, memMult: 0.84, cpuMult: 0.82},
+		{name: "media_gallery", jankMult: 1.38, memMult: 1.18, cpuMult: 1.22},
+	}
+	sc := scenes[slot%len(scenes)]
+	scene := sc.name
 
 	switch seq % 6 {
 	case 0: // startup (log-normal right-skewed realistic mobile cold start)
@@ -367,13 +379,13 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 			algo = "ios_display_link"
 		}
 		frames := int64(950 + rng.Intn(550))
-		effRate := p.jankRate * tier.jankScale * dayFactor * (0.85 + rng.Float64()*0.30)
+		effRate := p.jankRate * tier.jankScale * sc.jankMult * dayFactor * (0.85 + rng.Float64()*0.30)
 		jank := int64(math.Round(float64(frames) * effRate))
 		if jank > frames {
 			jank = frames
 		}
 		severe := jank / 4
-		if seq%50 == 0 {
+		if slot%35 == 0 {
 			frames, jank, severe = 0, 0, 0 // verify zero-frame windows remain isolated & never inflate smoothness
 		}
 		var buckets [contract.HistogramBucketCount]int64
@@ -385,10 +397,23 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 			buckets[3] = severe
 		}
 		var stall []string
-		if p.jankRate > 0.025 && frames > 0 && rng.Float64() < 0.25 {
-			stall = []string{
-				"com.caliper.demo.feed.FeedImageDecoder.decodeSync(FeedImageDecoder.kt:92)",
-				"com.caliper.demo.feed.FeedAdapter.onBindViewHolder(FeedAdapter.kt:148)",
+		if p.jankRate*sc.jankMult > 0.020 && frames > 0 && rng.Float64() < 0.22 {
+			switch scene {
+			case "media_gallery":
+				stall = []string{
+					"com.caliper.demo.gallery.GalleryDecoder.decodeWebP(GalleryDecoder.kt:114)",
+					"com.caliper.demo.gallery.GalleryGridAdapter.bindTile(GalleryGridAdapter.kt:73)",
+				}
+			case "streaming_reader":
+				stall = []string{
+					"com.caliper.demo.reader.MarkdownLayoutEngine.measureParagraph(MarkdownLayoutEngine.kt:205)",
+					"com.caliper.demo.reader.ReaderTextView.onDraw(ReaderTextView.kt:88)",
+				}
+			default:
+				stall = []string{
+					"com.caliper.demo.feed.FeedImageDecoder.decodeSync(FeedImageDecoder.kt:92)",
+					"com.caliper.demo.feed.FeedAdapter.onBindViewHolder(FeedAdapter.kt:148)",
+				}
 			}
 		}
 		payload, _ := json.Marshal(protocol.FluencyWindowPayload{
@@ -408,8 +433,8 @@ func buildSyntheticEvent(rng *rand.Rand, seq int, platform string, p releaseProf
 		if platform == "ios" {
 			memKind = "ios_phys_footprint_kib"
 		}
-		cpu := logNormal(rng, p.cpuBasePct*tier.memScale*dayFactor, 0.16, 4.0, 88.0)
-		memMiB := logNormal(rng, p.memBaseMiB*tier.memScale*dayFactor, 0.14, 72.0, 960.0)
+		cpu := logNormal(rng, p.cpuBasePct*tier.memScale*sc.cpuMult*dayFactor, 0.16, 4.0, 88.0)
+		memMiB := logNormal(rng, p.memBaseMiB*tier.memScale*sc.memMult*dayFactor, 0.14, 72.0, 960.0)
 		memKiB := memMiB * 1024.0
 		payload, _ := json.Marshal(protocol.ResourceWindowPayload{
 			WindowDurationMS: 30000,
