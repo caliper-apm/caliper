@@ -102,6 +102,8 @@ export function OverviewPage({ filters, releases, refreshTick, lang, onOpenIssue
   }
 
   const startupP90 = formatQuantile(overview?.startup.total_p90_ms, 'ms');
+  const startupP95 = formatQuantile(overview?.startup.total_p95_ms, 'ms');
+  const startupP99 = formatQuantile(overview?.startup.total_p99_ms, 'ms');
   const netP90 = formatQuantile(overview?.network.duration_p90_ms, 'ms');
 
   const validFl = overview?.fluency.filter(f => f.valid_windows > 0) ?? [];
@@ -169,6 +171,7 @@ export function OverviewPage({ filters, releases, refreshTick, lang, onOpenIssue
         xAxis: { type: 'category', data: xData, axisLine: { lineStyle: { color: '#e5e6eb' } }, axisLabel: { color: '#86909c', fontSize: 11 } },
         yAxis: { type: 'value', name: 'ms', nameGap: 14, nameTextStyle: { color: '#86909c' }, splitLine: { lineStyle: { color: '#f2f3f5' } } },
         series: [
+          { name: 'Cold Start P99', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => roundInt(p.startup_p99_ms)), itemStyle: { color: '#ff7d00' }, lineStyle: { width: 1.8, type: 'dashed' } },
           { name: 'Cold Start P90', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => roundInt(p.startup_p90_ms)), itemStyle: { color: '#165dff' }, areaStyle: { color: 'rgba(22,93,255,0.08)' }, markLine },
           { name: 'Cold Start P50', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => roundInt(p.startup_p50_ms)), itemStyle: { color: '#0fc6c2' } },
         ],
@@ -225,6 +228,7 @@ export function OverviewPage({ filters, releases, refreshTick, lang, onOpenIssue
           { type: 'value', name: 'CPU %', nameGap: 14, splitLine: { show: false } },
         ],
         series: [
+          { name: lang === 'zh' ? '内存峰值 P95 (MiB)' : 'Memory P95 (MiB)', type: 'line', yAxisIndex: 0, smooth: 0.28, connectNulls: false, data: trends.map(p => roundInt(p.memory_p95_mib)), itemStyle: { color: '#a871e3' }, lineStyle: { width: 1.6, type: 'dashed' } },
           { name: lang === 'zh' ? '内存峰值 P90 (MiB)' : 'Memory P90 (MiB)', type: 'line', yAxisIndex: 0, smooth: 0.28, connectNulls: false, data: trends.map(p => roundInt(p.memory_p90_mib)), itemStyle: { color: '#722ed1' }, areaStyle: { color: 'rgba(114,46,209,0.08)' }, markLine },
           { name: lang === 'zh' ? '平均 CPU (%)' : 'Avg CPU (%)', type: 'line', yAxisIndex: 1, smooth: 0.28, connectNulls: false, data: trends.map(p => p.avg_cpu_pct !== null ? Number(p.avg_cpu_pct.toFixed(1)) : null), itemStyle: { color: '#0fc6c2' } },
         ],
@@ -277,7 +281,11 @@ export function OverviewPage({ filters, releases, refreshTick, lang, onOpenIssue
           </div>
           <div className="kpi-value">{startupP90.main}</div>
           <Sparkline values={trends.map(p => p.startup_p90_ms)} color="#165dff" />
-          <div className="kpi-meta">{startupP90.sub}</div>
+          <div className="kpi-meta">
+            {overview?.startup.total_p99_ms.value !== null && overview?.startup.total_p99_ms.value !== undefined
+              ? `P95 ${startupP95.main} · P99 ${startupP99.main}`
+              : startupP90.sub}
+          </div>
         </div>
 
         <div className="kpi-card">

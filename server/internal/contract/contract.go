@@ -124,12 +124,19 @@ func (h Histogram) Total() int64 {
 	return total
 }
 
+// QuantilePrecision identifies how a quantile estimate was computed.
+const (
+	PrecisionDDSketch2Pct = "ddsketch_2pct"
+	PrecisionHist19Bucket = "hist19_interp"
+)
+
 // QuantileResult carries both the interval and explicit missing reason (Zero-Lie contract).
 type QuantileResult struct {
-	Value         *float64   `json:"value"`
+	Value         *float64    `json:"value"`
 	Interval      *[2]float64 `json:"interval,omitempty"`
-	SampleSize    int64      `json:"sample_size"`
-	MissingReason string     `json:"missing_reason,omitempty"`
+	SampleSize    int64       `json:"sample_size"`
+	Precision     string      `json:"precision,omitempty"`
+	MissingReason string      `json:"missing_reason,omitempty"`
 }
 
 // QuantileDuration computes quantile q in (0, 1] from a duration histogram with minSamples gate.
@@ -186,6 +193,7 @@ func quantileFromBounds(bounds []float64, h Histogram, q float64, minSamples int
 				Value:      &val,
 				Interval:   &interval,
 				SampleSize: total,
+				Precision:  PrecisionHist19Bucket,
 			}
 		}
 	}

@@ -13,6 +13,7 @@ type JourneyStageReport struct {
 	SampleCount int64                   `json:"sample_count"`
 	P50MS       contract.QuantileResult `json:"p50_ms"`
 	P90MS       contract.QuantileResult `json:"p90_ms"`
+	P95MS       contract.QuantileResult `json:"p95_ms"`
 }
 
 // CustomJourneyReport exposes Zero-Lie duration quantiles, success rates, and child stage waterfalls
@@ -28,6 +29,8 @@ type CustomJourneyReport struct {
 	MissingReason   string                  `json:"missing_reason,omitempty"`
 	DurationP50     contract.QuantileResult `json:"duration_p50_ms"`
 	DurationP90     contract.QuantileResult `json:"duration_p90_ms"`
+	DurationP95     contract.QuantileResult `json:"duration_p95_ms"`
+	DurationP99     contract.QuantileResult `json:"duration_p99_ms"`
 	DurationBuckets []HistogramBucket       `json:"duration_buckets,omitempty"`
 	Stages          []JourneyStageReport    `json:"stages,omitempty"`
 	ErrorCodes      map[string]int64        `json:"error_codes,omitempty"`
@@ -48,8 +51,10 @@ func (e *Engine) CustomJourneys(ctx context.Context, f storage.QueryFilter) ([]C
 			FailureCount:    a.FailureCount,
 			TimeoutCount:    a.TimeoutCount,
 			CancelledCount:  a.CancelledCount,
-			DurationP50:     contract.QuantileDuration(a.DurationHist, 0.50, contract.DefaultDisplayMinSamples),
-			DurationP90:     contract.QuantileDuration(a.DurationHist, 0.90, contract.DefaultDisplayMinSamples),
+			DurationP50:     contract.QuantileDurationSketch(a.DurationSketch, a.DurationHist, 0.50, contract.DefaultDisplayMinSamples),
+			DurationP90:     contract.QuantileDurationSketch(a.DurationSketch, a.DurationHist, 0.90, contract.DefaultDisplayMinSamples),
+			DurationP95:     contract.QuantileDurationSketch(a.DurationSketch, a.DurationHist, 0.95, contract.DefaultDisplayMinSamples),
+			DurationP99:     contract.QuantileDurationSketch(a.DurationSketch, a.DurationHist, 0.99, contract.DefaultDisplayMinSamples),
 			DurationBuckets: DurationBucketsSlice(a.DurationHist),
 			ErrorCodes:      a.ErrorCodes,
 		}
@@ -63,11 +68,20 @@ func (e *Engine) CustomJourneys(ctx context.Context, f storage.QueryFilter) ([]C
 		}
 		for _, stName := range a.StageOrder {
 			h := a.StageHists[stName]
+			var sk *contract.DDSketch
+			if a.StageSketches != nil {
+				sk = a.StageSketches[stName]
+			}
+			n := h.Total()
+			if sk != nil && sk.Total() > n {
+				n = sk.Total()
+			}
 			rep.Stages = append(rep.Stages, JourneyStageReport{
 				Name:        stName,
-				SampleCount: h.Total(),
-				P50MS:       contract.QuantileDuration(h, 0.50, contract.DefaultDisplayMinSamples),
-				P90MS:       contract.QuantileDuration(h, 0.90, contract.DefaultDisplayMinSamples),
+				SampleCount: n,
+				P50MS:       contract.QuantileDurationSketch(sk, h, 0.50, contract.DefaultDisplayMinSamples),
+				P90MS:       contract.QuantileDurationSketch(sk, h, 0.90, contract.DefaultDisplayMinSamples),
+				P95MS:       contract.QuantileDurationSketch(sk, h, 0.95, contract.DefaultDisplayMinSamples),
 			})
 		}
 		out = append(out, rep)

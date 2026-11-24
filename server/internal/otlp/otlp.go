@@ -304,6 +304,8 @@ func ExportOverviewAsOTLPMetrics(appID string, ov analytics.OverviewReport) map[
 
 	addGauge("caliper.startup.cold.p50", "ms", ov.Startup.TotalP50.Value)
 	addGauge("caliper.startup.cold.p90", "ms", ov.Startup.TotalP90.Value)
+	addGauge("caliper.startup.cold.p95", "ms", ov.Startup.TotalP95.Value)
+	addGauge("caliper.startup.cold.p99", "ms", ov.Startup.TotalP99.Value)
 	addGauge("caliper.network.api.success_rate", "%", ov.Network.SuccessRatePct)
 	addGauge("caliper.network.api.p90", "ms", ov.Network.DurationP90.Value)
 
@@ -316,6 +318,8 @@ func ExportOverviewAsOTLPMetrics(appID string, ov analytics.OverviewReport) map[
 	for _, res := range ov.Resources {
 		addGauge("caliper.resource.cpu.avg", "%", res.AvgCPUPct, kvString("scene", res.Scene))
 		addGauge("caliper.resource.memory.peak_p90", "MiB", res.MemoryPeakP90MiB.Value, kvString("scene", res.Scene))
+		addGauge("caliper.resource.memory.peak_p95", "MiB", res.MemoryPeakP95MiB.Value, kvString("scene", res.Scene))
+		addGauge("caliper.resource.memory.peak_p99", "MiB", res.MemoryPeakP99MiB.Value, kvString("scene", res.Scene))
 	}
 
 	return map[string]any{

@@ -60,18 +60,22 @@ type QueryFilter struct {
 	EndDayUTC   string // YYYY-MM-DD inclusive
 }
 
-// StartupAggregate holds mergeable cold-start histograms and stage coverage counts.
+// StartupAggregate holds mergeable cold-start histograms, DDSketches, and stage coverage counts.
 type StartupAggregate struct {
-	TotalHist      contract.Histogram
-	NativeInitHist contract.Histogram
-	RuntimeHist    contract.Histogram
-	FirstFrameHist contract.Histogram
-	SuccessCount   int64
-	AbortedCount   int64
-	TimeoutCount   int64
-	StagedCount    int64
-	ContractVer    int
-	PolicyIDs      map[string]struct{}
+	TotalHist        contract.Histogram
+	NativeInitHist   contract.Histogram
+	RuntimeHist      contract.Histogram
+	FirstFrameHist   contract.Histogram
+	TotalSketch      *contract.DDSketch
+	NativeInitSketch *contract.DDSketch
+	RuntimeSketch    *contract.DDSketch
+	FirstFrameSketch *contract.DDSketch
+	SuccessCount     int64
+	AbortedCount     int64
+	TimeoutCount     int64
+	StagedCount      int64
+	ContractVer      int
+	PolicyIDs        map[string]struct{}
 }
 
 // FluencyAggregate holds frame & zero-frame window rollups isolated by algorithm and scene.
@@ -92,16 +96,17 @@ type FluencyAggregate struct {
 
 // ResourceAggregate holds CPU, memory footprint, and JS LongTask window rollups per scene.
 type ResourceAggregate struct {
-	Scene             string
-	MemoryKind        string
-	ResourceWindows   int64
-	CPUPctSum         float64
-	MemoryPeakHistMiB contract.Histogram
-	JSLongTaskWindows int64
-	JSLongTaskCount   int64
-	JSBlockingSumMS   float64
-	JSMaxTaskMS       float64
-	PolicyIDs         map[string]struct{}
+	Scene               string
+	MemoryKind          string
+	ResourceWindows     int64
+	CPUPctSum           float64
+	MemoryPeakHistMiB   contract.Histogram
+	MemoryPeakSketchMiB *contract.DDSketch
+	JSLongTaskWindows   int64
+	JSLongTaskCount     int64
+	JSBlockingSumMS     float64
+	JSMaxTaskMS         float64
+	PolicyIDs           map[string]struct{}
 }
 
 // NetworkAggregate holds logical API denominator rollups and transport stage histograms.
@@ -149,7 +154,7 @@ type NetworkTransportSample struct {
 	SpanID           string   `json:"span_id,omitempty"`
 }
 
-// CustomSceneAggregate holds mergeable Zero-Lie histograms for custom business journey traces.
+// CustomSceneAggregate holds mergeable Zero-Lie histograms and DDSketches for custom business journey traces.
 type CustomSceneAggregate struct {
 	JourneyName    string
 	TotalCount     int64
@@ -158,7 +163,9 @@ type CustomSceneAggregate struct {
 	TimeoutCount   int64
 	CancelledCount int64
 	DurationHist   contract.Histogram
+	DurationSketch *contract.DDSketch
 	StageHists     map[string]contract.Histogram
+	StageSketches  map[string]*contract.DDSketch
 	StageOrder     []string
 	ErrorCodes     map[string]int64
 	PolicyIDs      map[string]struct{}
@@ -179,6 +186,12 @@ type TransportOpAggregate struct {
 	TTFBHist    contract.Histogram
 	BodyHist    contract.Histogram
 	TotalHist   contract.Histogram
+	DNSSketch   *contract.DDSketch
+	TCPSketch   *contract.DDSketch
+	TLSSketch   *contract.DDSketch
+	TTFBSketch  *contract.DDSketch
+	BodySketch  *contract.DDSketch
+	TotalSketch *contract.DDSketch
 }
 
 // IssueState stores mutable enterprise triage workflow metadata per stability fingerprint.
@@ -328,6 +341,8 @@ type DailyTrendPoint struct {
 	DominantVersion string   `json:"dominant_version,omitempty"`
 	StartupP50MS    *float64 `json:"startup_p50_ms"`
 	StartupP90MS    *float64 `json:"startup_p90_ms"`
+	StartupP95MS    *float64 `json:"startup_p95_ms"`
+	StartupP99MS    *float64 `json:"startup_p99_ms"`
 	StartupSamples  int64    `json:"startup_samples"`
 	JankRatePct     *float64 `json:"jank_rate_pct"`
 	FluencyWindows  int64    `json:"fluency_windows"`
@@ -336,6 +351,8 @@ type DailyTrendPoint struct {
 	APICalls        int64    `json:"api_calls"`
 	AvgCPUPct       *float64 `json:"avg_cpu_pct"`
 	MemoryP90MiB    *float64 `json:"memory_p90_mib"`
+	MemoryP95MiB    *float64 `json:"memory_p95_mib"`
+	MemoryP99MiB    *float64 `json:"memory_p99_mib"`
 	ResourceWindows int64    `json:"resource_windows"`
 	CrashEvents     int64    `json:"crash_events"`
 	ANREvents       int64    `json:"anr_events"`

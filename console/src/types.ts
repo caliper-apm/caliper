@@ -33,6 +33,8 @@ export interface DailyTrendPoint {
   dominant_version?: string;
   startup_p50_ms: number | null;
   startup_p90_ms: number | null;
+  startup_p95_ms: number | null;
+  startup_p99_ms: number | null;
   startup_samples: number;
   jank_rate_pct: number | null;
   fluency_windows: number;
@@ -41,6 +43,8 @@ export interface DailyTrendPoint {
   api_calls: number;
   avg_cpu_pct: number | null;
   memory_p90_mib: number | null;
+  memory_p95_mib: number | null;
+  memory_p99_mib: number | null;
   resource_windows: number;
   crash_events: number;
   anr_events: number;
@@ -51,6 +55,8 @@ export interface DimensionSlice {
   dimension: 'version' | 'adapter' | 'scene' | 'device' | 'os';
   key: string;
   startup_p90_ms: number | null;
+  startup_p95_ms: number | null;
+  startup_p99_ms: number | null;
   startup_samples: number;
   jank_rate_pct: number | null;
   fluency_windows: number;
@@ -133,6 +139,7 @@ export interface QuantileResult {
   value: number | null;
   interval?: [number, number];
   sample_size: number;
+  precision?: string;
   missing_reason?: string;
 }
 
@@ -145,6 +152,8 @@ export interface StartupReport {
   staged_coverage_pct: number | null;
   total_p50_ms: QuantileResult;
   total_p90_ms: QuantileResult;
+  total_p95_ms: QuantileResult;
+  total_p99_ms: QuantileResult;
   native_init_p90_ms: QuantileResult;
   runtime_init_p90_ms: QuantileResult;
   first_frame_p90_ms: QuantileResult;
@@ -176,6 +185,8 @@ export interface ResourceSceneReport {
   cpu_missing_reason?: string;
   memory_peak_p50_mib: QuantileResult;
   memory_peak_p90_mib: QuantileResult;
+  memory_peak_p95_mib: QuantileResult;
+  memory_peak_p99_mib: QuantileResult;
   js_longtask_windows: number;
   js_longtask_count: number;
   avg_js_blocking_ms_per_window: number | null;
@@ -194,6 +205,8 @@ export interface TransportOpReport {
   ttfb_p90_ms: QuantileResult;
   body_p90_ms: QuantileResult;
   total_p90_ms: QuantileResult;
+  total_p95_ms: QuantileResult;
+  total_p99_ms: QuantileResult;
 }
 
 export interface NetworkReport {
@@ -246,6 +259,7 @@ export interface JourneyStageReport {
   sample_count: number;
   p50_ms: QuantileResult;
   p90_ms: QuantileResult;
+  p95_ms: QuantileResult;
 }
 
 export interface CustomJourneyReport {
@@ -259,6 +273,8 @@ export interface CustomJourneyReport {
   missing_reason?: string;
   duration_p50_ms: QuantileResult;
   duration_p90_ms: QuantileResult;
+  duration_p95_ms: QuantileResult;
+  duration_p99_ms: QuantileResult;
   duration_buckets?: HistogramBucket[];
   stages?: JourneyStageReport[];
   error_codes?: Record<string, number>;

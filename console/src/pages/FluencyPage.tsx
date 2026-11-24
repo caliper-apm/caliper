@@ -78,6 +78,7 @@ export function FluencyPage({ filters, refreshTick, lang }: Props) {
     xAxis: { type: 'category', data: trends.map(p => p.day_utc.slice(5)), axisLabel: { color: '#86909c', fontSize: 11 } },
     yAxis: { type: 'value', name: 'ms', splitLine: { lineStyle: { color: '#f2f3f5' } } },
     series: [
+      { name: 'P99', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => p.startup_p99_ms !== null ? Math.round(p.startup_p99_ms) : null), itemStyle: { color: '#ff7d00' }, lineStyle: { width: 1.8, type: 'dashed' } },
       { name: 'P90', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => p.startup_p90_ms !== null ? Math.round(p.startup_p90_ms) : null), itemStyle: { color: '#165dff' }, areaStyle: { color: 'rgba(22,93,255,0.08)' } },
       { name: 'P50', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => p.startup_p50_ms !== null ? Math.round(p.startup_p50_ms) : null), itemStyle: { color: '#0fc6c2' } },
     ],
@@ -157,7 +158,9 @@ export function FluencyPage({ filters, refreshTick, lang }: Props) {
           <div className="kpi-card">
             <div className="kpi-label">Total P90</div>
             <div className="kpi-value">{formatQuantile(startup?.total_p90_ms, 'ms').main}</div>
-            <div className="kpi-meta">{formatQuantile(startup?.total_p90_ms, 'ms').sub}</div>
+            <div className="kpi-meta">
+              P95 {formatQuantile(startup?.total_p95_ms, 'ms').main} · P99 {formatQuantile(startup?.total_p99_ms, 'ms').main}
+            </div>
           </div>
           <div className="kpi-card">
             <div className="kpi-label">Native Init P90</div>
@@ -202,8 +205,8 @@ export function FluencyPage({ filters, refreshTick, lang }: Props) {
         <div className="card">
           <div className="card-header">
             <div>
-              <h2 className="card-title">{lang === 'zh' ? '冷启动 14 天走势 (P50 / P90)' : 'Daily Cold Start Trend (P50 / P90)'}</h2>
-              <p className="card-sub">{lang === 'zh' ? '基于真实直方图按日合并计算分位数，绝不平均日 P90' : 'Exact daily mergeable quantiles'}</p>
+              <h2 className="card-title">{lang === 'zh' ? '冷启动 14 天走势 (P50 / P90 / P99)' : 'Daily Cold Start Trend (P50 / P90 / P99)'}</h2>
+              <p className="card-sub">{lang === 'zh' ? '基于 DDSketch (±2%) 按日无损合并计算分位数，绝不平均日 P90' : 'Exact daily mergeable DDSketch (±2%) quantiles'}</p>
             </div>
           </div>
           <EChart option={startupTrendOption} height={240} />
@@ -287,7 +290,7 @@ export function FluencyPage({ filters, refreshTick, lang }: Props) {
                 <th>{lang === 'zh' ? '业务链路名' : 'Journey Name'}</th>
                 <th>{lang === 'zh' ? '样本数' : 'Samples'}</th>
                 <th>{lang === 'zh' ? '成功率' : 'Success'}</th>
-                <th>P50 / P90</th>
+                <th>P50 / P90 / P99</th>
                 <th>{lang === 'zh' ? '多阶段 P90 瀑布拆解' : 'Stage P90 Waterfall'}</th>
               </tr>
             </thead>
@@ -309,6 +312,7 @@ export function FluencyPage({ filters, refreshTick, lang }: Props) {
                     </td>
                     <td className="mono">
                       {formatQuantile(j.duration_p50_ms, 'ms').main} / <strong>{formatQuantile(j.duration_p90_ms, 'ms').main}</strong>
+                      <div className="kpi-meta">P99 {formatQuantile(j.duration_p99_ms, 'ms').main}</div>
                     </td>
                     <td>
                       {stages.length > 0 ? (

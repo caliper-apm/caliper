@@ -177,6 +177,7 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
       { type: 'value', name: 'CPU %', splitLine: { show: false } },
     ],
     series: [
+      { name: lang === 'zh' ? '内存峰值 P95 (MiB)' : 'Memory P95 (MiB)', type: 'line', yAxisIndex: 0, smooth: 0.28, connectNulls: false, data: trends.map(p => p.memory_p95_mib !== null ? Math.round(p.memory_p95_mib) : null), itemStyle: { color: '#a871e3' }, lineStyle: { width: 1.6, type: 'dashed' } },
       { name: lang === 'zh' ? '内存峰值 P90 (MiB)' : 'Memory P90 (MiB)', type: 'line', yAxisIndex: 0, smooth: 0.28, connectNulls: false, data: trends.map(p => p.memory_p90_mib !== null ? Math.round(p.memory_p90_mib) : null), itemStyle: { color: '#722ed1' }, areaStyle: { color: 'rgba(114,46,209,0.08)' } },
       { name: lang === 'zh' ? '进程平均 CPU (%)' : 'Avg CPU (%)', type: 'line', yAxisIndex: 1, smooth: 0.25, connectNulls: false, data: trends.map(p => p.avg_cpu_pct !== null ? Number(p.avg_cpu_pct.toFixed(1)) : null), itemStyle: { color: '#165dff' } },
     ],
@@ -260,7 +261,7 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
                 <th>{lang === 'zh' ? '采样数' : 'Samples'}</th>
                 <th>{lang === 'zh' ? '成功率' : 'Success'}</th>
                 <th>{lang === 'zh' ? '连接复用率' : 'Reuse'}</th>
-                <th>Total P90</th>
+                <th>Total P90 / P99</th>
                 <th>{lang === 'zh' ? '阶段瀑布 (DNS / TCP / TLS / TTFB / Body)' : 'Transport Waterfall'}</th>
               </tr>
             </thead>
@@ -286,7 +287,10 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
                     <td className="mono">{op.sample_count.toLocaleString('en-US')}</td>
                     <td className="mono">{formatValue(op.success_rate_pct, '%')}</td>
                     <td className="mono">{formatValue(op.connection_reuse_rate_pct, '%')}</td>
-                    <td className="mono"><strong>{formatQuantile(op.total_p90_ms, 'ms').main}</strong></td>
+                    <td className="mono">
+                      <strong>{formatQuantile(op.total_p90_ms, 'ms').main}</strong>
+                      <div className="kpi-meta">P99 {formatQuantile(op.total_p99_ms, 'ms').main}</div>
+                    </td>
                     <td>
                       <div className="bar-track">
                         <div className="bar-seg" style={{ width: `${(dns / sum) * 100}%`, background: '#0fc6c2' }} title={`DNS ${dns}ms`} />
@@ -339,7 +343,7 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
                 <tr>
                   <th>{lang === 'zh' ? '业务场景' : 'Scene'}</th>
                   <th>{lang === 'zh' ? '平均 CPU' : 'Avg CPU'}</th>
-                  <th>Memory P90</th>
+                  <th>Memory P90 / P95</th>
                   <th>RN LongTask</th>
                   <th>{lang === 'zh' ? '单窗 JS 阻塞' : 'JS Block'}</th>
                 </tr>
@@ -349,7 +353,10 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
                   <tr key={r.scene}>
                     <td><strong>{r.scene}</strong><div className="mono kpi-meta">{r.memory_kind || '—'}</div></td>
                     <td className="mono">{formatValue(r.avg_cpu_pct, '%', r.cpu_missing_reason)}</td>
-                    <td className="mono"><strong>{formatQuantile(r.memory_peak_p90_mib, 'MiB').main}</strong></td>
+                    <td className="mono">
+                      <strong>{formatQuantile(r.memory_peak_p90_mib, 'MiB').main}</strong>
+                      <div className="kpi-meta">P95 {formatQuantile(r.memory_peak_p95_mib, 'MiB').main}</div>
+                    </td>
                     <td className="mono">{r.js_longtask_count.toLocaleString('en-US')}</td>
                     <td className="mono">{formatValue(r.avg_js_blocking_ms_per_window, 'ms')}</td>
                   </tr>

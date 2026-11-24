@@ -1164,6 +1164,12 @@ FORMAT JSON`, s.database, where)
 		if q90 := contract.QuantileDuration(h, 0.90, contract.DefaultDisplayMinSamples); q90.Value != nil {
 			pt.StartupP90MS = q90.Value
 		}
+		if q95 := contract.QuantileDuration(h, 0.95, contract.DefaultDisplayMinSamples); q95.Value != nil {
+			pt.StartupP95MS = q95.Value
+		}
+		if q99 := contract.QuantileDuration(h, 0.99, contract.DefaultDisplayMinSamples); q99.Value != nil {
+			pt.StartupP99MS = q99.Value
+		}
 		out = append(out, pt)
 	}
 	return out, nil

@@ -371,9 +371,13 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
             <label className="field">{lang === 'zh' ? '监控指标' : 'Metric'}
               <select value={metricId} onChange={e => setMetricId(e.target.value)}>
                 <option value="startup_cold_p90_ms">startup_cold_p90_ms</option>
+                <option value="startup_cold_p95_ms">startup_cold_p95_ms</option>
+                <option value="startup_cold_p99_ms">startup_cold_p99_ms</option>
                 <option value="fluency_jank_rate_pct">fluency_jank_rate_pct</option>
                 <option value="resource_cpu_avg_pct">resource_cpu_avg_pct</option>
                 <option value="resource_memory_peak_p90_mib">resource_memory_peak_p90_mib</option>
+                <option value="resource_memory_peak_p95_mib">resource_memory_peak_p95_mib</option>
+                <option value="resource_memory_peak_p99_mib">resource_memory_peak_p99_mib</option>
                 <option value="network_api_success_rate_pct">network_api_success_rate_pct</option>
                 <option value="network_api_p90_ms">network_api_p90_ms</option>
               </select>

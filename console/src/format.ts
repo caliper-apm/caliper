@@ -21,10 +21,14 @@ const MISSING_LABELS: Record<string, string> = {
 const METRIC_LABELS: Record<string, string> = {
   startup_cold_p50_ms: 'Cold Start P50',
   startup_cold_p90_ms: 'Cold Start P90',
+  startup_cold_p95_ms: 'Cold Start P95',
+  startup_cold_p99_ms: 'Cold Start P99',
   fluency_jank_rate_pct: 'Fluency Jank Rate',
   scene_fluency_jank_rate_pct: 'Scene Jank Rate',
   resource_cpu_avg_pct: 'Avg Process CPU',
   resource_memory_peak_p90_mib: 'Peak Memory P90',
+  resource_memory_peak_p95_mib: 'Peak Memory P95',
+  resource_memory_peak_p99_mib: 'Peak Memory P99',
   scene_memory_peak_p90_mib: 'Scene Peak Memory P90',
   network_api_success_rate_pct: 'API Success Rate',
   network_api_p90_ms: 'API Duration P90',
@@ -58,10 +62,12 @@ export function formatQuantile(q: QuantileResult | undefined, unit: string): { m
       sub: `${missingLabel(q.missing_reason)} · n=${q.sample_size.toLocaleString('en-US')}`,
     };
   }
-  const interval = q.interval ? `(${q.interval[0]}–${q.interval[1]} ${unit}] · ` : '';
+  const fmtBound = (b: number) => (b >= 10 ? Math.round(b).toLocaleString('en-US') : b.toFixed(1));
+  const interval = q.interval ? `(${fmtBound(q.interval[0])}–${fmtBound(q.interval[1])} ${unit}] · ` : '';
+  const prec = q.precision === 'ddsketch_2pct' ? ' · ±2%' : '';
   return {
     main: formatValue(q.value, unit),
-    sub: `${interval}n=${q.sample_size.toLocaleString('en-US')}`,
+    sub: `${interval}n=${q.sample_size.toLocaleString('en-US')}${prec}`,
   };
 }
 
@@ -89,6 +95,7 @@ export function formatPValue(p?: number): string {
 
 export function statTestLabel(test?: string): string {
   if (test === 'two_proportion_z') return '2-Prop Z-test';
+  if (test === 'ddsketch_ks') return 'DDSketch KS';
   if (test === 'histogram_ks') return 'Histogram KS';
   if (test === 'threshold_only') return 'Threshold gate';
   return '—';

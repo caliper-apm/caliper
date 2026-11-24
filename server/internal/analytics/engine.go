@@ -19,16 +19,18 @@ func New(store storage.AnalyticsStore) *Engine {
 	return &Engine{store: store}
 }
 
-// StartupReport breaks down multi-stage cold start with mergeable histogram quantiles.
+// StartupReport breaks down multi-stage cold start with DDSketch / mergeable histogram quantiles.
 type StartupReport struct {
-	Platform        string                  `json:"platform"`
-	AppVersion      string                  `json:"app_version,omitempty"`
-	SuccessCount    int64                   `json:"success_count"`
-	AbortedCount    int64                   `json:"aborted_count"`
-	TimeoutCount    int64                   `json:"timeout_count"`
-	StagedCoverage  *float64                `json:"staged_coverage_pct"`
+	Platform       string                  `json:"platform"`
+	AppVersion     string                  `json:"app_version,omitempty"`
+	SuccessCount   int64                   `json:"success_count"`
+	AbortedCount   int64                   `json:"aborted_count"`
+	TimeoutCount   int64                   `json:"timeout_count"`
+	StagedCoverage *float64                `json:"staged_coverage_pct"`
 	TotalP50       contract.QuantileResult `json:"total_p50_ms"`
 	TotalP90       contract.QuantileResult `json:"total_p90_ms"`
+	TotalP95       contract.QuantileResult `json:"total_p95_ms"`
+	TotalP99       contract.QuantileResult `json:"total_p99_ms"`
 	NativeInitP90  contract.QuantileResult `json:"native_init_p90_ms"`
 	RuntimeInitP90 contract.QuantileResult `json:"runtime_init_p90_ms"`
 	FirstFrameP90  contract.QuantileResult `json:"first_frame_p90_ms"`
@@ -62,6 +64,8 @@ type ResourceSceneReport struct {
 	CPUMissingReason    string                  `json:"cpu_missing_reason,omitempty"`
 	MemoryPeakP50MiB    contract.QuantileResult `json:"memory_peak_p50_mib"`
 	MemoryPeakP90MiB    contract.QuantileResult `json:"memory_peak_p90_mib"`
+	MemoryPeakP95MiB    contract.QuantileResult `json:"memory_peak_p95_mib"`
+	MemoryPeakP99MiB    contract.QuantileResult `json:"memory_peak_p99_mib"`
 	JSLongTaskWindows   int64                   `json:"js_longtask_windows"`
 	JSLongTaskCount     int64                   `json:"js_longtask_count"`
 	AvgJSBlockingPerWin *float64                `json:"avg_js_blocking_ms_per_window"`
@@ -70,17 +74,19 @@ type ResourceSceneReport struct {
 
 // TransportOpReport summarizes DNS/TCP/TLS/TTFB/Body stages per allowlisted operation.
 type TransportOpReport struct {
-	Operation       string                  `json:"operation"`
-	Method          string                  `json:"method"`
-	SampleCount     int64                   `json:"sample_count"`
-	SuccessRatePct  *float64                `json:"success_rate_pct"`
-	ReuseRatePct    *float64                `json:"connection_reuse_rate_pct"`
-	DNSP90          contract.QuantileResult `json:"dns_p90_ms"`
-	TCPP90          contract.QuantileResult `json:"tcp_p90_ms"`
-	TLSP90          contract.QuantileResult `json:"tls_p90_ms"`
-	TTFBP90         contract.QuantileResult `json:"ttfb_p90_ms"`
-	BodyP90         contract.QuantileResult `json:"body_p90_ms"`
-	TotalP90        contract.QuantileResult `json:"total_p90_ms"`
+	Operation      string                  `json:"operation"`
+	Method         string                  `json:"method"`
+	SampleCount    int64                   `json:"sample_count"`
+	SuccessRatePct *float64                `json:"success_rate_pct"`
+	ReuseRatePct   *float64                `json:"connection_reuse_rate_pct"`
+	DNSP90         contract.QuantileResult `json:"dns_p90_ms"`
+	TCPP90         contract.QuantileResult `json:"tcp_p90_ms"`
+	TLSP90         contract.QuantileResult `json:"tls_p90_ms"`
+	TTFBP90        contract.QuantileResult `json:"ttfb_p90_ms"`
+	BodyP90        contract.QuantileResult `json:"body_p90_ms"`
+	TotalP90       contract.QuantileResult `json:"total_p90_ms"`
+	TotalP95       contract.QuantileResult `json:"total_p95_ms"`
+	TotalP99       contract.QuantileResult `json:"total_p99_ms"`
 }
 
 // NetworkReport exposes logical API denominator metrics alongside sampled transport stages.
@@ -151,11 +157,13 @@ func (e *Engine) Startup(ctx context.Context, f storage.QueryFilter) (StartupRep
 		AbortedCount:   agg.AbortedCount,
 		TimeoutCount:   agg.TimeoutCount,
 		StagedCoverage: stagedCov,
-		TotalP50:       contract.QuantileDuration(agg.TotalHist, 0.50, contract.DefaultDisplayMinSamples),
-		TotalP90:       contract.QuantileDuration(agg.TotalHist, 0.90, contract.DefaultDisplayMinSamples),
-		NativeInitP90:  contract.QuantileDuration(agg.NativeInitHist, 0.90, contract.DefaultDisplayMinSamples),
-		RuntimeInitP90: contract.QuantileDuration(agg.RuntimeHist, 0.90, contract.DefaultDisplayMinSamples),
-		FirstFrameP90:  contract.QuantileDuration(agg.FirstFrameHist, 0.90, contract.DefaultDisplayMinSamples),
+		TotalP50:       contract.QuantileDurationSketch(agg.TotalSketch, agg.TotalHist, 0.50, contract.DefaultDisplayMinSamples),
+		TotalP90:       contract.QuantileDurationSketch(agg.TotalSketch, agg.TotalHist, 0.90, contract.DefaultDisplayMinSamples),
+		TotalP95:       contract.QuantileDurationSketch(agg.TotalSketch, agg.TotalHist, 0.95, contract.DefaultDisplayMinSamples),
+		TotalP99:       contract.QuantileDurationSketch(agg.TotalSketch, agg.TotalHist, 0.99, contract.DefaultDisplayMinSamples),
+		NativeInitP90:  contract.QuantileDurationSketch(agg.NativeInitSketch, agg.NativeInitHist, 0.90, contract.DefaultDisplayMinSamples),
+		RuntimeInitP90: contract.QuantileDurationSketch(agg.RuntimeSketch, agg.RuntimeHist, 0.90, contract.DefaultDisplayMinSamples),
+		FirstFrameP90:  contract.QuantileDurationSketch(agg.FirstFrameSketch, agg.FirstFrameHist, 0.90, contract.DefaultDisplayMinSamples),
 		TotalBuckets:   DurationBucketsSlice(agg.TotalHist),
 	}, nil
 }
@@ -207,8 +215,10 @@ func (e *Engine) Resources(ctx context.Context, f storage.QueryFilter) ([]Resour
 			Scene:             agg.Scene,
 			MemoryKind:        agg.MemoryKind,
 			ResourceWindows:   agg.ResourceWindows,
-			MemoryPeakP50MiB:  contract.QuantileMemoryMiB(agg.MemoryPeakHistMiB, 0.50, contract.DefaultDisplayMinSamples),
-			MemoryPeakP90MiB:  contract.QuantileMemoryMiB(agg.MemoryPeakHistMiB, 0.90, contract.DefaultDisplayMinSamples),
+			MemoryPeakP50MiB:  contract.QuantileMemoryMiBSketch(agg.MemoryPeakSketchMiB, agg.MemoryPeakHistMiB, 0.50, contract.DefaultDisplayMinSamples),
+			MemoryPeakP90MiB:  contract.QuantileMemoryMiBSketch(agg.MemoryPeakSketchMiB, agg.MemoryPeakHistMiB, 0.90, contract.DefaultDisplayMinSamples),
+			MemoryPeakP95MiB:  contract.QuantileMemoryMiBSketch(agg.MemoryPeakSketchMiB, agg.MemoryPeakHistMiB, 0.95, contract.DefaultDisplayMinSamples),
+			MemoryPeakP99MiB:  contract.QuantileMemoryMiBSketch(agg.MemoryPeakSketchMiB, agg.MemoryPeakHistMiB, 0.99, contract.DefaultDisplayMinSamples),
 			JSLongTaskWindows: agg.JSLongTaskWindows,
 			JSLongTaskCount:   agg.JSLongTaskCount,
 		}
@@ -262,12 +272,14 @@ func (e *Engine) Network(ctx context.Context, f storage.QueryFilter) (NetworkRep
 			Operation:   op.Operation,
 			Method:      op.Method,
 			SampleCount: op.TotalCount,
-			DNSP90:      contract.QuantileDuration(op.DNSHist, 0.90, contract.DefaultDisplayMinSamples),
-			TCPP90:      contract.QuantileDuration(op.TCPHist, 0.90, contract.DefaultDisplayMinSamples),
-			TLSP90:      contract.QuantileDuration(op.TLSHist, 0.90, contract.DefaultDisplayMinSamples),
-			TTFBP90:     contract.QuantileDuration(op.TTFBHist, 0.90, contract.DefaultDisplayMinSamples),
-			BodyP90:     contract.QuantileDuration(op.BodyHist, 0.90, contract.DefaultDisplayMinSamples),
-			TotalP90:    contract.QuantileDuration(op.TotalHist, 0.90, contract.DefaultDisplayMinSamples),
+			DNSP90:      contract.QuantileDurationSketch(op.DNSSketch, op.DNSHist, 0.90, contract.DefaultDisplayMinSamples),
+			TCPP90:      contract.QuantileDurationSketch(op.TCPSketch, op.TCPHist, 0.90, contract.DefaultDisplayMinSamples),
+			TLSP90:      contract.QuantileDurationSketch(op.TLSSketch, op.TLSHist, 0.90, contract.DefaultDisplayMinSamples),
+			TTFBP90:     contract.QuantileDurationSketch(op.TTFBSketch, op.TTFBHist, 0.90, contract.DefaultDisplayMinSamples),
+			BodyP90:     contract.QuantileDurationSketch(op.BodySketch, op.BodyHist, 0.90, contract.DefaultDisplayMinSamples),
+			TotalP90:    contract.QuantileDurationSketch(op.TotalSketch, op.TotalHist, 0.90, contract.DefaultDisplayMinSamples),
+			TotalP95:    contract.QuantileDurationSketch(op.TotalSketch, op.TotalHist, 0.95, contract.DefaultDisplayMinSamples),
+			TotalP99:    contract.QuantileDurationSketch(op.TotalSketch, op.TotalHist, 0.99, contract.DefaultDisplayMinSamples),
 		}
 		if op.TotalCount >= contract.DefaultDisplayMinSamples {
 			sr := (float64(op.SuccessCnt) / float64(op.TotalCount)) * 100.0
@@ -344,7 +356,7 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 
 	var metrics []contract.MetricComparison
 
-	// 1. Cold start P50 & P90
+	// 1. Cold start P50, P90, P95, P99 (DDSketch ±2% when available, 19-bucket fallback otherwise)
 	baseSt, err := e.store.QueryStartup(ctx, baseFilter)
 	if err != nil {
 		return CompareReport{}, err
@@ -353,27 +365,49 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 	if err != nil {
 		return CompareReport{}, err
 	}
-	bP50 := contract.QuantileDuration(baseSt.TotalHist, 0.50, minSamples)
-	cP50 := contract.QuantileDuration(candSt.TotalHist, 0.50, minSamples)
-	metrics = append(metrics, enrichWithHistogramStats(
+	bP50 := contract.QuantileDurationSketch(baseSt.TotalSketch, baseSt.TotalHist, 0.50, minSamples)
+	cP50 := contract.QuantileDurationSketch(candSt.TotalSketch, candSt.TotalHist, 0.50, minSamples)
+	metrics = append(metrics, enrichWithSketchOrHistogramStats(
 		contract.CompareValues(
 			"startup_cold_p50_ms", "ms", "lower_is_better",
 			bP50.Value, bP50.SampleSize, bP50.MissingReason,
 			cP50.Value, cP50.SampleSize, cP50.MissingReason,
 			minSamples, 50.0,
 		),
-		baseSt.TotalHist, candSt.TotalHist, bP50, cP50, DefaultSignificanceAlpha,
+		baseSt.TotalSketch, candSt.TotalSketch, baseSt.TotalHist, candSt.TotalHist, bP50, cP50, DefaultSignificanceAlpha,
 	))
-	bP90 := contract.QuantileDuration(baseSt.TotalHist, 0.90, minSamples)
-	cP90 := contract.QuantileDuration(candSt.TotalHist, 0.90, minSamples)
-	metrics = append(metrics, enrichWithHistogramStats(
+	bP90 := contract.QuantileDurationSketch(baseSt.TotalSketch, baseSt.TotalHist, 0.90, minSamples)
+	cP90 := contract.QuantileDurationSketch(candSt.TotalSketch, candSt.TotalHist, 0.90, minSamples)
+	metrics = append(metrics, enrichWithSketchOrHistogramStats(
 		contract.CompareValues(
 			"startup_cold_p90_ms", "ms", "lower_is_better",
 			bP90.Value, bP90.SampleSize, bP90.MissingReason,
 			cP90.Value, cP90.SampleSize, cP90.MissingReason,
 			minSamples, 100.0,
 		),
-		baseSt.TotalHist, candSt.TotalHist, bP90, cP90, DefaultSignificanceAlpha,
+		baseSt.TotalSketch, candSt.TotalSketch, baseSt.TotalHist, candSt.TotalHist, bP90, cP90, DefaultSignificanceAlpha,
+	))
+	bP95 := contract.QuantileDurationSketch(baseSt.TotalSketch, baseSt.TotalHist, 0.95, minSamples)
+	cP95 := contract.QuantileDurationSketch(candSt.TotalSketch, candSt.TotalHist, 0.95, minSamples)
+	metrics = append(metrics, enrichWithSketchOrHistogramStats(
+		contract.CompareValues(
+			"startup_cold_p95_ms", "ms", "lower_is_better",
+			bP95.Value, bP95.SampleSize, bP95.MissingReason,
+			cP95.Value, cP95.SampleSize, cP95.MissingReason,
+			minSamples, 120.0,
+		),
+		baseSt.TotalSketch, candSt.TotalSketch, baseSt.TotalHist, candSt.TotalHist, bP95, cP95, DefaultSignificanceAlpha,
+	))
+	bP99 := contract.QuantileDurationSketch(baseSt.TotalSketch, baseSt.TotalHist, 0.99, minSamples)
+	cP99 := contract.QuantileDurationSketch(candSt.TotalSketch, candSt.TotalHist, 0.99, minSamples)
+	metrics = append(metrics, enrichWithSketchOrHistogramStats(
+		contract.CompareValues(
+			"startup_cold_p99_ms", "ms", "lower_is_better",
+			bP99.Value, bP99.SampleSize, bP99.MissingReason,
+			cP99.Value, cP99.SampleSize, cP99.MissingReason,
+			minSamples, 180.0,
+		),
+		baseSt.TotalSketch, candSt.TotalSketch, baseSt.TotalHist, candSt.TotalHist, bP99, cP99, DefaultSignificanceAlpha,
 	))
 
 	// 2. Fluency jank rate (only across identical algorithms!)
@@ -413,8 +447,8 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 	if err != nil {
 		return CompareReport{}, err
 	}
-	bCPU, bMemHist, bResN := mergeResources(baseRes)
-	cCPU, cMemHist, cResN := mergeResources(candRes)
+	bCPU, bMemHist, bMemSketch, bResN := mergeResources(baseRes)
+	cCPU, cMemHist, cMemSketch, cResN := mergeResources(candRes)
 	cpuCmp := contract.CompareValues(
 		"resource_cpu_avg_pct", "%", "lower_is_better",
 		bCPU, bResN, missingIfZero(bResN),
@@ -424,16 +458,16 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 	cpuCmp.StatTest = "threshold_only"
 	metrics = append(metrics, cpuCmp)
 
-	bMemP90 := contract.QuantileMemoryMiB(bMemHist, 0.90, minSamples)
-	cMemP90 := contract.QuantileMemoryMiB(cMemHist, 0.90, minSamples)
-	metrics = append(metrics, enrichWithHistogramStats(
+	bMemP90 := contract.QuantileMemoryMiBSketch(bMemSketch, bMemHist, 0.90, minSamples)
+	cMemP90 := contract.QuantileMemoryMiBSketch(cMemSketch, cMemHist, 0.90, minSamples)
+	metrics = append(metrics, enrichWithSketchOrHistogramStats(
 		contract.CompareValues(
 			"resource_memory_peak_p90_mib", "MiB", "lower_is_better",
 			bMemP90.Value, bMemP90.SampleSize, bMemP90.MissingReason,
 			cMemP90.Value, cMemP90.SampleSize, cMemP90.MissingReason,
 			minSamples, 16.0,
 		),
-		bMemHist, cMemHist, bMemP90, cMemP90, DefaultSignificanceAlpha,
+		bMemSketch, cMemSketch, bMemHist, cMemHist, bMemP90, cMemP90, DefaultSignificanceAlpha,
 	))
 
 	// 4. Network logical API success rate & P90
@@ -548,20 +582,22 @@ func aggregateSingleAlgorithmFluency(rows []storage.FluencyAggregate) fluencyAgg
 	}
 }
 
-func mergeResources(rows []storage.ResourceAggregate) (*float64, contract.Histogram, int64) {
+func mergeResources(rows []storage.ResourceAggregate) (*float64, contract.Histogram, *contract.DDSketch, int64) {
 	var totalWin int64
 	var cpuSum float64
 	var memHist contract.Histogram
+	var memSketch *contract.DDSketch
 	for _, r := range rows {
 		totalWin += r.ResourceWindows
 		cpuSum += r.CPUPctSum
 		memHist.Add(r.MemoryPeakHistMiB)
+		contract.MergeDDSketch(&memSketch, r.MemoryPeakSketchMiB)
 	}
 	if totalWin == 0 {
-		return nil, memHist, 0
+		return nil, memHist, memSketch, 0
 	}
 	avg := cpuSum / float64(totalWin)
-	return &avg, memHist, totalWin
+	return &avg, memHist, memSketch, totalWin
 }
 
 func networkSuccessRate(n storage.NetworkAggregate) (*float64, string) {

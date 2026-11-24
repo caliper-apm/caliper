@@ -133,6 +133,59 @@ func enrichWithProportionStats(
 	return m
 }
 
+// DDSketchKSTest performs a high-resolution two-sample Kolmogorov-Smirnov test over two DDSketches
+// (typically 2% relative-width logarithmic bins), catching intra-bucket latency/memory regressions
+// that coarse 19-bucket histograms cannot resolve.
+func DDSketchKSTest(skA, skB *contract.DDSketch) (ksStat float64, pValue float64, ok bool) {
+	if skA == nil || skB == nil {
+		return 0, 1.0, false
+	}
+	nA := skA.Total()
+	nB := skB.Total()
+	if nA <= 0 || nB <= 0 {
+		return 0, 1.0, false
+	}
+	// Require matching alpha for direct index alignment; otherwise fall back to histogram KS.
+	if math.Abs(skA.Alpha-skB.Alpha) >= 1e-9 {
+		return 0, 1.0, false
+	}
+
+	keySet := make(map[int32]struct{}, len(skA.Bins)+len(skB.Bins))
+	for k, c := range skA.Bins {
+		if c > 0 {
+			keySet[k] = struct{}{}
+		}
+	}
+	for k, c := range skB.Bins {
+		if c > 0 {
+			keySet[k] = struct{}{}
+		}
+	}
+	keys := make([]int32, 0, len(keySet))
+	for k := range keySet {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+
+	cumA := skA.ZeroCount
+	cumB := skB.ZeroCount
+	maxDiff := math.Abs(float64(cumA)/float64(nA) - float64(cumB)/float64(nB))
+	for _, k := range keys {
+		cumA += skA.Bins[k]
+		cumB += skB.Bins[k]
+		diff := math.Abs(float64(cumA)/float64(nA) - float64(cumB)/float64(nB))
+		if diff > maxDiff {
+			maxDiff = diff
+		}
+	}
+
+	nEff := (float64(nA) * float64(nB)) / float64(nA+nB)
+	sqrtN := math.Sqrt(nEff)
+	lambda := (sqrtN + 0.12 + 0.11/sqrtN) * maxDiff
+	p := kolmogorovSurvival(lambda)
+	return maxDiff, p, true
+}
+
 // enrichWithHistogramStats attaches Histogram KS p-value + quantile bucket intervals.
 func enrichWithHistogramStats(
 	m contract.MetricComparison,
@@ -153,6 +206,31 @@ func enrichWithHistogramStats(
 		}
 	}
 	return m
+}
+
+// enrichWithSketchOrHistogramStats prefers high-resolution DDSketch KS testing when both arms
+// carry sketches, transparently falling back to 19-bucket Histogram KS otherwise.
+func enrichWithSketchOrHistogramStats(
+	m contract.MetricComparison,
+	skBase, skCand *contract.DDSketch,
+	histBase, histCand contract.Histogram,
+	baseQ, candQ contract.QuantileResult,
+	alpha float64,
+) contract.MetricComparison {
+	if _, p, ok := DDSketchKSTest(skBase, skCand); ok {
+		m.StatTest = "ddsketch_ks"
+		m.BaselineCI95 = baseQ.Interval
+		m.CandidateCI95 = candQ.Interval
+		m.PValue = &p
+		sig := p < alpha
+		m.StatSignificant = &sig
+		if !sig && (m.Status == "regressed" || m.Status == "improved") {
+			m.Status = "neutral"
+			m.GateReason = "statistically_insignificant"
+		}
+		return m
+	}
+	return enrichWithHistogramStats(m, histBase, histCand, baseQ, candQ, alpha)
 }
 
 // RegressionFinding represents one ranked statistical finding from an automated release scan.
@@ -272,15 +350,15 @@ func (e *Engine) ScanRegressions(ctx context.Context, req CompareRequest) (Regre
 		if !ok {
 			continue
 		}
-		bMem := contract.QuantileMemoryMiB(brow.MemoryPeakHistMiB, 0.90, minSamples)
-		cMem := contract.QuantileMemoryMiB(crow.MemoryPeakHistMiB, 0.90, minSamples)
+		bMem := contract.QuantileMemoryMiBSketch(brow.MemoryPeakSketchMiB, brow.MemoryPeakHistMiB, 0.90, minSamples)
+		cMem := contract.QuantileMemoryMiBSketch(crow.MemoryPeakSketchMiB, crow.MemoryPeakHistMiB, 0.90, minSamples)
 		cmp := contract.CompareValues(
 			"scene_memory_peak_p90_mib", "MiB", "lower_is_better",
 			bMem.Value, bMem.SampleSize, bMem.MissingReason,
 			cMem.Value, cMem.SampleSize, cMem.MissingReason,
 			minSamples, 16.0,
 		)
-		cmp = enrichWithHistogramStats(cmp, brow.MemoryPeakHistMiB, crow.MemoryPeakHistMiB, bMem, cMem, DefaultSignificanceAlpha)
+		cmp = enrichWithSketchOrHistogramStats(cmp, brow.MemoryPeakSketchMiB, crow.MemoryPeakSketchMiB, brow.MemoryPeakHistMiB, crow.MemoryPeakHistMiB, bMem, cMem, DefaultSignificanceAlpha)
 		if cmp.Status == "regressed" || cmp.Status == "improved" {
 			findings = append(findings, RegressionFinding{
 				Scope:       "scene:" + crow.Scene,

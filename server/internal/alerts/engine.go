@@ -224,6 +224,20 @@ func (e *Engine) readMetric(ctx context.Context, rule storage.AlertRule) (*float
 		}
 		return rep.TotalP90.Value, rep.TotalP90.SampleSize, rep.TotalP90.MissingReason, nil
 
+	case "startup_cold_p95_ms":
+		rep, err := e.analytics.Startup(ctx, f)
+		if err != nil {
+			return nil, 0, "", err
+		}
+		return rep.TotalP95.Value, rep.TotalP95.SampleSize, rep.TotalP95.MissingReason, nil
+
+	case "startup_cold_p99_ms":
+		rep, err := e.analytics.Startup(ctx, f)
+		if err != nil {
+			return nil, 0, "", err
+		}
+		return rep.TotalP99.Value, rep.TotalP99.SampleSize, rep.TotalP99.MissingReason, nil
+
 	case "startup_cold_p50_ms":
 		rep, err := e.analytics.Startup(ctx, f)
 		if err != nil {
@@ -274,16 +288,24 @@ func (e *Engine) readMetric(ctx context.Context, rule storage.AlertRule) (*float
 		avg := weightedCPU / float64(totalWin)
 		return &avg, totalWin, "", nil
 
-	case "resource_memory_peak_p90_mib":
+	case "resource_memory_peak_p90_mib", "resource_memory_peak_p95_mib", "resource_memory_peak_p99_mib":
 		aggs, err := e.store.QueryResources(ctx, f)
 		if err != nil {
 			return nil, 0, "", err
 		}
 		var hist contract.Histogram
+		var sk *contract.DDSketch
 		for _, r := range aggs {
 			hist.Add(r.MemoryPeakHistMiB)
+			contract.MergeDDSketch(&sk, r.MemoryPeakSketchMiB)
 		}
-		q := contract.QuantileMemoryMiB(hist, 0.90, rule.MinSamples)
+		p := 0.90
+		if rule.MetricID == "resource_memory_peak_p95_mib" {
+			p = 0.95
+		} else if rule.MetricID == "resource_memory_peak_p99_mib" {
+			p = 0.99
+		}
+		q := contract.QuantileMemoryMiBSketch(sk, hist, p, rule.MinSamples)
 		return q.Value, q.SampleSize, q.MissingReason, nil
 
 	case "network_api_success_rate_pct":

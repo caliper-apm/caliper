@@ -73,6 +73,8 @@ type DimensionSlice struct {
 	Dimension      string   `json:"dimension"` // version | adapter | scene
 	Key            string   `json:"key"`
 	StartupP90MS   *float64 `json:"startup_p90_ms"`
+	StartupP95MS   *float64 `json:"startup_p95_ms"`
+	StartupP99MS   *float64 `json:"startup_p99_ms"`
 	StartupSamples int64    `json:"startup_samples"`
 	JankRatePct    *float64 `json:"jank_rate_pct"`
 	FluencyWindows int64    `json:"fluency_windows"`
@@ -159,6 +161,8 @@ func (e *Engine) Breakdown(ctx context.Context, meta storage.MetaStore, f storag
 			Dimension:      dimension,
 			Key:            k,
 			StartupP90MS:   ov.Startup.TotalP90.Value,
+			StartupP95MS:   ov.Startup.TotalP95.Value,
+			StartupP99MS:   ov.Startup.TotalP99.Value,
 			StartupSamples: ov.Startup.SuccessCount,
 			APISuccessPct:  ov.Network.SuccessRatePct,
 			APIP90MS:       ov.Network.DurationP90.Value,

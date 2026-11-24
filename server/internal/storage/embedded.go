@@ -430,10 +430,13 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		case "success":
 			agg.SuccessCount++
 			agg.TotalHist[contract.DurationBucketIndex(p.TotalDurationMS)]++
+			contract.AddToDDSketch(&agg.TotalSketch, p.TotalDurationMS)
 			if p.NativeInitMS != nil && p.FirstFrameMS != nil {
 				agg.StagedCount++
 				agg.NativeInitHist[contract.DurationBucketIndex(*p.NativeInitMS)]++
+				contract.AddToDDSketch(&agg.NativeInitSketch, *p.NativeInitMS)
 				agg.FirstFrameHist[contract.DurationBucketIndex(*p.FirstFrameMS)]++
+				contract.AddToDDSketch(&agg.FirstFrameSketch, *p.FirstFrameMS)
 				rt := p.TotalDurationMS - *p.NativeInitMS - *p.FirstFrameMS
 				if p.RuntimeInitMS != nil {
 					rt = *p.RuntimeInitMS
@@ -442,6 +445,7 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 					rt = 0
 				}
 				agg.RuntimeHist[contract.DurationBucketIndex(rt)]++
+				contract.AddToDDSketch(&agg.RuntimeSketch, rt)
 			}
 		case "aborted":
 			agg.AbortedCount++
@@ -493,7 +497,9 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		}
 		agg.ResourceWindows++
 		agg.CPUPctSum += p.CPUPct
-		agg.MemoryPeakHistMiB[contract.MemoryBucketIndex(p.MemoryPeakKiB/1024.0)]++
+		memMiB := p.MemoryPeakKiB / 1024.0
+		agg.MemoryPeakHistMiB[contract.MemoryBucketIndex(memMiB)]++
+		contract.AddToDDSketch(&agg.MemoryPeakSketchMiB, memMiB)
 
 	case protocol.JSLongTaskPayload:
 		k := baseKey
@@ -569,20 +575,26 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		}
 		if p.DNSMS != nil {
 			op.DNSHist[contract.DurationBucketIndex(*p.DNSMS)]++
+			contract.AddToDDSketch(&op.DNSSketch, *p.DNSMS)
 		}
 		if p.TCPMS != nil {
 			op.TCPHist[contract.DurationBucketIndex(*p.TCPMS)]++
+			contract.AddToDDSketch(&op.TCPSketch, *p.TCPMS)
 		}
 		if p.TLSMS != nil {
 			op.TLSHist[contract.DurationBucketIndex(*p.TLSMS)]++
+			contract.AddToDDSketch(&op.TLSSketch, *p.TLSMS)
 		}
 		if p.TTFBMS != nil {
 			op.TTFBHist[contract.DurationBucketIndex(*p.TTFBMS)]++
+			contract.AddToDDSketch(&op.TTFBSketch, *p.TTFBMS)
 		}
 		if p.BodyMS != nil {
 			op.BodyHist[contract.DurationBucketIndex(*p.BodyMS)]++
+			contract.AddToDDSketch(&op.BodySketch, *p.BodyMS)
 		}
 		op.TotalHist[contract.DurationBucketIndex(p.TotalMS)]++
+		contract.AddToDDSketch(&op.TotalSketch, p.TotalMS)
 
 		isIssueSample := p.Result != "success" || p.StatusCode >= 400 || p.TotalMS >= 800
 		if isIssueSample || p.TraceID != "" || len(s.networkSamples) < 120 || s.totalEvents%7 == 0 {
@@ -627,10 +639,11 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		agg := s.customScenes[ck]
 		if agg == nil {
 			agg = &CustomSceneAggregate{
-				JourneyName: p.JourneyName,
-				StageHists:  map[string]contract.Histogram{},
-				ErrorCodes:  map[string]int64{},
-				PolicyIDs:   map[string]struct{}{},
+				JourneyName:   p.JourneyName,
+				StageHists:    map[string]contract.Histogram{},
+				StageSketches: map[string]*contract.DDSketch{},
+				ErrorCodes:    map[string]int64{},
+				PolicyIDs:     map[string]struct{}{},
 			}
 			s.customScenes[ck] = agg
 		}
@@ -650,6 +663,7 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 		}
 		if p.DurationMS != nil {
 			agg.DurationHist[contract.DurationBucketIndex(*p.DurationMS)]++
+			contract.AddToDDSketch(&agg.DurationSketch, *p.DurationMS)
 		}
 		for _, st := range p.Stages {
 			h, exists := agg.StageHists[st.Name]
@@ -658,6 +672,9 @@ func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, 
 			}
 			h[contract.DurationBucketIndex(st.DurationMS)]++
 			agg.StageHists[st.Name] = h
+			sk := agg.StageSketches[st.Name]
+			contract.AddToDDSketch(&sk, st.DurationMS)
+			agg.StageSketches[st.Name] = sk
 		}
 		if e.PolicyID != "" {
 			agg.PolicyIDs[e.PolicyID] = struct{}{}
@@ -820,6 +837,10 @@ func (s *EmbeddedStore) QueryStartup(_ context.Context, f QueryFilter) (StartupA
 		out.NativeInitHist.Add(agg.NativeInitHist)
 		out.RuntimeHist.Add(agg.RuntimeHist)
 		out.FirstFrameHist.Add(agg.FirstFrameHist)
+		contract.MergeDDSketch(&out.TotalSketch, agg.TotalSketch)
+		contract.MergeDDSketch(&out.NativeInitSketch, agg.NativeInitSketch)
+		contract.MergeDDSketch(&out.RuntimeSketch, agg.RuntimeSketch)
+		contract.MergeDDSketch(&out.FirstFrameSketch, agg.FirstFrameSketch)
 		out.SuccessCount += agg.SuccessCount
 		out.AbortedCount += agg.AbortedCount
 		out.TimeoutCount += agg.TimeoutCount
@@ -898,6 +919,7 @@ func (s *EmbeddedStore) QueryResources(_ context.Context, f QueryFilter) ([]Reso
 		dst.ResourceWindows += agg.ResourceWindows
 		dst.CPUPctSum += agg.CPUPctSum
 		dst.MemoryPeakHistMiB.Add(agg.MemoryPeakHistMiB)
+		contract.MergeDDSketch(&dst.MemoryPeakSketchMiB, agg.MemoryPeakSketchMiB)
 		dst.JSLongTaskWindows += agg.JSLongTaskWindows
 		dst.JSLongTaskCount += agg.JSLongTaskCount
 		dst.JSBlockingSumMS += agg.JSBlockingSumMS
@@ -981,6 +1003,12 @@ func (s *EmbeddedStore) QueryNetwork(_ context.Context, f QueryFilter) (NetworkA
 			dst.TTFBHist.Add(src.TTFBHist)
 			dst.BodyHist.Add(src.BodyHist)
 			dst.TotalHist.Add(src.TotalHist)
+			contract.MergeDDSketch(&dst.DNSSketch, src.DNSSketch)
+			contract.MergeDDSketch(&dst.TCPSketch, src.TCPSketch)
+			contract.MergeDDSketch(&dst.TLSSketch, src.TLSSketch)
+			contract.MergeDDSketch(&dst.TTFBSketch, src.TTFBSketch)
+			contract.MergeDDSketch(&dst.BodySketch, src.BodySketch)
+			contract.MergeDDSketch(&dst.TotalSketch, src.TotalSketch)
 		}
 	}
 	return out, nil
@@ -1056,10 +1084,11 @@ func (s *EmbeddedStore) QueryCustomScenes(_ context.Context, f QueryFilter) ([]C
 		dst := grouped[agg.JourneyName]
 		if dst == nil {
 			dst = &CustomSceneAggregate{
-				JourneyName: agg.JourneyName,
-				StageHists:  map[string]contract.Histogram{},
-				ErrorCodes:  map[string]int64{},
-				PolicyIDs:   map[string]struct{}{},
+				JourneyName:   agg.JourneyName,
+				StageHists:    map[string]contract.Histogram{},
+				StageSketches: map[string]*contract.DDSketch{},
+				ErrorCodes:    map[string]int64{},
+				PolicyIDs:     map[string]struct{}{},
 			}
 			grouped[agg.JourneyName] = dst
 		}
@@ -1069,6 +1098,7 @@ func (s *EmbeddedStore) QueryCustomScenes(_ context.Context, f QueryFilter) ([]C
 		dst.TimeoutCount += agg.TimeoutCount
 		dst.CancelledCount += agg.CancelledCount
 		dst.DurationHist.Add(agg.DurationHist)
+		contract.MergeDDSketch(&dst.DurationSketch, agg.DurationSketch)
 		for _, stName := range agg.StageOrder {
 			h, exists := dst.StageHists[stName]
 			if !exists {
@@ -1076,6 +1106,11 @@ func (s *EmbeddedStore) QueryCustomScenes(_ context.Context, f QueryFilter) ([]C
 			}
 			h.Add(agg.StageHists[stName])
 			dst.StageHists[stName] = h
+			if srcSk := agg.StageSketches[stName]; srcSk != nil {
+				dstSk := dst.StageSketches[stName]
+				contract.MergeDDSketch(&dstSk, srcSk)
+				dst.StageSketches[stName] = dstSk
+			}
 		}
 		for ec, cnt := range agg.ErrorCodes {
 			dst.ErrorCodes[ec] += cnt
@@ -1823,22 +1858,24 @@ func issueMapKey(appID, platform, env, fingerprint string) string {
 
 func (s *EmbeddedStore) QueryDailyTrends(_ context.Context, f QueryFilter) ([]DailyTrendPoint, error) {
 	type dayAcc struct {
-		verCount   map[string]int64
-		startHist  contract.Histogram
-		startN     int64
-		flValidWin int64
-		flFrames   int64
-		flJank     int64
-		flAlgos    map[string]struct{}
-		resWin     int64
-		cpuSum     float64
-		memHist    contract.Histogram
-		netCalls   int64
-		netFails   int64
-		netHist    contract.Histogram
-		crashes    int64
-		anrs       int64
-		abnormals  int64
+		verCount    map[string]int64
+		startHist   contract.Histogram
+		startSketch *contract.DDSketch
+		startN      int64
+		flValidWin  int64
+		flFrames    int64
+		flJank      int64
+		flAlgos     map[string]struct{}
+		resWin      int64
+		cpuSum      float64
+		memHist     contract.Histogram
+		memSketch   *contract.DDSketch
+		netCalls    int64
+		netFails    int64
+		netHist     contract.Histogram
+		crashes     int64
+		anrs        int64
+		abnormals   int64
 	}
 	days := map[string]*dayAcc{}
 	getDay := func(d string) *dayAcc {
@@ -1859,6 +1896,7 @@ func (s *EmbeddedStore) QueryDailyTrends(_ context.Context, f QueryFilter) ([]Da
 		}
 		acc := getDay(k.DayUTC)
 		acc.startHist.Add(agg.TotalHist)
+		contract.MergeDDSketch(&acc.startSketch, agg.TotalSketch)
 		acc.startN += agg.SuccessCount
 		acc.verCount[k.AppVersion] += agg.SuccessCount
 	}
@@ -1883,6 +1921,7 @@ func (s *EmbeddedStore) QueryDailyTrends(_ context.Context, f QueryFilter) ([]Da
 		acc.resWin += agg.ResourceWindows
 		acc.cpuSum += agg.CPUPctSum
 		acc.memHist.Add(agg.MemoryPeakHistMiB)
+		contract.MergeDDSketch(&acc.memSketch, agg.MemoryPeakSketchMiB)
 		acc.verCount[k.AppVersion] += agg.ResourceWindows
 	}
 	for k, agg := range s.networks {
@@ -1965,11 +2004,17 @@ func (s *EmbeddedStore) QueryDailyTrends(_ context.Context, f QueryFilter) ([]Da
 		}
 		pt.DominantVersion = maxVer
 
-		if q50 := contract.QuantileDuration(acc.startHist, 0.50, contract.DefaultDisplayMinSamples); q50.Value != nil {
+		if q50 := contract.QuantileDurationSketch(acc.startSketch, acc.startHist, 0.50, contract.DefaultDisplayMinSamples); q50.Value != nil {
 			pt.StartupP50MS = q50.Value
 		}
-		if q90 := contract.QuantileDuration(acc.startHist, 0.90, contract.DefaultDisplayMinSamples); q90.Value != nil {
+		if q90 := contract.QuantileDurationSketch(acc.startSketch, acc.startHist, 0.90, contract.DefaultDisplayMinSamples); q90.Value != nil {
 			pt.StartupP90MS = q90.Value
+		}
+		if q95 := contract.QuantileDurationSketch(acc.startSketch, acc.startHist, 0.95, contract.DefaultDisplayMinSamples); q95.Value != nil {
+			pt.StartupP95MS = q95.Value
+		}
+		if q99 := contract.QuantileDurationSketch(acc.startSketch, acc.startHist, 0.99, contract.DefaultDisplayMinSamples); q99.Value != nil {
+			pt.StartupP99MS = q99.Value
 		}
 		if len(acc.flAlgos) == 1 && acc.flFrames > 0 && acc.flValidWin >= contract.DefaultDisplayMinSamples {
 			v := (float64(acc.flJank) / float64(acc.flFrames)) * 100.0
@@ -1986,8 +2031,14 @@ func (s *EmbeddedStore) QueryDailyTrends(_ context.Context, f QueryFilter) ([]Da
 			cpu := acc.cpuSum / float64(acc.resWin)
 			pt.AvgCPUPct = &cpu
 		}
-		if m90 := contract.QuantileMemoryMiB(acc.memHist, 0.90, contract.DefaultDisplayMinSamples); m90.Value != nil {
+		if m90 := contract.QuantileMemoryMiBSketch(acc.memSketch, acc.memHist, 0.90, contract.DefaultDisplayMinSamples); m90.Value != nil {
 			pt.MemoryP90MiB = m90.Value
+		}
+		if m95 := contract.QuantileMemoryMiBSketch(acc.memSketch, acc.memHist, 0.95, contract.DefaultDisplayMinSamples); m95.Value != nil {
+			pt.MemoryP95MiB = m95.Value
+		}
+		if m99 := contract.QuantileMemoryMiBSketch(acc.memSketch, acc.memHist, 0.99, contract.DefaultDisplayMinSamples); m99.Value != nil {
+			pt.MemoryP99MiB = m99.Value
 		}
 		out = append(out, pt)
 	}
