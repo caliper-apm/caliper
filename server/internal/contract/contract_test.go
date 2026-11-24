@@ -192,3 +192,27 @@ func TestValidateStartupStages(t *testing.T) {
 		t.Fatal("over-budget startup stages must be rejected")
 	}
 }
+
+func TestIntraBucketLinearInterpolationBoundsAndMonotonicity(t *testing.T) {
+	// 50 samples in (500, 750] and 50 samples in (750, 1000] -> P50 = 750, P75 = 875, P90 = 950.
+	var h Histogram
+	h[DurationBucketIndex(600)] = 50
+	h[DurationBucketIndex(900)] = 50
+
+	p50 := QuantileDuration(h, 0.50, DefaultDisplayMinSamples)
+	p75 := QuantileDuration(h, 0.75, DefaultDisplayMinSamples)
+	p90 := QuantileDuration(h, 0.90, DefaultDisplayMinSamples)
+
+	if p50.Value == nil || p75.Value == nil || p90.Value == nil {
+		t.Fatalf("expected non-nil quantiles: p50=%+v p75=%+v p90=%+v", p50, p75, p90)
+	}
+	if *p50.Value != 750.0 || *p75.Value != 875.0 || *p90.Value != 950.0 {
+		t.Fatalf("unexpected linear interpolation: p50=%v p75=%v p90=%v (want 750, 875, 950)", *p50.Value, *p75.Value, *p90.Value)
+	}
+	if p90.Interval == nil || (*p90.Interval)[0] != 750 || (*p90.Interval)[1] != 1000 {
+		t.Fatalf("expected exact bucket interval [750, 1000], got %+v", p90.Interval)
+	}
+	if !(*p50.Value <= *p75.Value && *p75.Value <= *p90.Value) {
+		t.Fatalf("quantiles must be monotonic: %v <= %v <= %v", *p50.Value, *p75.Value, *p90.Value)
+	}
+}

@@ -150,12 +150,14 @@ func quantileFromBounds(bounds []float64, h Histogram, q float64, minSamples int
 	if total < minSamples {
 		return QuantileResult{SampleSize: total, MissingReason: MissingInsufficientSamples}
 	}
-	target := int64(math.Ceil(float64(total) * q))
+	rank := float64(total) * q
+	target := int64(math.Ceil(rank))
 	if target < 1 {
 		target = 1
 	}
 	var cumulative int64
 	for i, count := range h {
+		prevCum := cumulative
 		cumulative += count
 		if cumulative >= target {
 			if i == len(bounds) {
@@ -167,7 +169,18 @@ func quantileFromBounds(bounds []float64, h Histogram, q float64, minSamples int
 				lower = bounds[i-1]
 			}
 			upper := bounds[i]
-			val := upper
+			// Standard intra-bucket linear interpolation (Prometheus histogram_quantile semantics)
+			// while preserving the exact Zero-Lie [lower, upper] bucket interval.
+			frac := 1.0
+			if count > 0 {
+				frac = (rank - float64(prevCum)) / float64(count)
+				if frac < 0 {
+					frac = 0
+				} else if frac > 1 {
+					frac = 1
+				}
+			}
+			val := math.Round((lower+frac*(upper-lower))*10) / 10
 			interval := [2]float64{lower, upper}
 			return QuantileResult{
 				Value:      &val,

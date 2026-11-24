@@ -126,16 +126,27 @@ interface SparkProps {
 export function Sparkline({ values, color, height = 38 }: SparkProps) {
   const option: ECBasicOption = {
     animation: false,
-    grid: { top: 4, right: 2, bottom: 2, left: 2 },
+    grid: { top: 6, right: 2, bottom: 4, left: 2 },
     xAxis: { type: 'category', show: false, data: values.map((_, i) => i) },
-    yAxis: { type: 'value', show: false, scale: true },
+    yAxis: {
+      type: 'value',
+      show: false,
+      min: (ext: { min: number; max: number }) => {
+        const span = Math.max(ext.max - ext.min, Math.abs(ext.max) * 0.12, 1e-4);
+        return Math.max(0, ext.min - span * 0.25);
+      },
+      max: (ext: { min: number; max: number }) => {
+        const span = Math.max(ext.max - ext.min, Math.abs(ext.max) * 0.12, 1e-4);
+        return ext.max + span * 0.22;
+      },
+    },
     series: [
       {
         type: 'line',
         data: values,
         connectNulls: false,
         showSymbol: false,
-        smooth: 0.25,
+        smooth: 0.3,
         lineStyle: { width: 2, color },
         areaStyle: {
           color: {

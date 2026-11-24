@@ -78,8 +78,8 @@ export function FluencyPage({ filters, refreshTick, lang }: Props) {
     xAxis: { type: 'category', data: trends.map(p => p.day_utc.slice(5)), axisLabel: { color: '#86909c', fontSize: 11 } },
     yAxis: { type: 'value', name: 'ms', splitLine: { lineStyle: { color: '#f2f3f5' } } },
     series: [
-      { name: 'P90', type: 'line', smooth: 0.25, connectNulls: false, data: trends.map(p => p.startup_p90_ms), itemStyle: { color: '#165dff' }, areaStyle: { color: 'rgba(22,93,255,0.08)' } },
-      { name: 'P50', type: 'line', smooth: 0.25, connectNulls: false, data: trends.map(p => p.startup_p50_ms), itemStyle: { color: '#0fc6c2' } },
+      { name: 'P90', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => p.startup_p90_ms !== null ? Math.round(p.startup_p90_ms) : null), itemStyle: { color: '#165dff' }, areaStyle: { color: 'rgba(22,93,255,0.08)' } },
+      { name: 'P50', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => p.startup_p50_ms !== null ? Math.round(p.startup_p50_ms) : null), itemStyle: { color: '#0fc6c2' } },
     ],
   }), [trends]);
 

@@ -143,39 +143,49 @@ export function OverviewPage({ filters, releases, refreshTick, lang, onOpenIssue
       ? {
           symbol: 'none',
           lineStyle: { type: 'dashed', color: '#86909c', width: 1.5 },
-          label: { formatter: '{b}', fontSize: 11, color: '#4e5969', backgroundColor: '#f2f3f5', padding: [2, 5], borderRadius: 3 },
+          label: {
+            formatter: '{b}',
+            fontSize: 11,
+            color: '#4e5969',
+            backgroundColor: '#f2f3f5',
+            padding: [2, 6],
+            borderRadius: 3,
+            distance: 6,
+          },
           data: rolloutMarkLines,
         }
       : undefined;
 
-    const baseGrid = { top: 36, right: 54, bottom: 26, left: 52 };
+    const baseGrid = { top: 48, right: 56, bottom: 26, left: 54 };
+    const topLegend = { top: 0, left: 54, textStyle: { fontSize: 11 } };
     const tooltip = { trigger: 'axis', axisPointer: { type: 'cross' } };
+    const roundInt = (v: number | null) => (v !== null ? Math.round(v) : null);
 
     if (trendTab === 'startup') {
       return {
         tooltip,
-        legend: { top: 2, right: 12, textStyle: { fontSize: 11 } },
+        legend: topLegend,
         grid: baseGrid,
         xAxis: { type: 'category', data: xData, axisLine: { lineStyle: { color: '#e5e6eb' } }, axisLabel: { color: '#86909c', fontSize: 11 } },
-        yAxis: { type: 'value', name: 'ms', nameTextStyle: { color: '#86909c' }, splitLine: { lineStyle: { color: '#f2f3f5' } } },
+        yAxis: { type: 'value', name: 'ms', nameGap: 14, nameTextStyle: { color: '#86909c' }, splitLine: { lineStyle: { color: '#f2f3f5' } } },
         series: [
-          { name: 'Cold Start P90', type: 'line', smooth: 0.25, connectNulls: false, data: trends.map(p => p.startup_p90_ms), itemStyle: { color: '#165dff' }, areaStyle: { color: 'rgba(22,93,255,0.08)' }, markLine },
-          { name: 'Cold Start P50', type: 'line', smooth: 0.25, connectNulls: false, data: trends.map(p => p.startup_p50_ms), itemStyle: { color: '#0fc6c2' } },
+          { name: 'Cold Start P90', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => roundInt(p.startup_p90_ms)), itemStyle: { color: '#165dff' }, areaStyle: { color: 'rgba(22,93,255,0.08)' }, markLine },
+          { name: 'Cold Start P50', type: 'line', smooth: 0.28, connectNulls: false, data: trends.map(p => roundInt(p.startup_p50_ms)), itemStyle: { color: '#0fc6c2' } },
         ],
       };
     }
     if (trendTab === 'fluency') {
       return {
         tooltip,
-        legend: { top: 2, right: 12, textStyle: { fontSize: 11 } },
+        legend: topLegend,
         grid: baseGrid,
         xAxis: { type: 'category', data: xData, axisLabel: { color: '#86909c', fontSize: 11 } },
-        yAxis: { type: 'value', name: '%', splitLine: { lineStyle: { color: '#f2f3f5' } } },
+        yAxis: { type: 'value', name: '%', nameGap: 14, splitLine: { lineStyle: { color: '#f2f3f5' } } },
         series: [
           {
             name: lang === 'zh' ? '卡顿率 (%)' : 'Jank Rate (%)',
             type: 'line',
-            smooth: 0.25,
+            smooth: 0.28,
             connectNulls: false,
             data: trends.map(p => p.jank_rate_pct !== null ? Number(p.jank_rate_pct.toFixed(2)) : null),
             itemStyle: { color: '#ff7d00' },
@@ -186,47 +196,50 @@ export function OverviewPage({ filters, releases, refreshTick, lang, onOpenIssue
       };
     }
     if (trendTab === 'network') {
+      const validRates = trends.map(p => p.api_success_rate_pct).filter((v): v is number => v !== null);
+      const minRate = validRates.length > 0 ? Math.min(...validRates) : 95;
+      const yMin = Math.max(80, Math.min(96, Math.floor(minRate - 1.2)));
       return {
         tooltip,
-        legend: { top: 2, right: 12, textStyle: { fontSize: 11 } },
+        legend: topLegend,
         grid: baseGrid,
         xAxis: { type: 'category', data: xData, axisLabel: { color: '#86909c', fontSize: 11 } },
         yAxis: [
-          { type: 'value', name: '%', min: 85, max: 100, splitLine: { lineStyle: { color: '#f2f3f5' } } },
-          { type: 'value', name: 'ms', splitLine: { show: false } },
+          { type: 'value', name: '%', nameGap: 14, min: yMin, max: 100, splitLine: { lineStyle: { color: '#f2f3f5' } } },
+          { type: 'value', name: 'ms', nameGap: 14, splitLine: { show: false } },
         ],
         series: [
-          { name: lang === 'zh' ? 'API 成功率 (%)' : 'API Success (%)', type: 'line', yAxisIndex: 0, smooth: 0.25, connectNulls: false, data: trends.map(p => p.api_success_rate_pct !== null ? Number(p.api_success_rate_pct.toFixed(2)) : null), itemStyle: { color: '#00b42a' }, markLine },
-          { name: 'API P90 (ms)', type: 'bar', yAxisIndex: 1, barMaxWidth: 24, data: trends.map(p => p.api_p90_ms), itemStyle: { color: 'rgba(22,93,255,0.45)', borderRadius: [3, 3, 0, 0] } },
+          { name: lang === 'zh' ? 'API 成功率 (%)' : 'API Success (%)', type: 'line', yAxisIndex: 0, smooth: 0.28, connectNulls: false, data: trends.map(p => p.api_success_rate_pct !== null ? Number(p.api_success_rate_pct.toFixed(2)) : null), itemStyle: { color: '#00b42a' }, markLine },
+          { name: 'API P90 (ms)', type: 'bar', yAxisIndex: 1, barMaxWidth: 22, data: trends.map(p => roundInt(p.api_p90_ms)), itemStyle: { color: 'rgba(22,93,255,0.42)', borderRadius: [3, 3, 0, 0] } },
         ],
       };
     }
     if (trendTab === 'resources') {
       return {
         tooltip,
-        legend: { top: 2, right: 12, textStyle: { fontSize: 11 } },
+        legend: topLegend,
         grid: baseGrid,
         xAxis: { type: 'category', data: xData, axisLabel: { color: '#86909c', fontSize: 11 } },
         yAxis: [
-          { type: 'value', name: 'MiB', splitLine: { lineStyle: { color: '#f2f3f5' } } },
-          { type: 'value', name: 'CPU %', splitLine: { show: false } },
+          { type: 'value', name: 'MiB', nameGap: 14, splitLine: { lineStyle: { color: '#f2f3f5' } } },
+          { type: 'value', name: 'CPU %', nameGap: 14, splitLine: { show: false } },
         ],
         series: [
-          { name: lang === 'zh' ? '内存峰值 P90 (MiB)' : 'Memory P90 (MiB)', type: 'line', yAxisIndex: 0, smooth: 0.25, connectNulls: false, data: trends.map(p => p.memory_p90_mib), itemStyle: { color: '#722ed1' }, areaStyle: { color: 'rgba(114,46,209,0.08)' }, markLine },
-          { name: lang === 'zh' ? '平均 CPU (%)' : 'Avg CPU (%)', type: 'line', yAxisIndex: 1, smooth: 0.25, connectNulls: false, data: trends.map(p => p.avg_cpu_pct !== null ? Number(p.avg_cpu_pct.toFixed(1)) : null), itemStyle: { color: '#0fc6c2' } },
+          { name: lang === 'zh' ? '内存峰值 P90 (MiB)' : 'Memory P90 (MiB)', type: 'line', yAxisIndex: 0, smooth: 0.28, connectNulls: false, data: trends.map(p => roundInt(p.memory_p90_mib)), itemStyle: { color: '#722ed1' }, areaStyle: { color: 'rgba(114,46,209,0.08)' }, markLine },
+          { name: lang === 'zh' ? '平均 CPU (%)' : 'Avg CPU (%)', type: 'line', yAxisIndex: 1, smooth: 0.28, connectNulls: false, data: trends.map(p => p.avg_cpu_pct !== null ? Number(p.avg_cpu_pct.toFixed(1)) : null), itemStyle: { color: '#0fc6c2' } },
         ],
       };
     }
     return {
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      legend: { top: 2, right: 12, textStyle: { fontSize: 11 } },
+      legend: topLegend,
       grid: baseGrid,
       xAxis: { type: 'category', data: xData, axisLabel: { color: '#86909c', fontSize: 11 } },
-      yAxis: { type: 'value', name: lang === 'zh' ? '次数' : 'Events', splitLine: { lineStyle: { color: '#f2f3f5' } } },
+      yAxis: { type: 'value', name: lang === 'zh' ? '次数' : 'Events', nameGap: 14, splitLine: { lineStyle: { color: '#f2f3f5' } } },
       series: [
-        { name: 'Crash', type: 'bar', stack: 'stab', barMaxWidth: 26, data: trends.map(p => p.crash_events), itemStyle: { color: '#f53f3f' }, markLine },
-        { name: 'ANR', type: 'bar', stack: 'stab', barMaxWidth: 26, data: trends.map(p => p.anr_events), itemStyle: { color: '#ff7d00' } },
-        { name: 'Abnormal Exit', type: 'bar', stack: 'stab', barMaxWidth: 26, data: trends.map(p => p.abnormal_exit_events), itemStyle: { color: '#722ed1', borderRadius: [3, 3, 0, 0] } },
+        { name: 'Crash', type: 'bar', stack: 'stab', barMaxWidth: 24, data: trends.map(p => p.crash_events), itemStyle: { color: '#f53f3f' }, markLine },
+        { name: 'ANR', type: 'bar', stack: 'stab', barMaxWidth: 24, data: trends.map(p => p.anr_events), itemStyle: { color: '#ff7d00' } },
+        { name: 'Abnormal Exit', type: 'bar', stack: 'stab', barMaxWidth: 24, data: trends.map(p => p.abnormal_exit_events), itemStyle: { color: '#722ed1', borderRadius: [3, 3, 0, 0] } },
       ],
     };
   }, [trends, trendTab, rolloutMarkLines, lang]);

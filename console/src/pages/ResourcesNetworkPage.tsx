@@ -57,35 +57,40 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
     return () => { active = false; };
   }, [selectedOp, onlyIssues, JSON.stringify(filters), refreshTick]);
 
-  const netTrendOption: ECBasicOption = useMemo(() => ({
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-    legend: { top: 0, right: 10, textStyle: { fontSize: 11 } },
-    grid: { top: 32, right: 48, bottom: 26, left: 48 },
-    xAxis: { type: 'category', data: trends.map(p => p.day_utc.slice(5)), axisLabel: { color: '#86909c', fontSize: 11 } },
-    yAxis: [
-      { type: 'value', name: '%', min: 85, max: 100, splitLine: { lineStyle: { color: '#f2f3f5' } } },
-      { type: 'value', name: 'ms', splitLine: { show: false } },
-    ],
-    series: [
-      {
-        name: lang === 'zh' ? '逻辑 API 成功率 (%)' : 'API Success (%)',
-        type: 'line',
-        yAxisIndex: 0,
-        smooth: 0.25,
-        connectNulls: false,
-        data: trends.map(p => p.api_success_rate_pct !== null ? Number(p.api_success_rate_pct.toFixed(2)) : null),
-        itemStyle: { color: '#00b42a' },
-      },
-      {
-        name: 'API P90 (ms)',
-        type: 'bar',
-        yAxisIndex: 1,
-        barMaxWidth: 22,
-        data: trends.map(p => p.api_p90_ms),
-        itemStyle: { color: 'rgba(22,93,255,0.45)', borderRadius: [3, 3, 0, 0] },
-      },
-    ],
-  }), [trends, lang]);
+  const netTrendOption: ECBasicOption = useMemo(() => {
+    const validRates = trends.map(p => p.api_success_rate_pct).filter((v): v is number => v !== null);
+    const minRate = validRates.length > 0 ? Math.min(...validRates) : 95;
+    const yMin = Math.max(80, Math.min(96, Math.floor(minRate - 1.2)));
+    return {
+      tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+      legend: { top: 0, right: 10, textStyle: { fontSize: 11 } },
+      grid: { top: 34, right: 48, bottom: 26, left: 48 },
+      xAxis: { type: 'category', data: trends.map(p => p.day_utc.slice(5)), axisLabel: { color: '#86909c', fontSize: 11 } },
+      yAxis: [
+        { type: 'value', name: '%', min: yMin, max: 100, splitLine: { lineStyle: { color: '#f2f3f5' } } },
+        { type: 'value', name: 'ms', splitLine: { show: false } },
+      ],
+      series: [
+        {
+          name: lang === 'zh' ? '逻辑 API 成功率 (%)' : 'API Success (%)',
+          type: 'line',
+          yAxisIndex: 0,
+          smooth: 0.28,
+          connectNulls: false,
+          data: trends.map(p => p.api_success_rate_pct !== null ? Number(p.api_success_rate_pct.toFixed(2)) : null),
+          itemStyle: { color: '#00b42a' },
+        },
+        {
+          name: 'API P90 (ms)',
+          type: 'bar',
+          yAxisIndex: 1,
+          barMaxWidth: 22,
+          data: trends.map(p => p.api_p90_ms !== null ? Math.round(p.api_p90_ms) : null),
+          itemStyle: { color: 'rgba(22,93,255,0.42)', borderRadius: [3, 3, 0, 0] },
+        },
+      ],
+    };
+  }, [trends, lang]);
 
   const errorDonutOption: ECBasicOption = useMemo(() => {
     const fb = network?.failure_breakdown ?? {};
@@ -172,7 +177,7 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
       { type: 'value', name: 'CPU %', splitLine: { show: false } },
     ],
     series: [
-      { name: lang === 'zh' ? '内存峰值 P90 (MiB)' : 'Memory P90 (MiB)', type: 'line', yAxisIndex: 0, smooth: 0.25, connectNulls: false, data: trends.map(p => p.memory_p90_mib), itemStyle: { color: '#722ed1' }, areaStyle: { color: 'rgba(114,46,209,0.08)' } },
+      { name: lang === 'zh' ? '内存峰值 P90 (MiB)' : 'Memory P90 (MiB)', type: 'line', yAxisIndex: 0, smooth: 0.28, connectNulls: false, data: trends.map(p => p.memory_p90_mib !== null ? Math.round(p.memory_p90_mib) : null), itemStyle: { color: '#722ed1' }, areaStyle: { color: 'rgba(114,46,209,0.08)' } },
       { name: lang === 'zh' ? '进程平均 CPU (%)' : 'Avg CPU (%)', type: 'line', yAxisIndex: 1, smooth: 0.25, connectNulls: false, data: trends.map(p => p.avg_cpu_pct !== null ? Number(p.avg_cpu_pct.toFixed(1)) : null), itemStyle: { color: '#165dff' } },
     ],
   }), [trends, lang]);

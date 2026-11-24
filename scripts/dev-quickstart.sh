@@ -11,6 +11,11 @@ PORT="${CALIPER_PORT:-8080}"
 MOCK_PORT="${CALIPER_MOCK_PORT:-8090}"
 BIN_DIR="$ROOT_DIR/server/bin"
 
+if [[ "${1:-}" == "--clean" || "${CALIPER_CLEAN_DATA:-0}" == "1" ]]; then
+  echo "[0/4] Resetting local demo store ($DATA_DIR)..."
+  rm -rf "$DATA_DIR"
+fi
+
 mkdir -p "$BIN_DIR" "$DATA_DIR"
 
 echo "[1/4] Building Go binaries..."

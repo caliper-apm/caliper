@@ -118,7 +118,7 @@ const (
 	maxTimelineEventsPerHash = 200
 	maxTrackedTimelineHashes = 10000
 	maxStoredDiagnostics     = 500
-	maxNetworkSamples        = 1000
+	maxNetworkSamples        = 4000
 )
 
 // OpenEmbedded opens or initializes an embedded store in dataDir (empty dataDir = memory-only).
