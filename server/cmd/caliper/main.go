@@ -13,6 +13,7 @@ import (
 
 	"github.com/caliper-apm/caliper/server/internal/auth"
 	"github.com/caliper-apm/caliper/server/internal/collector"
+	"github.com/caliper-apm/caliper/server/internal/otlp"
 	"github.com/caliper-apm/caliper/server/internal/storage"
 	"github.com/caliper-apm/caliper/server/internal/storage/clickhouse"
 	"github.com/caliper-apm/caliper/server/internal/storage/objectstore"
@@ -42,6 +43,8 @@ func main() {
 	authConfig := flag.String("auth-config", "", "Optional JSON RBAC config file (--auth-config overrides --api-key)")
 	consoleDist := flag.String("console-dist", "", "Optional path to built console/dist static assets served at /")
 	alertInterval := flag.Duration("alert-interval", 0, "Optional background alert evaluation interval (e.g., 30s; 0 disables background loop)")
+	otlpTracesEndpoint := flag.String("otlp-traces-endpoint", os.Getenv("CALIPER_OTLP_TRACES_ENDPOINT"), "Optional OTLP/HTTP JSON trace push endpoint (e.g. http://tempo:4318/v1/traces)")
+	otlpTracesHeaders := flag.String("otlp-traces-headers", os.Getenv("CALIPER_OTLP_TRACES_HEADERS"), "Optional comma-separated headers for OTLP trace push (e.g. Authorization=Bearer xxx)")
 	flag.Parse()
 
 	// 1. Initialize ObjectStore (S3/MinIO for stateless HA, or local disk/memory fallback).
@@ -168,11 +171,25 @@ func main() {
 		authorizer = auth.NewSingleAPIKey(*apiKey)
 	}
 
+	var traceExporter *otlp.TracePushExporter
+	if *otlpTracesEndpoint != "" {
+		traceExporter = otlp.NewTracePushExporter(otlp.PushConfig{
+			Endpoint: *otlpTracesEndpoint,
+			Headers:  otlp.ParseHeaderList(*otlpTracesHeaders),
+		})
+		defer func() {
+			flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = traceExporter.Close(flushCtx)
+		}()
+	}
+
 	handler := collector.NewHandler(analyticsStore, metaStore, collector.Config{
 		APIKey:         *apiKey,
 		Authorizer:     authorizer,
 		ConsoleDistDir: *consoleDist,
 		MetaEngine:     activeMetaEngine,
+		TraceExporter:  traceExporter,
 	})
 	srv := &http.Server{
 		Addr:              *addr,

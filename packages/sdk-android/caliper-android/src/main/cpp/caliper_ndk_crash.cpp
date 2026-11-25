@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -283,6 +284,78 @@ _Unwind_Reason_Code unwind_cb(struct _Unwind_Context *ctx, void *arg) {
     return _URC_NO_REASON;
 }
 
+// ===== Async-signal-safe /proc/self/status & Register Telemetry =====
+
+struct CrashRegisters {
+    bool     has_regs;
+    uint64_t pc;
+    uint64_t lr;
+    uint64_t sp;
+    uint64_t fp;
+};
+
+bool starts_with_literal(const char *line, size_t len, const char *prefix, size_t prefix_len) {
+    if (len < prefix_len) return false;
+    for (size_t i = 0; i < prefix_len; i++) {
+        if (line[i] != prefix[i]) return false;
+    }
+    return true;
+}
+
+void write_status_kv(int fd, const char *key, const char *val, size_t val_len) {
+    while (val_len > 0 && (*val == ' ' || *val == '\t')) {
+        val++;
+        val_len--;
+    }
+    while (val_len > 0 && (val[val_len - 1] == '\r' || val[val_len - 1] == '\n' || val[val_len - 1] == ' ')) {
+        val_len--;
+    }
+    if (val_len == 0) return;
+    safe_write_str(fd, key);
+    safe_write_str(fd, "=");
+    safe_write_all(fd, val, val_len);
+    safe_write_str(fd, "\n");
+}
+
+// Extracts Threads / FDSize / VmPeak / VmRSS from /proc/self/status using zero heap allocations.
+void write_proc_status_async_safe(int fd) {
+    static char status_buf[4096];
+    int sfd = open("/proc/self/status", O_RDONLY);
+    if (sfd < 0) return;
+    ssize_t total = 0;
+    while (total < static_cast<ssize_t>(sizeof(status_buf) - 1)) {
+        ssize_t r = read(sfd, status_buf + total, sizeof(status_buf) - 1 - static_cast<size_t>(total));
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (r == 0) break;
+        total += r;
+    }
+    close(sfd);
+    if (total <= 0) return;
+    status_buf[total] = '\0';
+
+    size_t pos = 0;
+    size_t n = static_cast<size_t>(total);
+    while (pos < n) {
+        size_t end = pos;
+        while (end < n && status_buf[end] != '\n') end++;
+        const char *line = status_buf + pos;
+        size_t len = end - pos;
+        if (starts_with_literal(line, len, "Threads:", 8)) {
+            write_status_kv(fd, "proc_threads", line + 8, len - 8);
+        } else if (starts_with_literal(line, len, "FDSize:", 7)) {
+            write_status_kv(fd, "proc_fd_size", line + 7, len - 7);
+        } else if (starts_with_literal(line, len, "VmPeak:", 7)) {
+            write_status_kv(fd, "proc_vm_peak", line + 7, len - 7);
+        } else if (starts_with_literal(line, len, "VmRSS:", 6)) {
+            write_status_kv(fd, "proc_vm_rss", line + 6, len - 6);
+        }
+        pos = (end < n) ? (end + 1) : n;
+    }
+}
+
 // ===== Async-signal-safe Tombstone Writer =====
 
 void write_tombstone_file(
@@ -291,6 +364,7 @@ void write_tombstone_file(
     const char *exception_name,
     int64_t code,
     uint64_t fault_addr,
+    const CrashRegisters *regs,
     const uintptr_t *frames,
     size_t frame_count
 ) {
@@ -298,6 +372,7 @@ void write_tombstone_file(
     struct timeval tv;
     gettimeofday(&tv, nullptr);
     int64_t ts_ms = static_cast<int64_t>(tv.tv_sec) * 1000 + static_cast<int64_t>(tv.tv_usec / 1000);
+    int64_t tid = static_cast<int64_t>(syscall(SYS_gettid));
 
     char path[kMaxPath + 64];
     size_t dlen = safe_strlen(g_tombstone_dir);
@@ -338,12 +413,28 @@ void write_tombstone_file(
     safe_write_str(fd, "fault_addr=");
     safe_write_hex(fd, fault_addr);
     safe_write_str(fd, "\n");
+    safe_write_str(fd, "tid=");
+    safe_write_dec(fd, tid);
+    safe_write_str(fd, "\n");
     safe_write_str(fd, "timestamp_ms=");
     safe_write_dec(fd, ts_ms);
     safe_write_str(fd, "\n");
     safe_write_str(fd, "scene=");
     safe_write_str(fd, g_scene);
     safe_write_str(fd, "\n");
+
+    if (regs && regs->has_regs) {
+        safe_write_str(fd, "reg_pc=");
+        safe_write_hex(fd, regs->pc);
+        safe_write_str(fd, "\nreg_lr=");
+        safe_write_hex(fd, regs->lr);
+        safe_write_str(fd, "\nreg_sp=");
+        safe_write_hex(fd, regs->sp);
+        safe_write_str(fd, "\nreg_fp=");
+        safe_write_hex(fd, regs->fp);
+        safe_write_str(fd, "\n");
+    }
+    write_proc_status_async_safe(fd);
 
     for (size_t i = 0; i < frame_count && i < kMaxFrames; i++) {
         uintptr_t pc = frames[i];
@@ -378,11 +469,14 @@ void caliper_ndk_signal_handler(int sig, siginfo_t *info, void *ucontext) {
         refresh_proc_maps_async_safe();
         uintptr_t pcs[kMaxFrames];
         UnwindState st{pcs, 0, kMaxFrames};
+        CrashRegisters regs{false, 0, 0, 0, 0};
 #if defined(__aarch64__)
         if (ucontext) {
             auto *uc = static_cast<ucontext_t *>(ucontext);
             uintptr_t crash_pc = static_cast<uintptr_t>(uc->uc_mcontext.pc);
             uintptr_t crash_lr = static_cast<uintptr_t>(uc->uc_mcontext.regs[30]);
+            regs = {true, static_cast<uint64_t>(crash_pc), static_cast<uint64_t>(crash_lr),
+                    static_cast<uint64_t>(uc->uc_mcontext.sp), static_cast<uint64_t>(uc->uc_mcontext.regs[29])};
             if (crash_pc != 0 && st.count < kMaxFrames) pcs[st.count++] = crash_pc;
             if (crash_lr != 0 && crash_lr != crash_pc && st.count < kMaxFrames) pcs[st.count++] = crash_lr;
         }
@@ -391,6 +485,8 @@ void caliper_ndk_signal_handler(int sig, siginfo_t *info, void *ucontext) {
             auto *uc = static_cast<ucontext_t *>(ucontext);
             uintptr_t crash_pc = static_cast<uintptr_t>(uc->uc_mcontext.arm_pc);
             uintptr_t crash_lr = static_cast<uintptr_t>(uc->uc_mcontext.arm_lr);
+            regs = {true, static_cast<uint64_t>(crash_pc), static_cast<uint64_t>(crash_lr),
+                    static_cast<uint64_t>(uc->uc_mcontext.arm_sp), static_cast<uint64_t>(uc->uc_mcontext.arm_fp)};
             if (crash_pc != 0 && st.count < kMaxFrames) pcs[st.count++] = crash_pc;
             if (crash_lr != 0 && crash_lr != crash_pc && st.count < kMaxFrames) pcs[st.count++] = crash_lr;
         }
@@ -398,6 +494,9 @@ void caliper_ndk_signal_handler(int sig, siginfo_t *info, void *ucontext) {
         if (ucontext) {
             auto *uc = static_cast<ucontext_t *>(ucontext);
             uintptr_t crash_pc = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
+            regs = {true, static_cast<uint64_t>(crash_pc), 0,
+                    static_cast<uint64_t>(uc->uc_mcontext.gregs[REG_RSP]),
+                    static_cast<uint64_t>(uc->uc_mcontext.gregs[REG_RBP])};
             if (crash_pc != 0 && st.count < kMaxFrames) pcs[st.count++] = crash_pc;
         }
 #else
@@ -406,7 +505,7 @@ void caliper_ndk_signal_handler(int sig, siginfo_t *info, void *ucontext) {
         _Unwind_Backtrace(unwind_cb, &st);
         uint64_t fault_addr = info ? static_cast<uint64_t>(reinterpret_cast<uintptr_t>(info->si_addr)) : 0;
         int64_t code = info ? static_cast<int64_t>(info->si_code) : 0;
-        write_tombstone_file("ndk-crash-", "signal", signal_name(sig), code, fault_addr, pcs, st.count);
+        write_tombstone_file("ndk-crash-", "signal", signal_name(sig), code, fault_addr, &regs, pcs, st.count);
     }
 
     for (size_t i = 0; i < kNumCrashSignals; i++) {
@@ -446,7 +545,7 @@ void *sigquit_monitor_loop(void *) {
         }
 
         // Write lightweight SIGQUIT ANR tombstone in case the process is killed before JS/Java upload.
-        write_tombstone_file("ndk-anr-", "sigquit", "SIGQUIT", 0, 0, nullptr, 0);
+        write_tombstone_file("ndk-anr-", "sigquit", "SIGQUIT", 0, 0, nullptr, nullptr, 0);
 
         // Notify Kotlin bridge to capture live main-thread stack + Looper MessageQueue history.
         if (g_jvm && g_bridge_class && g_on_sigquit_method) {

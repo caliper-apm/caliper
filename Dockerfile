@@ -13,6 +13,8 @@ COPY server/ ./server/
 COPY packages/cli-symbols/ ./packages/cli-symbols/
 COPY demo-app/mock-api/ ./demo-app/mock-api/
 RUN cd /src/server && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/caliper ./cmd/caliper \
+ && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/caliper-gate ./cmd/caliper-gate \
+ && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/caliper-mcp ./cmd/caliper-mcp \
  && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/seed-replay ./cmd/seed-replay
 RUN cd /src/packages/cli-symbols && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/caliper-symbols .
 RUN cd /src/demo-app/mock-api && CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/mock-api .
@@ -22,6 +24,8 @@ FROM alpine:3.21
 RUN apk add --no-cache ca-certificates curl
 WORKDIR /app
 COPY --from=go-builder /out/caliper /usr/local/bin/caliper
+COPY --from=go-builder /out/caliper-gate /usr/local/bin/caliper-gate
+COPY --from=go-builder /out/caliper-mcp /usr/local/bin/caliper-mcp
 COPY --from=go-builder /out/seed-replay /usr/local/bin/seed-replay
 COPY --from=go-builder /out/caliper-symbols /usr/local/bin/caliper-symbols
 COPY --from=go-builder /out/mock-api /usr/local/bin/mock-api

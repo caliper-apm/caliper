@@ -19,16 +19,18 @@ import (
 )
 
 type releaseProfile struct {
-	version       string
-	build         string
-	gitSHA        string
-	startupMedMS  float64 // log-normal median cold start duration
-	jankRate      float64 // baseline frame jank ratio
-	cpuBasePct    float64 // mean process CPU %
-	memBaseMiB    float64 // median peak resident memory MiB
-	apiFailRate   float64 // logical API failure ratio
-	apiMedMS      float64 // log-normal median API duration
-	crashRate     float64 // per-slot probability of crash/ANR/abnormal_exit
+	version            string
+	build              string
+	gitSHA             string
+	binarySizeBytes    int64  // realistic release artifact size (Zero-Lie same-kind comparison)
+	binaryArtifactKind string // apk | ipa
+	startupMedMS       float64 // log-normal median cold start duration
+	jankRate           float64 // baseline frame jank ratio
+	cpuBasePct         float64 // mean process CPU %
+	memBaseMiB         float64 // median peak resident memory MiB
+	apiFailRate        float64 // logical API failure ratio
+	apiMedMS           float64 // log-normal median API duration
+	crashRate          float64 // per-slot probability of crash/ANR/abnormal_exit
 }
 
 type deviceTier struct {
@@ -60,15 +62,15 @@ func devicePoolFor(platform string) []deviceTier {
 func profilesFor(platform string) []releaseProfile {
 	if platform == "ios" {
 		return []releaseProfile{
-			{version: "1.0.0", build: "100", gitSHA: "1000001abcdef", startupMedMS: 470, jankRate: 0.0110, cpuBasePct: 13.5, memBaseMiB: 185, apiFailRate: 0.0055, apiMedMS: 175, crashRate: 0.0048},
-			{version: "1.1.0", build: "110", gitSHA: "1100002abcdef", startupMedMS: 640, jankRate: 0.0265, cpuBasePct: 19.8, memBaseMiB: 242, apiFailRate: 0.0195, apiMedMS: 285, crashRate: 0.0145},
-			{version: "1.2.0", build: "120", gitSHA: "1200003abcdef", startupMedMS: 445, jankRate: 0.0102, cpuBasePct: 12.8, memBaseMiB: 178, apiFailRate: 0.0048, apiMedMS: 162, crashRate: 0.0040},
+			{version: "1.0.0", build: "100", gitSHA: "1000001abcdef", binarySizeBytes: 31_457_280, binaryArtifactKind: "ipa", startupMedMS: 470, jankRate: 0.0110, cpuBasePct: 13.5, memBaseMiB: 185, apiFailRate: 0.0055, apiMedMS: 175, crashRate: 0.0048},
+			{version: "1.1.0", build: "110", gitSHA: "1100002abcdef", binarySizeBytes: 35_022_438, binaryArtifactKind: "ipa", startupMedMS: 640, jankRate: 0.0265, cpuBasePct: 19.8, memBaseMiB: 242, apiFailRate: 0.0195, apiMedMS: 285, crashRate: 0.0145},
+			{version: "1.2.0", build: "120", gitSHA: "1200003abcdef", binarySizeBytes: 31_876_710, binaryArtifactKind: "ipa", startupMedMS: 445, jankRate: 0.0102, cpuBasePct: 12.8, memBaseMiB: 178, apiFailRate: 0.0048, apiMedMS: 162, crashRate: 0.0040},
 		}
 	}
 	return []releaseProfile{
-		{version: "1.0.0", build: "100", gitSHA: "1000001abcdef", startupMedMS: 630, jankRate: 0.0165, cpuBasePct: 16.5, memBaseMiB: 212, apiFailRate: 0.0065, apiMedMS: 195, crashRate: 0.0058},
-		{version: "1.1.0", build: "110", gitSHA: "1100002abcdef", startupMedMS: 835, jankRate: 0.0355, cpuBasePct: 23.5, memBaseMiB: 268, apiFailRate: 0.0215, apiMedMS: 310, crashRate: 0.0175},
-		{version: "1.2.0", build: "120", gitSHA: "1200003abcdef", startupMedMS: 595, jankRate: 0.0150, cpuBasePct: 15.5, memBaseMiB: 204, apiFailRate: 0.0055, apiMedMS: 180, crashRate: 0.0046},
+		{version: "1.0.0", build: "100", gitSHA: "1000001abcdef", binarySizeBytes: 25_998_131, binaryArtifactKind: "apk", startupMedMS: 630, jankRate: 0.0165, cpuBasePct: 16.5, memBaseMiB: 212, apiFailRate: 0.0065, apiMedMS: 195, crashRate: 0.0058},
+		{version: "1.1.0", build: "110", gitSHA: "1100002abcdef", binarySizeBytes: 28_940_697, binaryArtifactKind: "apk", startupMedMS: 835, jankRate: 0.0355, cpuBasePct: 23.5, memBaseMiB: 268, apiFailRate: 0.0215, apiMedMS: 310, crashRate: 0.0175},
+		{version: "1.2.0", build: "120", gitSHA: "1200003abcdef", binarySizeBytes: 26_319_257, binaryArtifactKind: "apk", startupMedMS: 595, jankRate: 0.0150, cpuBasePct: 15.5, memBaseMiB: 204, apiFailRate: 0.0055, apiMedMS: 180, crashRate: 0.0046},
 	}
 }
 
@@ -155,6 +157,32 @@ func main() {
 	perPlatformDay := *totalEvents / (2 * len(canaryMix14d))
 	if perPlatformDay < 120 {
 		perPlatformDay = 120
+	}
+
+	// Register release identities with realistic artifact binary sizes before replay.
+	for _, platform := range []string{"android", "ios"} {
+		for _, prof := range profilesFor(platform) {
+			relPayload, _ := json.Marshal(map[string]any{
+				"app_id":               "dev.caliper.demo",
+				"platform":             platform,
+				"env":                  "prod",
+				"app_version":          prof.version,
+				"build_number":         prof.build,
+				"git_sha":              prof.gitSHA,
+				"symbol_id":            fmt.Sprintf("sym-%s-%s-%s", platform, prof.version, prof.build),
+				"binary_size_bytes":    prof.binarySizeBytes,
+				"binary_artifact_kind": prof.binaryArtifactKind,
+			})
+			req, _ := http.NewRequest(http.MethodPost, *target+"/v1/releases/register", bytes.NewReader(relPayload))
+			req.Header.Set("Content-Type", "application/json")
+			if *apiKey != "" {
+				req.Header.Set("X-Caliper-Key", *apiKey)
+			}
+			if resp, err := client.Do(req); err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+			}
+		}
 	}
 
 	// Replay chronologically day-by-day across both platforms so recent network samples &
@@ -316,7 +344,15 @@ func main() {
 			CandidateVersion: pair[2],
 		})
 		qStart := time.Now()
-		resp, err := client.Post(*target+"/v1/analytics/compare", "application/json", bytes.NewReader(reqBody))
+		cmpReq, err := http.NewRequest(http.MethodPost, *target+"/v1/analytics/compare", bytes.NewReader(reqBody))
+		if err != nil {
+			log.Fatalf("build compare request: %v", err)
+		}
+		cmpReq.Header.Set("Content-Type", "application/json")
+		if *apiKey != "" {
+			cmpReq.Header.Set("X-Caliper-Key", *apiKey)
+		}
+		resp, err := client.Do(cmpReq)
 		if err != nil {
 			log.Fatalf("compare query failed: %v", err)
 		}

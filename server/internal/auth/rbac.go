@@ -197,6 +197,41 @@ func (a *Authorizer) Authorize(r *http.Request, perm Permission, appID string) (
 	return p, 0, "", ""
 }
 
+// ResolveAppScope enforces workspace app_id isolation for a principal.
+// - Unscoped principals (len(p.AppIDs) == 0) pass requestedAppID through unchanged.
+// - Single-app scoped principals auto-scope empty requestedAppID to p.AppIDs[0].
+// - Multi-app scoped principals MUST specify an explicit authorized app_id (never wildcard across tenants).
+func ResolveAppScope(p Principal, requestedAppID string) (string, int, string, string) {
+	req := strings.TrimSpace(requestedAppID)
+	if len(p.AppIDs) == 0 {
+		return req, 0, "", ""
+	}
+	if req == "" {
+		if len(p.AppIDs) == 1 {
+			return p.AppIDs[0], 0, "", ""
+		}
+		return "", http.StatusForbidden, "forbidden_app_scope", fmt.Sprintf("actor %q is scoped to multiple apps; explicit app_id is required", p.Actor)
+	}
+	if !containsString(p.AppIDs, req) {
+		return "", http.StatusForbidden, "forbidden_app_scope", fmt.Sprintf("actor %q is not authorized for app_id %q", p.Actor, req)
+	}
+	return req, 0, "", ""
+}
+
+// AuthorizeScoped authenticates, checks role permission, and enforces fail-closed app_id workspace scoping.
+// Returns (principal, resolvedAppID, httpStatus, errorCode, errorMessage). httpStatus == 0 means allowed.
+func (a *Authorizer) AuthorizeScoped(r *http.Request, perm Permission, requestedAppID string) (Principal, string, int, string, string) {
+	p, status, code, msg := a.Authorize(r, perm, strings.TrimSpace(requestedAppID))
+	if status != 0 {
+		return Principal{}, "", status, code, msg
+	}
+	resolved, status, code, msg := ResolveAppScope(p, requestedAppID)
+	if status != 0 {
+		return Principal{}, "", status, code, msg
+	}
+	return p, resolved, 0, "", ""
+}
+
 func constantTimeEqual(a, b string) bool {
 	if len(a) != len(b) {
 		return false

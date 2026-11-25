@@ -111,6 +111,121 @@ func kolmogorovSurvival(lambda float64) float64 {
 	return p
 }
 
+// WilsonCI95Rate computes the Wilson score 95% confidence interval for an observed proportion p in [0, 1]
+// with effective independent sample size nEff (e.g., cluster count / valid windows).
+func WilsonCI95Rate(p float64, nEff int64) *[2]float64 {
+	if nEff <= 0 || math.IsNaN(p) || p < 0 || p > 1 {
+		return nil
+	}
+	n := float64(nEff)
+	z2 := wilsonZ95 * wilsonZ95
+	denom := 1.0 + z2/n
+	center := (p + z2/(2.0*n)) / denom
+	half := (wilsonZ95 * math.Sqrt((p*(1.0-p)+z2/(4.0*n))/n)) / denom
+	low := math.Max(0.0, center-half) * 100.0
+	high := math.Min(1.0, center+half) * 100.0
+	ci := [2]float64{low, high}
+	return &ci
+}
+
+// ClusteredProportionZTest performs a conservative two-proportion Z-test using cluster-level
+// effective sample sizes (e.g. valid fluency windows rather than raw autocorrelated frames),
+// preventing intra-window frame burst correlation from inflating z-scores into false positives.
+func ClusteredProportionZTest(pA float64, nEffA int64, pB float64, nEffB int64) (pValue float64, ok bool) {
+	if nEffA <= 0 || nEffB <= 0 || math.IsNaN(pA) || math.IsNaN(pB) || pA < 0 || pA > 1 || pB < 0 || pB > 1 {
+		return 1.0, false
+	}
+	fA := float64(nEffA)
+	fB := float64(nEffB)
+	pPool := (pA*fA + pB*fB) / (fA + fB)
+	se := math.Sqrt(pPool * (1.0 - pPool) * (1.0/fA + 1.0/fB))
+	if se == 0 {
+		if math.Abs(pA-pB) < 1e-12 {
+			return 1.0, true
+		}
+		return 0.0, true
+	}
+	z := math.Abs(pB-pA) / se
+	p := math.Erfc(z / math.Sqrt2)
+	if p < 0 {
+		p = 0
+	}
+	if p > 1 {
+		p = 1
+	}
+	return p, true
+}
+
+// enrichWithClusteredFluencyStats attaches cluster-adjusted (window-level) Z-test p-values and
+// Wilson 95% CIs for fluency jank rates, avoiding naive frame-level independence assumptions.
+func enrichWithClusteredFluencyStats(
+	m contract.MetricComparison,
+	jankBase, framesBase, windowsBase int64,
+	jankCand, framesCand, windowsCand int64,
+	alpha float64,
+) contract.MetricComparison {
+	m.StatTest = "cluster_proportion_z"
+	if framesBase <= 0 || framesCand <= 0 || windowsBase <= 0 || windowsCand <= 0 {
+		return m
+	}
+	pBase := float64(jankBase) / float64(framesBase)
+	pCand := float64(jankCand) / float64(framesCand)
+	m.BaselineCI95 = WilsonCI95Rate(pBase, windowsBase)
+	m.CandidateCI95 = WilsonCI95Rate(pCand, windowsCand)
+	if p, ok := ClusteredProportionZTest(pBase, windowsBase, pCand, windowsCand); ok {
+		m.PValue = &p
+		sig := p < alpha
+		m.StatSignificant = &sig
+		if !sig && (m.Status == "regressed" || m.Status == "improved") {
+			m.Status = "neutral"
+			m.GateReason = "statistically_insignificant"
+		}
+	}
+	return m
+}
+
+// BenjaminiHochbergAdjust computes step-up Benjamini-Hochberg FDR-adjusted q-values for a family
+// of raw p-values, preserving original slice ordering and bounding all outputs to [0, 1].
+func BenjaminiHochbergAdjust(pValues []float64) []float64 {
+	m := len(pValues)
+	if m == 0 {
+		return nil
+	}
+	type indexedP struct {
+		idx int
+		p   float64
+	}
+	ranked := make([]indexedP, m)
+	for i, p := range pValues {
+		if math.IsNaN(p) || p > 1 {
+			p = 1
+		} else if p < 0 {
+			p = 0
+		}
+		ranked[i] = indexedP{idx: i, p: p}
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].p != ranked[j].p {
+			return ranked[i].p < ranked[j].p
+		}
+		return ranked[i].idx < ranked[j].idx
+	})
+	adjusted := make([]float64, m)
+	minSoFar := 1.0
+	for k := m - 1; k >= 0; k-- {
+		rank := float64(k + 1)
+		q := ranked[k].p * float64(m) / rank
+		if q < minSoFar {
+			minSoFar = q
+		}
+		if minSoFar > 1.0 {
+			minSoFar = 1.0
+		}
+		adjusted[ranked[k].idx] = minSoFar
+	}
+	return adjusted
+}
+
 // enrichWithProportionStats attaches Two-Proportion Z-test p-value + Wilson 95% CIs
 // and downgrades noisy non-significant differences to neutral when p >= alpha.
 func enrichWithProportionStats(
@@ -248,6 +363,8 @@ type RegressionScanReport struct {
 	BaselineVersion  string              `json:"baseline_version"`
 	CandidateVersion string              `json:"candidate_version"`
 	Alpha            float64             `json:"alpha"`
+	FDRMethod        string              `json:"fdr_method,omitempty"`
+	EvaluatedTests   int                 `json:"evaluated_tests,omitempty"`
 	Verdict          string              `json:"verdict"`
 	RegressedCount   int                 `json:"regressed_count"`
 	Findings         []RegressionFinding `json:"findings"`
@@ -302,6 +419,16 @@ func (e *Engine) ScanRegressions(ctx context.Context, req CompareRequest) (Regre
 	if err != nil {
 		return RegressionScanReport{}, err
 	}
+	// Per-scene fluency & resource scan collected first so Benjamini-Hochberg FDR adjusts across
+	// the full family of simultaneous scene hypothesis tests (preventing multi-scene p-hacking).
+	type sceneCandidate struct {
+		scope     string
+		scene     string
+		algorithm string
+		cmp       contract.MetricComparison
+	}
+	sceneCandidates := make([]sceneCandidate, 0, len(candFl)+16)
+
 	type flKey struct{ scene, algo string }
 	baseFlMap := map[flKey]storage.FluencyAggregate{}
 	for _, row := range baseFl {
@@ -320,14 +447,18 @@ func (e *Engine) ScanRegressions(ctx context.Context, req CompareRequest) (Regre
 			&cRate, crow.ValidWindows, "",
 			minSamples, 0.5,
 		)
-		cmp = enrichWithProportionStats(cmp, brow.JankFrames, brow.TotalFrames, crow.JankFrames, crow.TotalFrames, DefaultSignificanceAlpha)
-		if cmp.Status == "regressed" || cmp.Status == "improved" {
-			findings = append(findings, RegressionFinding{
-				Scope:       "scene:" + crow.Scene,
-				Scene:       crow.Scene,
-				Algorithm:   crow.Algorithm,
-				ImpactScore: computeImpactScore(cmp),
-				Comparison:  cmp,
+		if cmp.Status != "gated" {
+			cmp = enrichWithClusteredFluencyStats(
+				cmp,
+				brow.JankFrames, brow.TotalFrames, brow.ValidWindows,
+				crow.JankFrames, crow.TotalFrames, crow.ValidWindows,
+				DefaultSignificanceAlpha,
+			)
+			sceneCandidates = append(sceneCandidates, sceneCandidate{
+				scope:     "scene:" + crow.Scene,
+				scene:     crow.Scene,
+				algorithm: crow.Algorithm,
+				cmp:       cmp,
 			})
 		}
 	}
@@ -358,13 +489,47 @@ func (e *Engine) ScanRegressions(ctx context.Context, req CompareRequest) (Regre
 			cMem.Value, cMem.SampleSize, cMem.MissingReason,
 			minSamples, 16.0,
 		)
-		cmp = enrichWithSketchOrHistogramStats(cmp, brow.MemoryPeakSketchMiB, crow.MemoryPeakSketchMiB, brow.MemoryPeakHistMiB, crow.MemoryPeakHistMiB, bMem, cMem, DefaultSignificanceAlpha)
-		if cmp.Status == "regressed" || cmp.Status == "improved" {
+		if cmp.Status != "gated" {
+			cmp = enrichWithSketchOrHistogramStats(cmp, brow.MemoryPeakSketchMiB, crow.MemoryPeakSketchMiB, brow.MemoryPeakHistMiB, crow.MemoryPeakHistMiB, bMem, cMem, DefaultSignificanceAlpha)
+			sceneCandidates = append(sceneCandidates, sceneCandidate{
+				scope: "scene:" + crow.Scene,
+				scene: crow.Scene,
+				cmp:   cmp,
+			})
+		}
+	}
+
+	// Apply Benjamini-Hochberg FDR across all evaluated per-scene p-values.
+	var pVals []float64
+	var pIdx []int
+	for i := range sceneCandidates {
+		if sceneCandidates[i].cmp.PValue != nil {
+			pVals = append(pVals, *sceneCandidates[i].cmp.PValue)
+			pIdx = append(pIdx, i)
+		}
+	}
+	if len(pVals) > 0 {
+		qVals := BenjaminiHochbergAdjust(pVals)
+		for pos, candIdx := range pIdx {
+			q := qVals[pos]
+			cmp := &sceneCandidates[candIdx].cmp
+			cmp.AdjustedPValue = &q
+			sig := q < DefaultSignificanceAlpha
+			cmp.StatSignificant = &sig
+			if !sig && (cmp.Status == "regressed" || cmp.Status == "improved") {
+				cmp.Status = "neutral"
+				cmp.GateReason = "fdr_insignificant"
+			}
+		}
+	}
+	for _, sc := range sceneCandidates {
+		if sc.cmp.Status == "regressed" || sc.cmp.Status == "improved" {
 			findings = append(findings, RegressionFinding{
-				Scope:       "scene:" + crow.Scene,
-				Scene:       crow.Scene,
-				ImpactScore: computeImpactScore(cmp),
-				Comparison:  cmp,
+				Scope:       sc.scope,
+				Scene:       sc.scene,
+				Algorithm:   sc.algorithm,
+				ImpactScore: computeImpactScore(sc.cmp),
+				Comparison:  sc.cmp,
 			})
 		}
 	}
@@ -399,6 +564,8 @@ func (e *Engine) ScanRegressions(ctx context.Context, req CompareRequest) (Regre
 		BaselineVersion:  req.BaselineVersion,
 		CandidateVersion: req.CandidateVersion,
 		Alpha:            DefaultSignificanceAlpha,
+		FDRMethod:        "benjamini_hochberg",
+		EvaluatedTests:   len(pVals),
 		Verdict:          verdict,
 		RegressedCount:   regressedCount,
 		Findings:         findings,

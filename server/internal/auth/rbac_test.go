@@ -66,3 +66,40 @@ func TestRBACRolesAndAppScoping(t *testing.T) {
 		t.Fatalf("expected admin audit logs allowed, got status=%d actor=%s", status, p.Actor)
 	}
 }
+
+func TestAuthorizeScopedTenantIsolation(t *testing.T) {
+	authz, err := NewRBAC([]KeySpec{
+		{Key: "k-single", Actor: "tenant-a", Role: RoleViewer, AppIDs: []string{"app.alpha"}},
+		{Key: "k-multi", Actor: "tenant-ab", Role: RoleViewer, AppIDs: []string{"app.alpha", "app.beta"}},
+		{Key: "k-global", Actor: "global-viewer", Role: RoleViewer},
+	})
+	if err != nil {
+		t.Fatalf("new rbac: %v", err)
+	}
+	req := func(k string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v1/mcp", nil)
+		r.Header.Set("X-Caliper-Key", k)
+		return r
+	}
+
+	// Single-app scoped key omitting app_id auto-scopes to app.alpha.
+	if _, appID, status, _, _ := authz.AuthorizeScoped(req("k-single"), PermReadAnalytics, ""); status != 0 || appID != "app.alpha" {
+		t.Fatalf("expected single-app auto-scope to app.alpha, got status=%d appID=%q", status, appID)
+	}
+	// Single-app scoped key requesting another app -> 403 forbidden_app_scope.
+	if _, _, status, code, _ := authz.AuthorizeScoped(req("k-single"), PermReadAnalytics, "app.beta"); status != http.StatusForbidden || code != "forbidden_app_scope" {
+		t.Fatalf("expected 403 forbidden_app_scope, got status=%d code=%q", status, code)
+	}
+	// Multi-app scoped key omitting app_id -> 403 (no wildcard leak across tenants).
+	if _, _, status, code, _ := authz.AuthorizeScoped(req("k-multi"), PermReadAnalytics, ""); status != http.StatusForbidden || code != "forbidden_app_scope" {
+		t.Fatalf("expected 403 for multi-app empty app_id, got status=%d code=%q", status, code)
+	}
+	// Multi-app scoped key specifying authorized app -> allowed.
+	if _, appID, status, _, _ := authz.AuthorizeScoped(req("k-multi"), PermReadAnalytics, "app.beta"); status != 0 || appID != "app.beta" {
+		t.Fatalf("expected app.beta allowed, got status=%d appID=%q", status, appID)
+	}
+	// Global unscoped key omitting app_id -> allowed with empty wildcard.
+	if _, appID, status, _, _ := authz.AuthorizeScoped(req("k-global"), PermReadAnalytics, ""); status != 0 || appID != "" {
+		t.Fatalf("expected global empty app_id allowed, got status=%d appID=%q", status, appID)
+	}
+}

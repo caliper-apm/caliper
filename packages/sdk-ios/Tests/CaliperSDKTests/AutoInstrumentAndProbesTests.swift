@@ -255,4 +255,51 @@ final class AutoInstrumentAndProbesTests: XCTestCase {
         )
         XCTAssertEqual(client.pendingCount(), 1, "CaliperAutoURLSessionDelegate must enqueue 1 network_transport event")
     }
+
+    func testIOSAgentColdStartAndResourceSampling() {
+        let stateDir = FileManager.default.temporaryDirectory.appendingPathComponent("caliper-agent-auto-\(UUID().uuidString)")
+        defer {
+            CaliperIOSAgent.resetForTesting()
+            try? FileManager.default.removeItem(at: stateDir)
+        }
+
+        let cfg = CaliperConfig(
+            endpointURL: URL(string: "http://127.0.0.1:8080")!,
+            resource: ResourceIdentity(
+                appID: "dev.caliper.demo",
+                appVersion: "1.10.0",
+                buildNumber: "1100",
+                installHash: "0123456789abcdef"
+            )
+        )
+        let client = CaliperIOSAgent.install(
+            config: cfg,
+            options: CaliperIOSAgentOptions(
+                enableNativeCrash: false,
+                enableFOOMDetector: false,
+                enableWatchdog: false,
+                enableMetricKit: false,
+                enableFluencyMonitor: false,
+                enableResourceMonitor: false,
+                autoInstrumentViewControllers: false,
+                enableThermalMonitor: false,
+                enableDailyDiskAudit: false,
+                stateDirectoryURL: stateDir
+            )
+        )
+        client.applyLease(PolicyLease(
+            policyID: "pol-auto-ios",
+            ratePPM: 1_000_000,
+            issuedAtMS: Int64(Date().timeIntervalSince1970 * 1000) - 1000,
+            leaseTTLMS: 3_600_000,
+            maxEvents24h: 100,
+            enabledCollectors: ["startup", "resources"]
+        ))
+
+        CaliperIOSAgent.markFirstContentFrame(runtimeInitMS: 12.0)
+        // Second call must be idempotent (only one cold start per process launch).
+        CaliperIOSAgent.markFirstContentFrame(runtimeInitMS: 99.0)
+        CaliperIOSAgent.captureResourceSampleNow()
+        XCTAssertEqual(client.pendingCount(), 2)
+    }
 }

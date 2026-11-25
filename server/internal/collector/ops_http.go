@@ -62,9 +62,8 @@ func (h *Handler) handlePrometheusMetrics(w http.ResponseWriter, r *http.Request
 
 // handleSourceHealth reports telemetry data quality, symbol coverage, and zero-frame isolation integrity.
 func (h *Handler) handleSourceHealth(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	stats := h.store.Stats(r.Context())
@@ -308,6 +307,11 @@ func (h *Handler) handleReleaseGate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_gate_request", "platform (android|ios), baseline_version, and candidate_version are required")
 		return
 	}
+	scopedAppID, ok := h.resolveAppScopeOrWriteError(w, r, req.AppID)
+	if !ok {
+		return
+	}
+	req.AppID = scopedAppID
 	rep, err := h.engine.EvaluateReleaseGate(r.Context(), h.meta, req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "gate_failed", err.Error())
@@ -317,9 +321,8 @@ func (h *Handler) handleReleaseGate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleNetworkSamples(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	q := r.URL.Query()
@@ -354,9 +357,8 @@ func (h *Handler) handleNetworkSamples(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleCustomJourneys(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	journeys, err := h.engine.CustomJourneys(r.Context(), f)
@@ -368,9 +370,8 @@ func (h *Handler) handleCustomJourneys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleDimensions(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	type dimLister interface {

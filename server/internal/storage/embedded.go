@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -82,7 +83,12 @@ type EmbeddedStore struct {
 	objectStore      objectstore.ObjectStore
 	walFile          *os.File
 	walWriter        *bufio.Writer
+	walBytesWritten  int64
+	autoCompactBytes int64
+	maxSeenEvents    int
 	seenEvents       map[string]struct{}
+	seenRing         []string
+	seenHead         int
 	totalEvents      int64
 	releases         map[string]ReleaseRecord
 	policies         map[string]SamplingPolicy
@@ -114,18 +120,56 @@ func (s *EmbeddedStore) SetObjectStore(store objectstore.ObjectStore) {
 	s.objectStore = store
 }
 
+// SetMaxSeenEvents configures the bounded FIFO deduplication window size (defaults to 250,000).
+// Prevents unbounded heap growth in long-running single-binary deployments.
+func (s *EmbeddedStore) SetMaxSeenEvents(maxSeen int) {
+	if maxSeen <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.maxSeenEvents = maxSeen
+	if len(s.seenRing) > maxSeen {
+		keep := make([]string, 0, maxSeen)
+		newMap := make(map[string]struct{}, maxSeen)
+		// Preserve the most recently inserted event IDs in chronological order.
+		start := len(s.seenRing) - maxSeen
+		for i := start; i < len(s.seenRing); i++ {
+			id := s.seenRing[(s.seenHead+i)%len(s.seenRing)]
+			keep = append(keep, id)
+			newMap[id] = struct{}{}
+		}
+		s.seenRing = keep
+		s.seenHead = 0
+		s.seenEvents = newMap
+	}
+}
+
+// SetAutoCompactBytes configures the WAL size threshold that triggers automatic snapshot compaction
+// (<= 0 disables automatic compaction; manual Compact() remains available).
+func (s *EmbeddedStore) SetAutoCompactBytes(threshold int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autoCompactBytes = threshold
+}
+
 const (
-	maxTimelineEventsPerHash = 200
-	maxTrackedTimelineHashes = 10000
-	maxStoredDiagnostics     = 500
-	maxNetworkSamples        = 4000
+	maxTimelineEventsPerHash   = 200
+	maxTrackedTimelineHashes   = 10000
+	maxStoredDiagnostics       = 500
+	maxNetworkSamples          = 4000
+	defaultMaxSeenEvents       = 250_000
+	defaultAutoCompactWALBytes = 64 * 1024 * 1024 // 64 MiB
 )
 
 // OpenEmbedded opens or initializes an embedded store in dataDir (empty dataDir = memory-only).
 func OpenEmbedded(dataDir string) (*EmbeddedStore, error) {
 	s := &EmbeddedStore{
 		dataDir:          dataDir,
+		autoCompactBytes: defaultAutoCompactWALBytes,
+		maxSeenEvents:    defaultMaxSeenEvents,
 		seenEvents:       make(map[string]struct{}, 16384),
+		seenRing:         make([]string, 0, 16384),
 		releases:         make(map[string]ReleaseRecord),
 		policies:         make(map[string]SamplingPolicy),
 		symbols:          make(map[string]SymbolRecord),
@@ -155,12 +199,19 @@ func OpenEmbedded(dataDir string) (*EmbeddedStore, error) {
 		if err := s.loadAuditLogsLocked(); err != nil {
 			return nil, err
 		}
+		if err := s.loadSnapshotLocked(); err != nil {
+			return nil, err
+		}
 		if err := s.replayWALLocked(); err != nil {
 			return nil, err
 		}
-		f, err := os.OpenFile(filepath.Join(dataDir, "events.wal.jsonl"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		walPath := filepath.Join(dataDir, "events.wal.jsonl")
+		f, err := os.OpenFile(walPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return nil, fmt.Errorf("open wal: %w", err)
+		}
+		if st, err := f.Stat(); err == nil {
+			s.walBytesWritten = st.Size()
 		}
 		s.walFile = f
 		s.walWriter = bufio.NewWriterSize(f, 256*1024)
@@ -326,12 +377,14 @@ func (s *EmbeddedStore) IngestBatch(_ context.Context, batch *protocol.BatchEnve
 				res.Rejected++
 				continue
 			}
-			if _, err := s.walWriter.Write(line); err != nil {
+			n, err := s.walWriter.Write(line)
+			if err != nil {
 				return res, fmt.Errorf("write wal: %w", err)
 			}
 			if err := s.walWriter.WriteByte('\n'); err != nil {
 				return res, fmt.Errorf("write wal newline: %w", err)
 			}
+			s.walBytesWritten += int64(n + 1)
 		}
 		s.applyEventLocked(batch.Resource, item.ev, item.parsed, false)
 		res.Accepted++
@@ -342,6 +395,9 @@ func (s *EmbeddedStore) IngestBatch(_ context.Context, batch *protocol.BatchEnve
 		if err := s.walWriter.Flush(); err != nil {
 			return res, fmt.Errorf("flush wal: %w", err)
 		}
+		if s.autoCompactBytes > 0 && s.walBytesWritten >= s.autoCompactBytes {
+			_ = s.compactLocked()
+		}
 	}
 	if releaseMutated && s.dataDir != "" {
 		_ = s.saveMetaLocked()
@@ -349,8 +405,299 @@ func (s *EmbeddedStore) IngestBatch(_ context.Context, batch *protocol.BatchEnve
 	return res, nil
 }
 
+func (s *EmbeddedStore) recordSeenLocked(eventID string) {
+	if _, exists := s.seenEvents[eventID]; exists {
+		return
+	}
+	limit := s.maxSeenEvents
+	if limit <= 0 {
+		limit = defaultMaxSeenEvents
+	}
+	if len(s.seenRing) < limit {
+		s.seenRing = append(s.seenRing, eventID)
+		s.seenEvents[eventID] = struct{}{}
+		return
+	}
+	evicted := s.seenRing[s.seenHead]
+	delete(s.seenEvents, evicted)
+	s.seenRing[s.seenHead] = eventID
+	s.seenHead = (s.seenHead + 1) % limit
+	s.seenEvents[eventID] = struct{}{}
+}
+
+// Compact atomically persists all in-memory columnar rollups, DDSketches, issues, and bounded dedup
+// state into rollup.snapshot.json.gz and truncates events.wal.jsonl so single-node restarts stay fast
+// and disk usage remains bounded.
+func (s *EmbeddedStore) Compact() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.compactLocked()
+}
+
+type embeddedSnapshot struct {
+	Version          int                                 `json:"version"`
+	TotalEvents      int64                               `json:"total_events"`
+	SeenRing         []string                            `json:"seen_ring,omitempty"`
+	InstallTimelines map[string][]SessionTimelineEvent   `json:"install_timelines,omitempty"`
+	UserTimelines    map[string][]SessionTimelineEvent   `json:"user_timelines,omitempty"`
+	CPUProfiles      []CPUProfileRecord                  `json:"cpu_profiles,omitempty"`
+	HeapSnapshots    []HeapSnapshotRecord                `json:"heap_snapshots,omitempty"`
+	NetworkSamples   []NetworkTransportSample            `json:"network_samples,omitempty"`
+	Startups         []startupSnapshotEntry              `json:"startups,omitempty"`
+	Fluencies        []fluencySnapshotEntry              `json:"fluencies,omitempty"`
+	Resources        []resourceSnapshotEntry             `json:"resources,omitempty"`
+	Networks         []networkSnapshotEntry              `json:"networks,omitempty"`
+	CustomScenes     []customSceneSnapshotEntry          `json:"custom_scenes,omitempty"`
+	Issues           map[string]*issueBucket             `json:"issues,omitempty"`
+}
+
+type startupSnapshotEntry struct {
+	Key   rollupKey         `json:"k"`
+	Value *StartupAggregate `json:"v"`
+}
+
+type fluencySnapshotEntry struct {
+	Key   rollupKey         `json:"k"`
+	Value *FluencyAggregate `json:"v"`
+}
+
+type resourceSnapshotEntry struct {
+	Key   rollupKey          `json:"k"`
+	Value *ResourceAggregate `json:"v"`
+}
+
+type networkSnapshotEntry struct {
+	Key   rollupKey         `json:"k"`
+	Value *NetworkAggregate `json:"v"`
+}
+
+type customSceneSnapshotEntry struct {
+	Key   rollupKey             `json:"k"`
+	Value *CustomSceneAggregate `json:"v"`
+}
+
+func (s *EmbeddedStore) orderedSeenLocked() []string {
+	n := len(s.seenRing)
+	if n == 0 {
+		return nil
+	}
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		out[i] = s.seenRing[(s.seenHead+i)%n]
+	}
+	return out
+}
+
+func (s *EmbeddedStore) compactLocked() error {
+	if s.dataDir == "" {
+		return nil
+	}
+	if s.walWriter != nil {
+		if err := s.walWriter.Flush(); err != nil {
+			return fmt.Errorf("flush wal before compact: %w", err)
+		}
+	}
+
+	snap := embeddedSnapshot{
+		Version:          1,
+		TotalEvents:      s.totalEvents,
+		SeenRing:         s.orderedSeenLocked(),
+		InstallTimelines: s.installTimelines,
+		UserTimelines:    s.userTimelines,
+		CPUProfiles:      s.cpuProfiles,
+		HeapSnapshots:    s.heapSnapshots,
+		NetworkSamples:   s.networkSamples,
+		Startups:         make([]startupSnapshotEntry, 0, len(s.startups)),
+		Fluencies:        make([]fluencySnapshotEntry, 0, len(s.fluencies)),
+		Resources:        make([]resourceSnapshotEntry, 0, len(s.resources)),
+		Networks:         make([]networkSnapshotEntry, 0, len(s.networks)),
+		CustomScenes:     make([]customSceneSnapshotEntry, 0, len(s.customScenes)),
+		Issues:           s.issues,
+	}
+	for k, v := range s.startups {
+		snap.Startups = append(snap.Startups, startupSnapshotEntry{Key: k, Value: v})
+	}
+	for k, v := range s.fluencies {
+		snap.Fluencies = append(snap.Fluencies, fluencySnapshotEntry{Key: k, Value: v})
+	}
+	for k, v := range s.resources {
+		snap.Resources = append(snap.Resources, resourceSnapshotEntry{Key: k, Value: v})
+	}
+	for k, v := range s.networks {
+		snap.Networks = append(snap.Networks, networkSnapshotEntry{Key: k, Value: v})
+	}
+	for k, v := range s.customScenes {
+		snap.CustomScenes = append(snap.CustomScenes, customSceneSnapshotEntry{Key: k, Value: v})
+	}
+
+	tmpPath := filepath.Join(s.dataDir, "rollup.snapshot.json.gz.tmp")
+	finalPath := filepath.Join(s.dataDir, "rollup.snapshot.json.gz")
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("create snapshot tmp: %w", err)
+	}
+	gz := gzip.NewWriter(f)
+	if err := json.NewEncoder(gz).Encode(&snap); err != nil {
+		_ = gz.Close()
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("encode snapshot: %w", err)
+	}
+	if err := gz.Close(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close snapshot gzip: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("sync snapshot: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close snapshot file: %w", err)
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename snapshot: %w", err)
+	}
+
+	// Safely rotate/truncate the WAL now that the full rollup state is durably snapshotted.
+	if s.walFile != nil {
+		_ = s.walFile.Close()
+		s.walFile = nil
+		s.walWriter = nil
+	}
+	walPath := filepath.Join(s.dataDir, "events.wal.jsonl")
+	newWal, err := os.OpenFile(walPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("reopen truncated wal: %w", err)
+	}
+	s.walFile = newWal
+	s.walWriter = bufio.NewWriterSize(newWal, 256*1024)
+	s.walBytesWritten = 0
+	return s.saveMetaLocked()
+}
+
+func (s *EmbeddedStore) loadSnapshotLocked() error {
+	snapPath := filepath.Join(s.dataDir, "rollup.snapshot.json.gz")
+	f, err := os.Open(snapPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("open snapshot: %w", err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("open snapshot gzip: %w", err)
+	}
+	defer gz.Close()
+
+	var snap embeddedSnapshot
+	if err := json.NewDecoder(gz).Decode(&snap); err != nil {
+		return fmt.Errorf("decode snapshot: %w", err)
+	}
+	s.totalEvents = snap.TotalEvents
+	for _, id := range snap.SeenRing {
+		s.recordSeenLocked(id)
+	}
+	if snap.InstallTimelines != nil {
+		s.installTimelines = snap.InstallTimelines
+	}
+	if snap.UserTimelines != nil {
+		s.userTimelines = snap.UserTimelines
+	}
+	s.cpuProfiles = snap.CPUProfiles
+	s.heapSnapshots = snap.HeapSnapshots
+	s.networkSamples = snap.NetworkSamples
+	for _, entry := range snap.Startups {
+		if entry.Value != nil {
+			if entry.Value.PolicyIDs == nil {
+				entry.Value.PolicyIDs = map[string]struct{}{}
+			}
+			s.startups[entry.Key] = entry.Value
+		}
+	}
+	for _, entry := range snap.Fluencies {
+		if entry.Value != nil {
+			if entry.Value.PolicyIDs == nil {
+				entry.Value.PolicyIDs = map[string]struct{}{}
+			}
+			s.fluencies[entry.Key] = entry.Value
+		}
+	}
+	for _, entry := range snap.Resources {
+		if entry.Value != nil {
+			if entry.Value.PolicyIDs == nil {
+				entry.Value.PolicyIDs = map[string]struct{}{}
+			}
+			s.resources[entry.Key] = entry.Value
+		}
+	}
+	for _, entry := range snap.Networks {
+		if entry.Value != nil {
+			if entry.Value.PolicyIDs == nil {
+				entry.Value.PolicyIDs = map[string]struct{}{}
+			}
+			if entry.Value.StatusCodes == nil {
+				entry.Value.StatusCodes = map[string]int64{}
+			}
+			if entry.Value.TransportSamples == nil {
+				entry.Value.TransportSamples = map[string]*TransportOpAggregate{}
+			}
+			s.networks[entry.Key] = entry.Value
+		}
+	}
+	for _, entry := range snap.CustomScenes {
+		if entry.Value != nil {
+			if entry.Value.PolicyIDs == nil {
+				entry.Value.PolicyIDs = map[string]struct{}{}
+			}
+			if entry.Value.StageHists == nil {
+				entry.Value.StageHists = map[string]contract.Histogram{}
+			}
+			if entry.Value.StageSketches == nil {
+				entry.Value.StageSketches = map[string]*contract.DDSketch{}
+			}
+			if entry.Value.ErrorCodes == nil {
+				entry.Value.ErrorCodes = map[string]int64{}
+			}
+			s.customScenes[entry.Key] = entry.Value
+		}
+	}
+	if snap.Issues != nil {
+		for k, b := range snap.Issues {
+			if b == nil {
+				continue
+			}
+			if b.Installs == nil {
+				b.Installs = map[string]struct{}{}
+			}
+			if b.Releases == nil {
+				b.Releases = map[string]struct{}{}
+			}
+			if b.Devices == nil {
+				b.Devices = map[string]int64{}
+			}
+			if b.OSVersions == nil {
+				b.OSVersions = map[string]int64{}
+			}
+			if b.ReleaseCounts == nil {
+				b.ReleaseCounts = map[string]int64{}
+			}
+			if b.Days == nil {
+				b.Days = map[string]int64{}
+			}
+			s.issues[k] = b
+		}
+	}
+	return nil
+}
+
 func (s *EmbeddedStore) applyEventLocked(r protocol.Resource, e protocol.Event, parsed any, isReplay bool) {
-	s.seenEvents[e.EventID] = struct{}{}
+	s.recordSeenLocked(e.EventID)
 	s.totalEvents++
 
 	adapter := r.Adapter
@@ -1270,6 +1617,21 @@ func (s *EmbeddedStore) RegisterRelease(_ context.Context, r ReleaseRecord) erro
 		r.FirstSeenMS = existing.FirstSeenMS
 		r.LastSeenMS = existing.LastSeenMS
 		r.EventCount = existing.EventCount
+		if r.GitSHA == "" {
+			r.GitSHA = existing.GitSHA
+		}
+		if r.SymbolID == "" {
+			r.SymbolID = existing.SymbolID
+		}
+		if r.Adapter == "" {
+			r.Adapter = existing.Adapter
+		}
+		if r.BinarySizeBytes <= 0 {
+			r.BinarySizeBytes = existing.BinarySizeBytes
+		}
+		if r.BinaryArtifactKind == "" {
+			r.BinaryArtifactKind = existing.BinaryArtifactKind
+		}
 	} else {
 		now := time.Now().UnixMilli()
 		if r.FirstSeenMS == 0 {

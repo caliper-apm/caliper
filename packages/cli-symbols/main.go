@@ -21,7 +21,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "upload" {
-		fmt.Fprintln(os.Stderr, "Usage: caliper-symbols upload --server URL --app-id ID --platform android|ios --version VER --build BUILD --kind r8_mapping|dsym|hermes_sourcemap|breakpad|native_elf --file PATH [--git-sha SHA] [--env prod] [--api-key KEY]")
+		fmt.Fprintln(os.Stderr, "Usage: caliper-symbols upload --server URL --app-id ID --platform android|ios --version VER --build BUILD --kind r8_mapping|dsym|hermes_sourcemap|breakpad|native_elf --file PATH [--binary-file PATH] [--binary-size-bytes N --binary-artifact-kind apk|aab|ipa|xcarchive|bundle] [--git-sha SHA] [--env prod] [--api-key KEY]")
 		os.Exit(2)
 	}
 
@@ -35,6 +35,9 @@ func main() {
 	gitSHA := fsFlag.String("git-sha", "", "Git commit SHA")
 	kind := fsFlag.String("kind", "", "Symbol kind: r8_mapping|dsym|hermes_sourcemap|breakpad|native_elf")
 	filePath := fsFlag.String("file", "", "Path to symbol file or .dSYM bundle directory")
+	binaryFile := fsFlag.String("binary-file", "", "Optional path to release artifact (.apk/.aab/.ipa) to record exact byte size")
+	binarySizeBytes := fsFlag.Int64("binary-size-bytes", 0, "Optional explicit release artifact size in bytes")
+	binaryArtifactKind := fsFlag.String("binary-artifact-kind", "", "Optional release artifact kind: apk|aab|ipa|xcarchive|bundle")
 	apiKey := fsFlag.String("api-key", "", "Optional X-Caliper-Key")
 	_ = fsFlag.Parse(os.Args[2:])
 
@@ -59,8 +62,27 @@ func main() {
 	base := strings.TrimRight(*serverURL, "/")
 	client := &http.Client{Timeout: 30 * time.Second}
 
-	// 1. Register release metadata atomically with exact build identity.
-	relPayload, _ := json.Marshal(map[string]any{
+	// 1. Register release metadata atomically with exact build identity (and optional binary size).
+	resolvedBinSize := *binarySizeBytes
+	resolvedBinKind := strings.ToLower(strings.TrimSpace(*binaryArtifactKind))
+	if *binaryFile != "" {
+		info, statErr := os.Stat(*binaryFile)
+		if statErr != nil {
+			fmt.Fprintf(os.Stderr, "stat binary file: %v\n", statErr)
+			os.Exit(1)
+		}
+		if !info.IsDir() && resolvedBinSize <= 0 {
+			resolvedBinSize = info.Size()
+		}
+		if resolvedBinKind == "" {
+			ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(*binaryFile)), ".")
+			switch ext {
+			case "apk", "aab", "ipa", "xcarchive":
+				resolvedBinKind = ext
+			}
+		}
+	}
+	relMap := map[string]any{
 		"app_id":       *appID,
 		"platform":     *platform,
 		"env":          *env,
@@ -68,7 +90,14 @@ func main() {
 		"build_number": *build,
 		"git_sha":      *gitSHA,
 		"symbol_id":    symbolID,
-	})
+	}
+	if resolvedBinSize > 0 {
+		relMap["binary_size_bytes"] = resolvedBinSize
+	}
+	if resolvedBinKind != "" {
+		relMap["binary_artifact_kind"] = resolvedBinKind
+	}
+	relPayload, _ := json.Marshal(relMap)
 	reqRel, err := http.NewRequest(http.MethodPost, base+"/v1/releases/register", bytes.NewReader(relPayload))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build release request: %v\n", err)

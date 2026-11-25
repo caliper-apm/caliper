@@ -465,6 +465,15 @@ export function OverviewPage({ filters, releases, refreshTick, lang, onOpenIssue
                     {gate.candidate_symbol_bound
                       ? (lang === 'zh' ? '符号表已绑定' : 'symbols bound')
                       : (lang === 'zh' ? '缺少符号表' : 'symbols missing')}
+                    {gate.binary_size?.comparable && gate.binary_size.delta_bytes !== undefined && gate.binary_size.delta_pct !== undefined && (
+                      <>
+                        {' · '}
+                        {gate.binary_size.candidate_kind}: {((gate.binary_size.baseline_bytes ?? 0) / (1024 * 1024)).toFixed(2)}→
+                        {((gate.binary_size.candidate_bytes ?? 0) / (1024 * 1024)).toFixed(2)} MiB ({gate.binary_size.delta_bytes >= 0 ? '+' : ''}
+                        {(gate.binary_size.delta_bytes / 1024).toFixed(0)} KiB / {gate.binary_size.delta_pct >= 0 ? '+' : ''}
+                        {gate.binary_size.delta_pct.toFixed(1)}%)
+                      </>
+                    )}
                   </div>
                 </div>
                 <div className="filter-group">

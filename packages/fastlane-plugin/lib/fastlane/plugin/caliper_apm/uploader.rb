@@ -20,7 +20,7 @@ module Fastlane
         @read_timeout = read_timeout
       end
 
-      def register_release(app_id:, platform: "ios", env: "prod", app_version:, build_number:, git_sha: nil, adapter: "native")
+      def register_release(app_id:, platform: "ios", env: "prod", app_version:, build_number:, git_sha: nil, adapter: "native", binary_size_bytes: nil, binary_artifact_kind: nil)
         uri = URI.parse("#{@server_url}/v1/releases/register")
         payload = {
           app_id: app_id,
@@ -31,6 +31,8 @@ module Fastlane
           adapter: adapter
         }
         payload[:git_sha] = git_sha if git_sha && !git_sha.empty?
+        payload[:binary_size_bytes] = binary_size_bytes.to_i if binary_size_bytes && binary_size_bytes.to_i > 0
+        payload[:binary_artifact_kind] = binary_artifact_kind.to_s.downcase if binary_artifact_kind && !binary_artifact_kind.to_s.empty?
 
         req = Net::HTTP::Post.new(uri)
         req["Content-Type"] = "application/json"

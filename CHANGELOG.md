@@ -2,6 +2,44 @@
 
 All notable releases of **Caliper APM** are documented here.
 
+## v1.10.0 — Pure-Go DDSketch (±2%) Tail Quantiles, DDSketch KS & Public OSS Release Polish
+- **Pure-Go Zero-Dependency DDSketch Engine (`server/internal/contract/ddsketch.go`)**:
+  - Implemented a clean-room, fully-mergeable logarithmic `DDSketch` ($\alpha = 2\%$ relative accuracy) guaranteeing $\le 2\%$ relative quantile error across arbitrary positive durations and memory sizes (`P50 / P75 / P90 / P95 / P99 / P99.9`), verified on 10,000 log-normal samples, associative merges, and Embedded WAL replay parity.
+  - Wired DDSketch alongside existing 19-bucket histograms with zero breaking changes (`schema` backward compatible) and Prometheus-standard intra-bucket linear interpolation fallback for legacy / coarse-histogram inputs.
+- **P95 / P99 Tail Observability Across Analytics, Alerts, OTLP & Console 2.4**:
+  - Exposed `P95` and `P99` tail quantiles across Startup, Resources (memory peak), Network Transport operations, Custom Business Journeys, Daily Trends (`GET /v1/analytics/timeseries`), Alert Rules (`startup_cold_p95_ms`, `startup_cold_p99_ms`, `resource_memory_peak_p95_mib`, `resource_memory_peak_p99_mib`, etc.), OTLP metrics export (`GET /v1/otlp/export`), and Console 2.4 charts/tables.
+- **High-Precision `DDSketchKSTest` Regression Detection (`ddsketch_ks`)**:
+  - Added two-sample Kolmogorov-Smirnov testing directly over merged DDSketch bins (`server/internal/analytics/regression.go`), detecting intra-bucket regressions (e.g., shifts within `[1000, 1500] ms`) and tail-only P99 spikes that coarse 19-bucket histograms cannot separate, while automatically falling back to `histogram_ks` when sketches are absent.
+- **ClickHouse DDSketch (±2%) Parity, Embedded WAL Compaction & Statistical Hardening**:
+  - Added compact `Int32` DDSketch bin columns (`total_sketch_bin`, `memory_sketch_bin`, `duration_sketch_bin`) aggregated natively via ClickHouse `sumMapIf(...)` plus `device_model`/`os_version` ingest parity so cluster mode preserves full ±2% `DDSketch` quantiles and `ddsketch_ks` without silent downgrade.
+  - Upgraded `EmbeddedStore` with bounded FIFO event-ID deduplication (250k default ring) and atomic gzipped snapshot + WAL truncation (`Compact()`, auto-triggered at 64 MiB WAL) for bounded memory and fast restarts in long-running single-binary deployments.
+  - Hardened regression statistics with **window-clustered fluency Z-testing (`cluster_proportion_z`)** (preventing intra-window frame autocorrelation false positives) and **Benjamini-Hochberg FDR multiple-testing correction** (`adjusted_p_value` / `fdr_method`) in `ScanRegressions`.
+- **AI-Native Caliper MCP Server (RBAC-Hardened) & Async OTLP Trace Push Exporter**:
+  - Added pure-Go zero-dependency **Model Context Protocol (MCP) JSON-RPC 2.0** support via `POST /v1/mcp` (Streamable HTTP compatible: `2025-06-18` / `2025-03-26` / `2024-11-05` negotiation, `202 Accepted` notification acks, `Origin` DNS-rebinding guard, bounded issue frame/breadcrumb outputs) and standalone stdio CLI `caliper-mcp` (`server/cmd/caliper-mcp`) exposing 6 read-only tools (`caliper_overview`, `caliper_compare_releases`, `caliper_evaluate_gate`, `caliper_scan_regressions`, `caliper_list_issues`, `caliper_inspect_issue`) for Cursor, Claude Code, Codex, and Antigravity.
+  - Enforced fail-closed **multi-tenant RBAC `app_id` workspace scoping** (`auth.ResolveAppScope` / `AuthorizeScoped`) across `POST /v1/mcp`, `POST /v1/analytics/{compare,release-gate,regressions/scan}`, `POST /v1/diagnostics/heap/compare`, `GET /v1/diagnostics/profiles/{id}/flamegraph`, and all analytics filter endpoints (auto-scoping single-app keys and blocking cross-tenant or multi-app wildcard leaks).
+  - Added bounded, fail-closed background **OTLP/HTTP JSON Trace Push Exporter** (`--otlp-traces-endpoint` / `CALIPER_OTLP_TRACES_ENDPOINT`) pushing W3C `traceparent` `CLIENT` spans directly to Jaeger, Grafana Tempo, or OpenTelemetry Collector.
+- **Zero-Lie Release Binary Size Tracking (`binary_size_bytes` + `binary_artifact_kind`)**:
+  - Extended `ReleaseRecord` (Embedded WAL + PostgreSQL `caliper_releases` migration), `POST /v1/releases/register`, `caliper-symbols` (`--binary-file` / `--binary-size-bytes`), Fastlane plugin (`binary_path:` / `binary_size_bytes:`), `ReleaseGateReport` (strictly comparing only identical artifact kinds `apk` vs `apk` / `ipa` vs `ipa`, returning `artifact_kind_mismatch` when e.g. `apk` and `aab` differ), `seed-replay`, and Console 2.4 (`OperationsPage` & `OverviewPage`).
+- **Mobile SDK Production Closure (iOS, Android & React Native)**:
+  - **iOS (`sdk-ios`)**: Real main-thread Mach stack capture (`thread_suspend` + `vm_read_overwrite` FP walk + `thread_resume`) in `CaliperMainThreadWatchdog`, Objective-C `NSException` chaining, `MetricKit` `callStackTree` parsing, and 1-line `CaliperIOSAgent` cold-start (`markFirstContentFrame`), `CADisplayLink` fluency windows, and off-main-thread `phys_footprint` + CPU sampling.
+  - **Android (`sdk-android`)**: Real elapsed Activity `window_duration_ms` (replacing fixed 10s constant), pure-Kotlin `/proc/self/stat` CPU delta sampler (`CaliperProcessCpuSampler`), and low-frequency foreground PSS/CPU resource sampling in `CaliperAndroidAgent`.
+  - **React Native (`sdk-react-native`)**: Aligned TS/Kotlin/Swift `CaliperNativeBridgeSpec` signatures (`setScene`, `addBreadcrumb`, `notifyFirstFrameReady`, `enqueueEvent`, `flush`), added ObjC `RCT_EXTERN_MODULE` export stub (`CaliperReactNativeBridge.m`), `resolveNativeBridge()`, and `installReactNativeAutoHooks()` (chaining `ErrorUtils`, observing `longtask`, wrapping `fetch`, and periodic flushing).
+- **Realistic 14-Day Canary `seed-replay` & Open-Source Release Hardening**:
+  - Upgraded `server/cmd/seed-replay` to generate realistic 14-day multi-release canary distributions with decoupled scene/zero-frame cadence and added `--clean` to `scripts/dev-quickstart.sh`.
+  - Aligned CI (`ci.yml`), `.goreleaser.yaml`, `Dockerfile`, Helm Chart (`deploy/helm/caliper-apm`), and architecture/README documentation for the `v1.10.0` public open-source launch.
+
+## v1.9.0 — Pure-Go Swift 5+ Demangler, End-to-End W3C `traceparent` & Real AGP 8.7 + R8 Verification
+- **Pure-Go Zero-Dependency Swift 5+ Demangler (`server/internal/symbolicator/swift_demangle.go`)**:
+  - Built a clean-room stack-AST Swift 5+ (`$s...` / `_$s...` / `$S...` / `_T0...`) symbol demangler integrated directly into native Mach-O `.dSYM` symbolication alongside Itanium C++ ABI demangling — zero CGO and zero external `swift-demangle` subprocess.
+  - Cross-verified with 32 unit vectors plus 18 real `swiftc`-compiled + `dsymutil` symbols against Apple `xcrun swift-demangle` (**100% exact match**).
+- **End-to-End W3C `traceparent` Distributed Tracing Across All 3 Mobile Platforms & OTLP**:
+  - Added `CaliperTraceContext` & opt-in host-allowlisted `tracePropagationTargets` across **Android (`CaliperOkHttpNetworkBridge` + `CaliperOkHttpInterceptor`)**, **iOS (`CaliperAutoURLSessionDelegate` / `withCaliperTraceparent()`)**, and **React Native (`wrapFetchForDenominator`)**.
+  - Persisted `trace_id` / `span_id` across Go collector, Embedded WAL, and ClickHouse (`caliper_network_transport_events`), surfaced W3C `trace:` badges in Console 2.4 Network Waterfalls, and added W3C `CLIENT` span export via `GET /v1/otlp/export/traces`.
+- **Real AGP 8.7.3 + OkHttp 4.12 + NDK 27 + R8 8.7.18 Full Minification Sample (`examples/android-agp-r8-sample/`)**:
+  - Verified ASM9 bytecode weaving (`io.caliper.apm.autoinstrument`) survives full R8 minification (`isMinifyEnabled = true`, `consumer-rules.pro`) via `dexdump` inspection of real `app-release.apk` (`classes.dex`), plus `ParseR8Mapping` parsing real R8 `mapping.txt`.
+- **Real PostgreSQL 16 Multi-Replica HA Integration Suite (`server/internal/storage/postgres/real_pg_test.go`)**:
+  - Added `CALIPER_TEST_POSTGRES_DSN`-gated multi-replica PostgreSQL 16 integration tests validating concurrent metadata writes, triage state, policy leases, and audit logs.
+
 ## v1.8.1 — Dual Physical-Device E2E Hardening (vivo V2343A + iPhone 13 Pro Max)
 - **Android NDK `libcaliper_native.so` Zero `libc++_shared.so` Dependency & Live Signal Map Refresh**:
   - Compiled with `-fno-exceptions -fno-rtti -nostdlib++` so pure Java/Kotlin host APKs load `libcaliper_native.so` cleanly (`NEEDED`: only `liblog.so`, `libm.so`, `libdl.so`, `libc.so`).

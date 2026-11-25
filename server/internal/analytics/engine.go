@@ -432,8 +432,11 @@ func (e *Engine) Compare(ctx context.Context, req CompareRequest) (CompareReport
 		minSamples, 0.5,
 	)
 	if flCmp.Status != "gated" {
-		flCmp = enrichWithProportionStats(
-			flCmp, bFlStat.jankFrames, bFlStat.totalFrames, cFlStat.jankFrames, cFlStat.totalFrames, DefaultSignificanceAlpha,
+		flCmp = enrichWithClusteredFluencyStats(
+			flCmp,
+			bFlStat.jankFrames, bFlStat.totalFrames, bFlStat.validWindows,
+			cFlStat.jankFrames, cFlStat.totalFrames, cFlStat.validWindows,
+			DefaultSignificanceAlpha,
 		)
 	}
 	metrics = append(metrics, flCmp)

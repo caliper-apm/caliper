@@ -13,6 +13,9 @@ public struct CaliperIOSAgentOptions: Sendable {
     public var enableFOOMDetector: Bool
     public var enableWatchdog: Bool
     public var enableMetricKit: Bool
+    public var enableFluencyMonitor: Bool
+    public var enableResourceMonitor: Bool
+    public var resourceSampleIntervalSec: TimeInterval
     public var autoInstrumentViewControllers: Bool
     public var enableThermalMonitor: Bool
     public var enableDailyDiskAudit: Bool
@@ -26,6 +29,9 @@ public struct CaliperIOSAgentOptions: Sendable {
         enableFOOMDetector: Bool = true,
         enableWatchdog: Bool = true,
         enableMetricKit: Bool = true,
+        enableFluencyMonitor: Bool = true,
+        enableResourceMonitor: Bool = true,
+        resourceSampleIntervalSec: TimeInterval = 30.0,
         autoInstrumentViewControllers: Bool = true,
         enableThermalMonitor: Bool = true,
         enableDailyDiskAudit: Bool = true,
@@ -38,6 +44,9 @@ public struct CaliperIOSAgentOptions: Sendable {
         self.enableFOOMDetector = enableFOOMDetector
         self.enableWatchdog = enableWatchdog
         self.enableMetricKit = enableMetricKit
+        self.enableFluencyMonitor = enableFluencyMonitor
+        self.enableResourceMonitor = enableResourceMonitor
+        self.resourceSampleIntervalSec = max(5.0, resourceSampleIntervalSec)
         self.autoInstrumentViewControllers = autoInstrumentViewControllers
         self.enableThermalMonitor = enableThermalMonitor
         self.enableDailyDiskAudit = enableDailyDiskAudit
@@ -51,9 +60,11 @@ public struct CaliperIOSAgentOptions: Sendable {
 /// Drop-in 1-line Pure-Native iOS/macOS APM Agent (Zero React Native deps, zero private APIs).
 ///
 /// Automatically wires:
-/// - Real-time C/Mach Exception + Unix Signal crash reporter (`CaliperNativeCrashReporter`)
+/// - Real-time C/Mach Exception + Unix Signal + NSException crash reporter (`CaliperNativeCrashReporter`)
 /// - 9-branch Heuristic Foreground OOM state machine (`CaliperFOOMDetector`)
-/// - Off-main-thread Watchdog & MetricKit (iOS 14+)
+/// - Off-main-thread Watchdog (real main-thread Mach stack capture) & MetricKit (iOS 14+)
+/// - 3-stage Cold Start conservation (`markFirstContentFrame`) from kernel `p_starttime`
+/// - `CADisplayLink` fluency windows (Zero-Lie zero-frame preservation) & low-frequency `phys_footprint` + CPU sampling
 /// - Zero-swizzle lifecycle & thermal state observers + safe opt-in `UIViewController` scene tracking
 /// - Low-frequency bounded sandbox disk audit (`CaliperDiskAuditProbe`)
 public final class CaliperIOSAgent: @unchecked Sendable {
@@ -68,6 +79,20 @@ public final class CaliperIOSAgent: @unchecked Sendable {
     private var _ringLog = CaliperDiagnosticRingLog(maxLines: 500)
     private var observers: [NSObjectProtocol] = []
     private var _lastFOOMClass: FOOMTerminationClass = .none
+    private var _currentScene: String = "startup"
+    private var _inForeground: Bool = true
+    private var _processStartMS: Double = 0
+    private var _nativeInitDoneMS: Double = 0
+    private var _firstFrameReported: Bool = false
+    private var _resourceTimer: DispatchSourceTimer?
+    private var _lastCPUMS: Double?
+    private var _lastResourceWallMS: Double?
+    private var _fluencyAccumulator = FluencyWindowAccumulator()
+    private var _fluencyWindowStartMS: Double = 0
+    private var _fluencyWindowScene: String = "startup"
+    #if canImport(UIKit) && os(iOS)
+    private var _displayLinkSampler: CaliperDisplayLinkSampler?
+    #endif
     #if canImport(MetricKit) && os(iOS)
     private var _metricKitBox: AnyObject?
     #endif
@@ -95,7 +120,10 @@ public final class CaliperIOSAgent: @unchecked Sendable {
     }
 
     public static func setScene(_ scene: String) {
+        shared.flushFluencyWindowInternal(nextScene: scene)
+
         shared.lock.lock()
+        shared._currentScene = scene
         let c = shared._client
         let cr = shared._crashReporter
         let foom = shared._foomDetector
@@ -104,6 +132,51 @@ public final class CaliperIOSAgent: @unchecked Sendable {
         c?.setScene(scene)
         cr?.setScene(scene)
         foom?.markForeground(scene: scene)
+    }
+
+    /// Marks initial meaningful UI render once per launch, emitting a stage-conserved Cold Start
+    /// event anchored at kernel `kp_proc.p_starttime` (`process_main`).
+    public static func markFirstContentFrame(runtimeInitMS: Double? = nil) {
+        let nowMS = Date().timeIntervalSince1970 * 1000.0
+        shared.lock.lock()
+        guard shared.installed, !shared._firstFrameReported, let client = shared._client else {
+            shared.lock.unlock()
+            return
+        }
+        shared._firstFrameReported = true
+        let startMS = shared._processStartMS > 0 ? shared._processStartMS : nowMS
+        let initDoneMS = shared._nativeInitDoneMS > 0 ? shared._nativeInitDoneMS : nowMS
+        shared.lock.unlock()
+
+        let total = max(1.0, nowMS - startMS)
+        let nativeInit = min(max(0.0, initDoneMS - startMS), total)
+        let rt: Double?
+        if let rawRT = runtimeInitMS, rawRT.isFinite {
+            rt = min(max(0.0, rawRT), max(0.0, total - nativeInit))
+        } else {
+            rt = nil
+        }
+        let firstFrame = max(0.0, total - nativeInit - (rt ?? 0.0))
+
+        client.enqueue(
+            kind: "startup",
+            payload: .startup(StartupPayload(
+                totalDurationMS: total,
+                nativeInitMS: nativeInit,
+                runtimeInitMS: rt,
+                firstFrameMS: firstFrame,
+                coldStart: true,
+                startAnchor: "process_main",
+                endAnchor: "first_content_frame",
+                result: "success"
+            )),
+            scene: "startup"
+        )
+    }
+
+    /// Captures one `phys_footprint` + `getrusage` CPU delta resource window immediately off-main-thread.
+    public static func captureResourceSampleNow() {
+        shared.captureResourceSampleInternal()
     }
 
     public static func log(level: String, tag: String, message: String) {
@@ -117,6 +190,12 @@ public final class CaliperIOSAgent: @unchecked Sendable {
             NotificationCenter.default.removeObserver(obs)
         }
         shared.observers.removeAll()
+        shared._resourceTimer?.cancel()
+        shared._resourceTimer = nil
+        #if canImport(UIKit) && os(iOS)
+        let dl = shared._displayLinkSampler
+        shared._displayLinkSampler = nil
+        #endif
         shared._watchdog?.stop()
         shared._crashReporter?.uninstall()
         shared._watchdog = nil
@@ -125,7 +204,102 @@ public final class CaliperIOSAgent: @unchecked Sendable {
         shared._client = nil
         shared.installed = false
         shared._lastFOOMClass = .none
+        shared._currentScene = "startup"
+        shared._inForeground = true
+        shared._processStartMS = 0
+        shared._nativeInitDoneMS = 0
+        shared._firstFrameReported = false
+        shared._lastCPUMS = nil
+        shared._lastResourceWallMS = nil
+        shared._fluencyAccumulator = FluencyWindowAccumulator()
+        shared._fluencyWindowStartMS = 0
+        shared._fluencyWindowScene = "startup"
         shared.lock.unlock()
+        #if canImport(UIKit) && os(iOS)
+        if let dl {
+            DispatchQueue.main.async { dl.stop() }
+        }
+        #endif
+    }
+
+    private func flushFluencyWindowInternal(nextScene: String?) {
+        let nowMS = Date().timeIntervalSince1970 * 1000.0
+        lock.lock()
+        guard installed, let client = _client, _fluencyWindowStartMS > 0 else {
+            if let ns = nextScene {
+                _fluencyWindowScene = ns
+            }
+            lock.unlock()
+            return
+        }
+        let elapsedMS = Int64(max(1.0, nowMS - _fluencyWindowStartMS))
+        let acc = _fluencyAccumulator
+        let prevScene = _fluencyWindowScene
+        _fluencyAccumulator = FluencyWindowAccumulator()
+        _fluencyWindowStartMS = nowMS
+        if let ns = nextScene {
+            _fluencyWindowScene = ns
+        }
+        lock.unlock()
+
+        // Preserve zero-frame windows truthfully per Zero-Lie contract (never fabricated as 0% jank).
+        client.enqueue(
+            kind: "fluency_window",
+            payload: .fluency(FluencyWindowPayload(
+                algorithm: "ios_display_link",
+                windowDurationMS: elapsedMS,
+                frameCount: acc.frameCount,
+                jankFrameCount: acc.jankFrameCount,
+                severeJankFrameCount: acc.severeJankFrameCount,
+                frameDurationBuckets: acc.frameDurationBuckets
+            )),
+            scene: prevScene
+        )
+    }
+
+    private func captureResourceSampleInternal() {
+        let nowMS = Date().timeIntervalSince1970 * 1000.0
+        guard let footprintKiB = CaliperSystemMetrics.physicalFootprintKiB() else { return }
+        let cpuMS = CaliperSystemMetrics.processCPUMilliseconds()
+
+        lock.lock()
+        guard installed, let client = _client else {
+            lock.unlock()
+            return
+        }
+        let scene = _currentScene
+        let foom = _foomDetector
+        let prevCPU = _lastCPUMS
+        let prevWall = _lastResourceWallMS
+        _lastCPUMS = cpuMS
+        _lastResourceWallMS = nowMS
+        lock.unlock()
+
+        foom?.updateMemoryFootprint(kib: footprintKiB, scene: scene)
+
+        let windowDurationMS: Int64
+        let cpuPct: Double
+        if let pCPU = prevCPU, let pWall = prevWall, let curCPU = cpuMS, nowMS > pWall {
+            let dtWall = nowMS - pWall
+            windowDurationMS = Int64(max(1.0, dtWall))
+            cpuPct = min(max(0.0, ((curCPU - pCPU) / dtWall) * 100.0), 1600.0)
+        } else {
+            windowDurationMS = 30_000
+            cpuPct = 0.0
+        }
+
+        client.enqueue(
+            kind: "resource_window",
+            payload: .resource(ResourceWindowPayload(
+                windowDurationMS: windowDurationMS,
+                cpuPct: cpuPct,
+                memoryKind: "ios_phys_footprint_kib",
+                memoryPeakKiB: footprintKiB,
+                memoryAvgKiB: footprintKiB,
+                sampleCount: 1
+            )),
+            scene: scene
+        )
     }
 
     private func installInternal(config: CaliperConfig, options: CaliperIOSAgentOptions) -> CaliperClient {
@@ -174,26 +348,33 @@ public final class CaliperIOSAgent: @unchecked Sendable {
             _foomDetector = foom
         }
 
-        // 3. Watchdog
+        // 3. Watchdog (real main-thread Mach stack capture + DWARF-symbolicable relative addresses)
         if options.enableWatchdog {
             let wd = CaliperMainThreadWatchdog(
                 thresholdMS: options.watchdogThresholdMS,
-                pollIntervalMS: options.watchdogPollIntervalMS
-            ) { durMS, stack in
-                let frames = stack.prefix(24).map { StackFrame(symbol: $0, inApp: true) }
-                client.enqueue(
-                    kind: "anr",
-                    payload: .stability(StabilityPayload(
-                        fingerprint: "ios-watchdog-\(durMS / 500 * 500)",
-                        title: "Main Thread Hang (\(durMS)ms)",
-                        fatal: false,
-                        exceptionType: "WatchdogHang",
-                        threadName: "main",
-                        frames: frames
-                    )),
-                    bypassSampling: true
-                )
-            }
+                pollIntervalMS: options.watchdogPollIntervalMS,
+                onHangFrames: { durMS, frames in
+                    let top = frames.first(where: { $0.inApp == true }) ?? frames.first
+                    let fp: String
+                    if let top {
+                        fp = "ios-watchdog-\(top.module ?? "main")-\(top.address ?? top.symbol)"
+                    } else {
+                        fp = "ios-watchdog-\(durMS / 500 * 500)"
+                    }
+                    client.enqueue(
+                        kind: "anr",
+                        payload: .stability(StabilityPayload(
+                            fingerprint: fp,
+                            title: "Main Thread Hang (\(durMS)ms)",
+                            fatal: false,
+                            exceptionType: "WatchdogHang",
+                            threadName: "main",
+                            frames: Array(frames.prefix(32))
+                        )),
+                        bypassSampling: true
+                    )
+                }
+            )
             wd.start()
             _watchdog = wd
         }
@@ -222,17 +403,54 @@ public final class CaliperIOSAgent: @unchecked Sendable {
             observers.append(thermalObs)
         }
 
-        // 6. iOS Lifecycle Notifications + Safe Opt-In UIViewController Swizzle
+        let nowMS = Date().timeIntervalSince1970 * 1000.0
+        _processStartMS = CaliperSystemMetrics.processStartEpochMS() ?? nowMS
+        _currentScene = "startup"
+        _inForeground = true
+        _firstFrameReported = false
+        _fluencyAccumulator = FluencyWindowAccumulator()
+        _fluencyWindowScene = "startup"
+        _fluencyWindowStartMS = 0
+        _lastCPUMS = CaliperSystemMetrics.processCPUMilliseconds()
+        _lastResourceWallMS = nowMS
+
+        // 6. iOS Lifecycle Notifications + CADisplayLink Fluency + Safe Opt-In UIViewController Swizzle
         #if canImport(UIKit) && os(iOS)
+        if options.enableFluencyMonitor {
+            _fluencyWindowStartMS = nowMS
+            let sampler = CaliperDisplayLinkSampler { [weak self] durMS, targetMS in
+                guard let self else { return }
+                self.lock.lock()
+                self._fluencyAccumulator.recordFrame(durationMS: durMS, targetMS: targetMS)
+                self.lock.unlock()
+            }
+            _displayLinkSampler = sampler
+            DispatchQueue.main.async { sampler.start() }
+        }
+
         let fgObs = NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?._foomDetector?.markForeground()
+            guard let self else { return }
+            self.lock.lock()
+            self._inForeground = true
+            self._fluencyWindowStartMS = Date().timeIntervalSince1970 * 1000.0
+            let sampler = self._displayLinkSampler
+            self.lock.unlock()
+            sampler?.start()
+            self._foomDetector?.markForeground()
         }
         let bgObs = NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?._foomDetector?.markBackground()
+            guard let self else { return }
+            self.flushFluencyWindowInternal(nextScene: nil)
+            self.lock.lock()
+            self._inForeground = false
+            let sampler = self._displayLinkSampler
+            self.lock.unlock()
+            sampler?.stop()
+            self._foomDetector?.markBackground()
             Task { try? await client.flush() }
         }
         let termObs = NotificationCenter.default.addObserver(
@@ -246,6 +464,28 @@ public final class CaliperIOSAgent: @unchecked Sendable {
             UIViewController.caliperInstallAutoSceneTracking()
         }
         #endif
+
+        // 6b. Low-frequency off-main-thread phys_footprint + CPU resource monitor
+        if options.enableResourceMonitor {
+            let intervalMS = Int(options.resourceSampleIntervalSec * 1000.0)
+            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+            timer.schedule(
+                deadline: .now() + .milliseconds(intervalMS),
+                repeating: .milliseconds(intervalMS),
+                leeway: .seconds(2)
+            )
+            timer.setEventHandler { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                let fg = self._inForeground
+                self.lock.unlock()
+                if fg {
+                    self.captureResourceSampleInternal()
+                }
+            }
+            _resourceTimer = timer
+            timer.resume()
+        }
 
         // 7. Bounded Daily Disk Audit (background utility queue, at most once per 24h)
         if options.enableDailyDiskAudit {
@@ -270,6 +510,7 @@ public final class CaliperIOSAgent: @unchecked Sendable {
             }
         }
 
+        _nativeInitDoneMS = Date().timeIntervalSince1970 * 1000.0
         installed = true
         lock.unlock()
         _ringLog.append(level: "INFO", tag: "CaliperIOSAgent", message: "installed sdk=\(config.resource.sdkVersion)")

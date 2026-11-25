@@ -11,6 +11,10 @@ const (
 	DefaultSketchAlpha = 0.02
 	// DefaultSketchMinValue maps non-negative values <= 1e-6 into the exact zero bucket.
 	DefaultSketchMinValue = 1e-6
+	// SketchBinAbsent is the Int32 sentinel used in OLAP storage (ClickHouse) when no observation was recorded.
+	SketchBinAbsent int32 = math.MinInt32
+	// SketchBinZero is the Int32 sentinel used in OLAP storage for exact-zero observations (<= DefaultSketchMinValue).
+	SketchBinZero int32 = math.MinInt32 + 1
 )
 
 // DDSketch is a clean-room, zero-dependency, fully-mergeable logarithmic quantile sketch
@@ -280,6 +284,52 @@ func QuantileMemoryMiBSketch(sk *DDSketch, h Histogram, q float64, minSamples in
 		return sk.Quantile(q, minSamples)
 	}
 	return QuantileMemoryMiB(h, q, minSamples)
+}
+
+// DDSketchBinForValue projects a single non-negative observation into its compact Int32 DDSketch
+// bin index for OLAP persistence (e.g. ClickHouse Int32 column aggregated via sumMapIf).
+// Returns SketchBinAbsent for invalid/negative values and SketchBinZero for values <= DefaultSketchMinValue.
+func DDSketchBinForValue(value, alpha float64) int32 {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return SketchBinAbsent
+	}
+	if alpha <= 0 || alpha >= 1 || math.IsNaN(alpha) || math.IsInf(alpha, 0) {
+		alpha = DefaultSketchAlpha
+	}
+	if value <= DefaultSketchMinValue {
+		return SketchBinZero
+	}
+	gamma := (1.0 + alpha) / (1.0 - alpha)
+	idx := int32(math.Ceil(math.Log(value) / math.Log(gamma)))
+	if idx == SketchBinAbsent || idx == SketchBinZero {
+		return SketchBinZero
+	}
+	return idx
+}
+
+// DDSketchFromBinMap reconstructs a DDSketch from sparse (bin_index -> count) pairs aggregated in OLAP storage.
+// Returns nil if no valid positive counts exist so callers fall back cleanly to 19-bucket histograms.
+func DDSketchFromBinMap(alpha float64, bins map[int32]int64) *DDSketch {
+	if len(bins) == 0 {
+		return nil
+	}
+	sk := NewDDSketch(alpha)
+	for idx, cnt := range bins {
+		if cnt <= 0 || idx == SketchBinAbsent {
+			continue
+		}
+		if idx == SketchBinZero {
+			sk.ZeroCount += cnt
+			sk.Count += cnt
+			continue
+		}
+		sk.Bins[idx] += cnt
+		sk.Count += cnt
+	}
+	if sk.Count == 0 {
+		return nil
+	}
+	return sk
 }
 
 func roundSketchValue(v float64) float64 {

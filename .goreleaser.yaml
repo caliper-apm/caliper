@@ -20,6 +20,15 @@ builds:
     goarch: [amd64, arm64]
     ldflags: [-s -w]
 
+  - id: caliper-mcp
+    dir: server
+    main: ./cmd/caliper-mcp
+    binary: caliper-mcp
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags: [-s -w]
+
   - id: caliper-symbols
     dir: packages/cli-symbols
     main: .

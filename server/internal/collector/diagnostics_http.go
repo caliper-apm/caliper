@@ -38,9 +38,8 @@ func (h *Handler) registerV1DiagnosticsRoutes() {
 }
 
 func (h *Handler) handleListCPUProfiles(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	runtime := strings.TrimSpace(r.URL.Query().Get("runtime"))
@@ -69,14 +68,16 @@ func (h *Handler) handleGetFlamegraph(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "profile_not_found", "cpu profile not found")
 		return
 	}
+	if _, allowed := h.resolveAppScopeOrWriteError(w, r, rec.AppID); !allowed {
+		return
+	}
 	fg := profiler.BuildFlamegraph(r.Context(), *rec, h.symbolicator)
 	writeJSON(w, http.StatusOK, fg)
 }
 
 func (h *Handler) handleListHeapSnapshots(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	list, err := h.store.QueryHeapSnapshots(r.Context(), f, 25)
@@ -108,6 +109,11 @@ func (h *Handler) handleCompareHeapSnapshots(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "invalid_request", "baseline_version and candidate_version are required")
 		return
 	}
+	scopedAppID, ok := h.resolveAppScopeOrWriteError(w, r, req.AppID)
+	if !ok {
+		return
+	}
+	req.AppID = scopedAppID
 	if req.Env == "" {
 		req.Env = "prod"
 	}
@@ -366,9 +372,8 @@ func (h *Handler) handleOTLPLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleOTLPExportMetrics(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	ov, err := h.engine.Overview(r.Context(), f)
@@ -380,9 +385,8 @@ func (h *Handler) handleOTLPExportMetrics(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) handleOTLPExportTraces(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	q := r.URL.Query()

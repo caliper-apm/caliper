@@ -144,11 +144,203 @@ final class NativeCrashAndFOOMTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("caliper-install-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: dir) }
 
+        let prevHandler = NSGetUncaughtExceptionHandler()
         let client = makeTestClient()
         let reporter = CaliperNativeCrashReporter(directoryURL: dir)
         let ingested = reporter.install(client: client, enableMachHandler: true, scene: "home_feed")
         XCTAssertEqual(ingested, 0)
+        XCTAssertNotNil(NSGetUncaughtExceptionHandler())
         reporter.setScene("article_detail")
         reporter.uninstall()
+        // Previous NSUncaughtExceptionHandler pointer must be cleanly restored.
+        XCTAssertEqual(
+            unsafeBitCast(NSGetUncaughtExceptionHandler(), to: UInt.self),
+            unsafeBitCast(prevHandler, to: UInt.self)
+        )
+    }
+
+    func testNSExceptionTombstoneWriteDedupAndParse() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("caliper-nsexception-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let client = makeTestClient()
+        let reporter = CaliperNativeCrashReporter(directoryURL: dir)
+        _ = reporter.install(client: client, enableMachHandler: false, scene: "checkout_confirm")
+        defer { reporter.uninstall() }
+
+        let addrs = Thread.callStackReturnAddresses.map { UInt(truncating: $0) }
+        let first = CaliperNativeCrashReporter.writeNSExceptionTombstone(
+            name: "NSRangeException",
+            reason: "index 5 beyond bounds [0 .. 2]\nline2",
+            returnAddresses: addrs
+        )
+        XCTAssertEqual(first, 0, "first NSException tombstone write should succeed")
+
+        // Second write (e.g., trailing abort()/SIGABRT) must be deduplicated cleanly.
+        let second = CaliperNativeCrashReporter.writeNSExceptionTombstone(
+            name: "SIGABRT",
+            reason: "duplicate",
+            returnAddresses: addrs
+        )
+        XCTAssertEqual(second, 1, "subsequent crash write in same process must deduplicate")
+
+        let files = reporter.pendingTombstoneFiles()
+        XCTAssertEqual(files.count, 1)
+        let raw = try String(contentsOf: files[0], encoding: .utf8)
+        let parsed = try XCTUnwrap(CaliperNativeCrashReporter.parseTombstone(raw))
+        XCTAssertEqual(parsed.mechanism, "nsexception")
+        XCTAssertEqual(parsed.exception, "NSRangeException")
+        XCTAssertEqual(parsed.reason, "index 5 beyond bounds [0 .. 2] line2")
+        XCTAssertEqual(parsed.scene, "checkout_confirm")
+        XCTAssertFalse(parsed.frames.isEmpty)
+
+        XCTAssertEqual(reporter.ingestPendingReports(into: client), 1)
+        XCTAssertEqual(client.pendingCount(), 1)
+    }
+
+    func testRealSubprocessCorruptedFramePointerSafeUnwind() throws {
+        #if os(macOS)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("caliper-corrupt-fp-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let thisFile = URL(fileURLWithPath: #filePath)
+        let pkgRoot = thisFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let cSrc = pkgRoot.appendingPathComponent("Sources/CaliperCrashCore/caliper_crash_core.c")
+        let incDir = pkgRoot.appendingPathComponent("Sources/CaliperCrashCore/include")
+
+        let helperSrc = dir.appendingPathComponent("corrupt_fp_helper.c")
+        let helperBin = dir.appendingPathComponent("corrupt_fp_helper")
+        let helperCode = """
+        #include "caliper_crash_core.h"
+        __attribute__((noinline))
+        static void trigger_corrupted_fp_crash(void) {
+        #if defined(__arm64__) || defined(__aarch64__)
+            __asm__ volatile(
+                "mov x29, #0x1008\\n"
+                "mov x0, #0\\n"
+                "ldr x1, [x0]\\n"
+                : : : "x0", "x1", "memory"
+            );
+        #elif defined(__x86_64__)
+            __asm__ volatile(
+                "movq $0x1008, %%rbp\\n"
+                "xorq %%rax, %%rax\\n"
+                "movq (%%rax), %%rbx\\n"
+                : : : "rax", "rbx", "memory"
+            );
+        #else
+            volatile int *bad = (volatile int *)0x0;
+            *bad = 1;
+        #endif
+        }
+        int main(int argc, char **argv) {
+            if (argc < 2) return 2;
+            caliper_crash_install(argv[1], true);
+            caliper_crash_set_scene("corrupt_stack_scene");
+            trigger_corrupted_fp_crash();
+            return 0;
+        }
+        """
+        try helperCode.write(to: helperSrc, atomically: true, encoding: .utf8)
+
+        let cc = Process()
+        cc.executableURL = URL(fileURLWithPath: "/usr/bin/clang")
+        cc.arguments = ["-g", "-O1", "-I", incDir.path, "-o", helperBin.path, helperSrc.path, cSrc.path]
+        try cc.run()
+        cc.waitUntilExit()
+        XCTAssertEqual(cc.terminationStatus, 0, "clang compile corrupt_fp_helper failed")
+
+        let child = Process()
+        child.executableURL = helperBin
+        child.arguments = [dir.path]
+        try child.run()
+        child.waitUntilExit()
+        XCTAssertEqual(child.terminationReason, .uncaughtSignal)
+
+        // vm_read_overwrite must prevent a secondary crash in mach_exception_loop and write 1 valid tombstone!
+        let reporter = CaliperNativeCrashReporter(directoryURL: dir)
+        let files = reporter.pendingTombstoneFiles()
+        XCTAssertEqual(files.count, 1, "expected 1 tombstone even when FP points to unmapped 0x1008")
+        let raw = try String(contentsOf: files[0], encoding: .utf8)
+        let parsed = try XCTUnwrap(CaliperNativeCrashReporter.parseTombstone(raw))
+        XCTAssertEqual(parsed.scene, "corrupt_stack_scene")
+        XCTAssertFalse(parsed.frames.isEmpty, "expected at least crashing PC frame to survive corrupt FP")
+        XCTAssertFalse(parsed.binaryUUIDs.isEmpty)
+        #endif
+    }
+
+    func testRealSubprocessNSExceptionCaptureAndSignalDedup() throws {
+        #if os(macOS)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("caliper-objc-exc-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let thisFile = URL(fileURLWithPath: #filePath)
+        let pkgRoot = thisFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let cSrc = pkgRoot.appendingPathComponent("Sources/CaliperCrashCore/caliper_crash_core.c")
+        let incDir = pkgRoot.appendingPathComponent("Sources/CaliperCrashCore/include")
+
+        let helperSrc = dir.appendingPathComponent("objc_exc_helper.m")
+        let helperBin = dir.appendingPathComponent("objc_exc_helper")
+        let helperCode = """
+        #import <Foundation/Foundation.h>
+        #include "caliper_crash_core.h"
+
+        static void test_ns_exc_handler(NSException *exc) {
+            NSArray<NSNumber *> *addrs = [exc callStackReturnAddresses];
+            uintptr_t pcs[48];
+            int n = (int)MIN((NSUInteger)48, [addrs count]);
+            for (int i = 0; i < n; i++) {
+                pcs[i] = (uintptr_t)[[addrs objectAtIndex:i] unsignedLongLongValue];
+            }
+            caliper_crash_write_exception_tombstone(
+                [[exc name] UTF8String],
+                [[exc reason] UTF8String],
+                pcs,
+                n
+            );
+        }
+
+        int main(int argc, char **argv) {
+            @autoreleasepool {
+                if (argc < 2) return 2;
+                caliper_crash_install(argv[1], true);
+                caliper_crash_set_scene("feed_detail");
+                NSSetUncaughtExceptionHandler(&test_ns_exc_handler);
+                [NSException raise:NSRangeException format:@"index 99 beyond bounds [0 .. 3]"];
+            }
+            return 0;
+        }
+        """
+        try helperCode.write(to: helperSrc, atomically: true, encoding: .utf8)
+
+        let cc = Process()
+        cc.executableURL = URL(fileURLWithPath: "/usr/bin/clang")
+        cc.arguments = ["-fobjc-arc", "-g", "-O1", "-framework", "Foundation", "-I", incDir.path, "-o", helperBin.path, helperSrc.path, cSrc.path]
+        try cc.run()
+        cc.waitUntilExit()
+        XCTAssertEqual(cc.terminationStatus, 0, "clang compile objc_exc_helper failed")
+
+        let child = Process()
+        child.executableURL = helperBin
+        child.arguments = [dir.path]
+        try child.run()
+        child.waitUntilExit()
+        XCTAssertEqual(child.terminationReason, .uncaughtSignal)
+
+        let reporter = CaliperNativeCrashReporter(directoryURL: dir)
+        let files = reporter.pendingTombstoneFiles()
+        XCTAssertEqual(files.count, 1, "expected exactly 1 tombstone (NSException deduplicated against trailing SIGABRT)")
+        let raw = try String(contentsOf: files[0], encoding: .utf8)
+        let parsed = try XCTUnwrap(CaliperNativeCrashReporter.parseTombstone(raw))
+        XCTAssertEqual(parsed.mechanism, "nsexception")
+        XCTAssertEqual(parsed.exception, "NSRangeException")
+        XCTAssertEqual(parsed.reason, "index 99 beyond bounds [0 .. 3]")
+        XCTAssertEqual(parsed.scene, "feed_detail")
+        XCTAssertFalse(parsed.frames.isEmpty)
+        XCTAssertFalse(parsed.binaryUUIDs.isEmpty)
+        #endif
     }
 }

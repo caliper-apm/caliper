@@ -175,9 +175,7 @@ func TestDemangleSwiftLiveAgainstXcodeCompiler(t *testing.T) {
 	binPath := filepath.Join(dir, "LiveVerifyBin")
 	dsymPath := filepath.Join(dir, "LiveVerifyBin.dSYM")
 
-	src := `import Foundation
-
-public struct CartItem {
+	src := `public struct CartItem {
     public let sku: String
     public var price: Double
     public init(sku: String, price: Double) { self.sku = sku; self.price = price }

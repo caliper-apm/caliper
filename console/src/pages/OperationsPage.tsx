@@ -313,13 +313,21 @@ export function OperationsPage({ filters, releases, refreshTick, lang, onMutated
           <div className="table-wrap">
             <table>
               <thead>
-                <tr><th>{lang === 'zh' ? '版本 / Build' : 'Release'}</th><th>Git SHA</th><th>{lang === 'zh' ? '绑定符号' : 'Symbol'}</th><th>{lang === 'zh' ? '事件数' : 'Events'}</th></tr>
+                <tr><th>{lang === 'zh' ? '版本 / Build' : 'Release'}</th><th>Git SHA</th><th>{lang === 'zh' ? '包体积' : 'Binary Size'}</th><th>{lang === 'zh' ? '绑定符号' : 'Symbol'}</th><th>{lang === 'zh' ? '事件数' : 'Events'}</th></tr>
               </thead>
               <tbody>
                 {releases.map(r => (
                   <tr key={`${r.app_version}-${r.build_number}`}>
                     <td><strong>v{r.app_version}</strong> <span className="mono">({r.build_number})</span></td>
                     <td className="mono">{r.git_sha || '—'}</td>
+                    <td className="mono">
+                      {r.binary_size_bytes && r.binary_size_bytes > 0 ? (
+                        <>
+                          {(r.binary_size_bytes / (1024 * 1024)).toFixed(2)} MiB
+                          {r.binary_artifact_kind ? <> <span className="badge slate">{r.binary_artifact_kind}</span></> : null}
+                        </>
+                      ) : '—'}
+                    </td>
                     <td className="mono">{r.symbol_id ? <span className="badge green">{r.symbol_id}</span> : <span className="badge amber">unmapped</span>}</td>
                     <td className="mono">{r.event_count.toLocaleString('en-US')}</td>
                   </tr>

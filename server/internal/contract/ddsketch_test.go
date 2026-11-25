@@ -156,3 +156,37 @@ func TestQuantileSketchFallbackToHistogram(t *testing.T) {
 		t.Fatalf("expected ~850ms within 2%%, got %v", *resSketch.Value)
 	}
 }
+
+func TestDDSketchOLAPBinProjectionParity(t *testing.T) {
+	direct := NewDDSketch(DefaultSketchAlpha)
+	binCounts := make(map[int32]int64)
+	values := []float64{0, 0, 12.5, 42.1, 180, 640, 1120, 1480, 2300, 4800, 11500}
+	for _, v := range values {
+		direct.Add(v)
+		b := DDSketchBinForValue(v, DefaultSketchAlpha)
+		if b == SketchBinAbsent {
+			t.Fatalf("unexpected absent bin for valid value %v", v)
+		}
+		binCounts[b]++
+	}
+	// Invalid values map to SketchBinAbsent and are ignored during reconstruction.
+	if DDSketchBinForValue(-1, DefaultSketchAlpha) != SketchBinAbsent {
+		t.Fatalf("negative value must map to SketchBinAbsent")
+	}
+	if DDSketchBinForValue(math.NaN(), DefaultSketchAlpha) != SketchBinAbsent {
+		t.Fatalf("NaN must map to SketchBinAbsent")
+	}
+	binCounts[SketchBinAbsent] = 999
+
+	rebuilt := DDSketchFromBinMap(DefaultSketchAlpha, binCounts)
+	if rebuilt == nil || rebuilt.Total() != direct.Total() || rebuilt.ZeroCount != direct.ZeroCount {
+		t.Fatalf("rebuilt sketch mismatch: got %+v vs direct %+v", rebuilt, direct)
+	}
+	for _, q := range []float64{0.50, 0.90, 0.95, 0.99} {
+		r1 := direct.Quantile(q, 5)
+		r2 := rebuilt.Quantile(q, 5)
+		if r1.Value == nil || r2.Value == nil || *r1.Value != *r2.Value {
+			t.Fatalf("q=%.2f mismatch: direct=%+v rebuilt=%+v", q, r1, r2)
+		}
+	}
+}

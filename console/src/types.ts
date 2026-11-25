@@ -115,6 +115,8 @@ export interface ReleaseRecord {
   git_sha?: string;
   symbol_id?: string;
   adapter?: string;
+  binary_size_bytes?: number;
+  binary_artifact_kind?: string;
   registered: boolean;
   first_seen_ms: number;
   last_seen_ms: number;
@@ -347,6 +349,17 @@ export interface SamplingPolicy {
   updated_at_ms?: number;
 }
 
+export interface BinarySizeComparison {
+  baseline_bytes?: number;
+  candidate_bytes?: number;
+  baseline_kind?: string;
+  candidate_kind?: string;
+  delta_bytes?: number;
+  delta_pct?: number;
+  comparable: boolean;
+  reason?: string;
+}
+
 export interface ReleaseGateReport {
   platform: Platform;
   env: string;
@@ -357,6 +370,7 @@ export interface ReleaseGateReport {
   health_score: number;
   score_formula: string;
   candidate_symbol_bound: boolean;
+  binary_size?: BinarySizeComparison;
   regressed_count: number;
   gated_count: number;
   evaluated_count: number;

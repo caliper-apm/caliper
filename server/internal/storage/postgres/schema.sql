@@ -3,20 +3,24 @@
 -- issue triage states, alert rules, remote log tasks, and immutable append-only security audit trails.
 
 CREATE TABLE IF NOT EXISTS caliper_releases (
-    app_id        TEXT NOT NULL,
-    platform      TEXT NOT NULL CHECK (platform IN ('android', 'ios')),
-    env           TEXT NOT NULL CHECK (env IN ('prod', 'staging', 'dev')),
-    app_version   TEXT NOT NULL,
-    build_number  TEXT NOT NULL,
-    git_sha       TEXT NOT NULL DEFAULT '',
-    symbol_id     TEXT NOT NULL DEFAULT '',
-    adapter       TEXT NOT NULL DEFAULT 'native',
-    registered    BOOLEAN NOT NULL DEFAULT FALSE,
-    first_seen_ms BIGINT NOT NULL,
-    last_seen_ms  BIGINT NOT NULL,
-    event_count   BIGINT NOT NULL DEFAULT 0,
+    app_id               TEXT NOT NULL,
+    platform             TEXT NOT NULL CHECK (platform IN ('android', 'ios')),
+    env                  TEXT NOT NULL CHECK (env IN ('prod', 'staging', 'dev')),
+    app_version          TEXT NOT NULL,
+    build_number         TEXT NOT NULL,
+    git_sha              TEXT NOT NULL DEFAULT '',
+    symbol_id            TEXT NOT NULL DEFAULT '',
+    adapter              TEXT NOT NULL DEFAULT 'native',
+    binary_size_bytes    BIGINT NOT NULL DEFAULT 0,
+    binary_artifact_kind TEXT NOT NULL DEFAULT '',
+    registered           BOOLEAN NOT NULL DEFAULT FALSE,
+    first_seen_ms        BIGINT NOT NULL,
+    last_seen_ms         BIGINT NOT NULL,
+    event_count          BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (app_id, platform, env, app_version, build_number)
 );
+ALTER TABLE caliper_releases ADD COLUMN IF NOT EXISTS binary_size_bytes BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE caliper_releases ADD COLUMN IF NOT EXISTS binary_artifact_kind TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS caliper_symbols (
     symbol_id      TEXT PRIMARY KEY,

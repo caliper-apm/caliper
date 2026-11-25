@@ -98,3 +98,148 @@ export function wrapFetchForDenominator<TResp extends { status: number; ok: bool
     }
   };
 }
+
+export interface ErrorUtilsLike {
+  getGlobalHandler?: () => ((error: Error, isFatal?: boolean) => void) | undefined;
+  setGlobalHandler?: (handler: (error: Error, isFatal?: boolean) => void) => void;
+}
+
+export interface PerformanceObserverEntryListLike {
+  getEntries(): Array<{ duration: number }>;
+}
+
+export interface PerformanceObserverLike {
+  observe(options: { type: string; buffered?: boolean }): void;
+  disconnect(): void;
+}
+
+export interface PerformanceObserverCtorLike {
+  new (callback: (list: PerformanceObserverEntryListLike) => void): PerformanceObserverLike;
+}
+
+export interface ReactNativeAutoHooksOptions {
+  /** Chain React Native `ErrorUtils.setGlobalHandler` without swallowing host handlers (default: true). */
+  captureGlobalErrors?: boolean;
+  /** Subscribe to W3C / RN `PerformanceObserver({ type: 'longtask' })` when available (default: true). */
+  observeLongTasks?: boolean;
+  /** Periodic JS window flush interval in ms (default: 30000; <= 0 disables timer). */
+  flushIntervalMs?: number;
+  /** Optional `globalThis.fetch` interception config (allowlist + W3C traceparent targets). */
+  fetch?: FetchInterceptorOptions;
+  /** Optional injectable runtime globals for deterministic unit tests. */
+  runtime?: {
+    ErrorUtils?: ErrorUtilsLike;
+    PerformanceObserver?: PerformanceObserverCtorLike;
+    fetch?: (input: string, init?: Record<string, unknown>) => Promise<{ status: number; ok: boolean }>;
+  };
+}
+
+/**
+ * Installs drop-in React Native auto-instrumentation hooks on top of [CaliperReactNativeAdapter]:
+ * - Chains `ErrorUtils.setGlobalHandler` (never swallows host error handlers)
+ * - Subscribes to Hermes / RN `PerformanceObserver` `longtask` entries when supported
+ * - Optionally wraps `fetch` for bounded window denominator & W3C `traceparent` injection
+ * - Schedules periodic window flushing (with clean `uninstall()` teardown)
+ */
+export function installReactNativeAutoHooks(
+  adapter: CaliperReactNativeAdapter,
+  options: ReactNativeAutoHooksOptions = {},
+): { uninstall: () => void } {
+  const g = (options.runtime ?? globalThis) as {
+    ErrorUtils?: ErrorUtilsLike;
+    PerformanceObserver?: PerformanceObserverCtorLike;
+    fetch?: (input: string, init?: Record<string, unknown>) => Promise<{ status: number; ok: boolean }>;
+  };
+
+  let prevErrorHandler: ((error: Error, isFatal?: boolean) => void) | undefined;
+  let errorHookInstalled = false;
+  if (options.captureGlobalErrors !== false && g.ErrorUtils?.setGlobalHandler) {
+    prevErrorHandler = g.ErrorUtils.getGlobalHandler?.();
+    const chainedHandler = (error: Error, isFatal?: boolean): void => {
+      try {
+        adapter.captureJSError(error instanceof Error ? error : new Error(String(error)), Boolean(isFatal));
+        if (isFatal) {
+          adapter.flushWindow();
+        }
+      } catch {
+        // Fail-closed: never break host error handling.
+      }
+      prevErrorHandler?.(error, isFatal);
+    };
+    g.ErrorUtils.setGlobalHandler(chainedHandler);
+    errorHookInstalled = true;
+  }
+
+  let longTaskObserver: PerformanceObserverLike | null = null;
+  if (options.observeLongTasks !== false && typeof g.PerformanceObserver === 'function') {
+    try {
+      const obs = new g.PerformanceObserver(list => {
+        try {
+          const entries = list.getEntries();
+          if (entries.length > 0) {
+            adapter.recordLongTaskEntries(entries);
+          }
+        } catch {
+          // Fail-closed
+        }
+      });
+      obs.observe({ type: 'longtask', buffered: true });
+      longTaskObserver = obs;
+    } catch {
+      longTaskObserver = null;
+    }
+  }
+
+  let origFetch: ((input: string, init?: Record<string, unknown>) => Promise<{ status: number; ok: boolean }>) | undefined;
+  if (options.fetch && typeof g.fetch === 'function') {
+    origFetch = g.fetch;
+    g.fetch = wrapFetchForDenominator(origFetch, adapter, options.fetch);
+  }
+
+  const intervalMs = options.flushIntervalMs ?? 30_000;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  if (intervalMs > 0) {
+    timer = setInterval(() => {
+      try {
+        adapter.flushWindow();
+      } catch {
+        // Fail-closed
+      }
+    }, intervalMs);
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
+    }
+  }
+
+  let uninstalled = false;
+  return {
+    uninstall: () => {
+      if (uninstalled) return;
+      uninstalled = true;
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+      if (longTaskObserver) {
+        try {
+          longTaskObserver.disconnect();
+        } catch {
+          // ignore
+        }
+        longTaskObserver = null;
+      }
+      if (origFetch) {
+        g.fetch = origFetch;
+        origFetch = undefined;
+      }
+      if (errorHookInstalled && g.ErrorUtils?.setGlobalHandler && prevErrorHandler) {
+        g.ErrorUtils.setGlobalHandler(prevErrorHandler);
+      }
+      try {
+        adapter.flushWindow();
+      } catch {
+        // ignore
+      }
+    },
+  };
+}

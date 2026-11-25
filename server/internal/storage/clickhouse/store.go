@@ -172,41 +172,55 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 		case protocol.StartupPayload:
 			if p.ColdStart {
 				var tot, nat, rt, ff contract.Histogram
+				totBin := contract.SketchBinAbsent
+				natBin := contract.SketchBinAbsent
+				rtBin := contract.SketchBinAbsent
+				ffBin := contract.SketchBinAbsent
 				staged := uint8(0)
 				if p.Result == "success" {
 					tot[contract.DurationBucketIndex(p.TotalDurationMS)] = 1
+					totBin = contract.DDSketchBinForValue(p.TotalDurationMS, contract.DefaultSketchAlpha)
 					if p.NativeInitMS != nil {
 						nat[contract.DurationBucketIndex(*p.NativeInitMS)] = 1
+						natBin = contract.DDSketchBinForValue(*p.NativeInitMS, contract.DefaultSketchAlpha)
 					}
 					if p.RuntimeInitMS != nil {
 						rt[contract.DurationBucketIndex(*p.RuntimeInitMS)] = 1
+						rtBin = contract.DDSketchBinForValue(*p.RuntimeInitMS, contract.DefaultSketchAlpha)
 					}
 					if p.FirstFrameMS != nil {
 						ff[contract.DurationBucketIndex(*p.FirstFrameMS)] = 1
+						ffBin = contract.DDSketchBinForValue(*p.FirstFrameMS, contract.DefaultSketchAlpha)
 					}
 					if p.NativeInitMS != nil && p.FirstFrameMS != nil {
 						staged = 1
 					}
 				}
 				tableRows["caliper_startup_events"] = append(tableRows["caliper_startup_events"], map[string]any{
-					"event_id":            ev.EventID,
-					"ingested_at_ms":      nowMS,
-					"occurred_at_ms":      uint64(ev.OccurredAtMS),
-					"day_utc":             dayUTC,
-					"app_id":              batch.Resource.AppID,
-					"platform":            batch.Resource.Platform,
-					"env":                 batch.Resource.Env,
-					"app_version":         batch.Resource.AppVersion,
-					"build_number":        batch.Resource.BuildNumber,
-					"adapter":             adapter,
-					"policy_id":           ev.PolicyID,
-					"contract_version":    ev.ContractVersion,
-					"result":              p.Result,
-					"staged":              staged,
-					"total_buckets":       tot[:],
-					"native_buckets":      nat[:],
-					"runtime_buckets":     rt[:],
-					"first_frame_buckets": ff[:],
+					"event_id":               ev.EventID,
+					"ingested_at_ms":         nowMS,
+					"occurred_at_ms":         uint64(ev.OccurredAtMS),
+					"day_utc":                dayUTC,
+					"app_id":                 batch.Resource.AppID,
+					"platform":               batch.Resource.Platform,
+					"env":                    batch.Resource.Env,
+					"app_version":            batch.Resource.AppVersion,
+					"build_number":           batch.Resource.BuildNumber,
+					"adapter":                adapter,
+					"device_model":           batch.Resource.DeviceModel,
+					"os_version":             batch.Resource.OSVersion,
+					"policy_id":              ev.PolicyID,
+					"contract_version":       ev.ContractVersion,
+					"result":                 p.Result,
+					"staged":                 staged,
+					"total_buckets":          tot[:],
+					"native_buckets":         nat[:],
+					"runtime_buckets":        rt[:],
+					"first_frame_buckets":    ff[:],
+					"total_sketch_bin":       totBin,
+					"native_sketch_bin":      natBin,
+					"runtime_sketch_bin":     rtBin,
+					"first_frame_sketch_bin": ffBin,
 				})
 			}
 
@@ -239,6 +253,8 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"app_version":             batch.Resource.AppVersion,
 				"build_number":            batch.Resource.BuildNumber,
 				"adapter":                 adapter,
+				"device_model":            batch.Resource.DeviceModel,
+				"os_version":              batch.Resource.OSVersion,
 				"scene":                   scene,
 				"algorithm":               p.Algorithm,
 				"policy_id":               ev.PolicyID,
@@ -254,7 +270,8 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 
 		case protocol.ResourceWindowPayload:
 			var mb contract.Histogram
-			mb[contract.MemoryBucketIndex(p.MemoryPeakKiB/1024.0)] = 1
+			memPeakMiB := p.MemoryPeakKiB / 1024.0
+			mb[contract.MemoryBucketIndex(memPeakMiB)] = 1
 			tableRows["caliper_resource_events"] = append(tableRows["caliper_resource_events"], map[string]any{
 				"event_id":            ev.EventID,
 				"ingested_at_ms":      nowMS,
@@ -266,12 +283,15 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"app_version":         batch.Resource.AppVersion,
 				"build_number":        batch.Resource.BuildNumber,
 				"adapter":             adapter,
+				"device_model":        batch.Resource.DeviceModel,
+				"os_version":          batch.Resource.OSVersion,
 				"scene":               scene,
 				"policy_id":           ev.PolicyID,
 				"event_kind":          protocol.KindResourceWindow,
 				"memory_kind":         p.MemoryKind,
 				"cpu_pct":             p.CPUPct,
 				"memory_peak_buckets": mb[:],
+				"memory_sketch_bin":   contract.DDSketchBinForValue(memPeakMiB, contract.DefaultSketchAlpha),
 				"js_longtask_count":   0,
 				"js_blocking_ms":      0.0,
 				"js_max_task_ms":      0.0,
@@ -290,12 +310,15 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"app_version":         batch.Resource.AppVersion,
 				"build_number":        batch.Resource.BuildNumber,
 				"adapter":             adapter,
+				"device_model":        batch.Resource.DeviceModel,
+				"os_version":          batch.Resource.OSVersion,
 				"scene":               scene,
 				"policy_id":           ev.PolicyID,
 				"event_kind":          protocol.KindJSLongTask,
 				"memory_kind":         "",
 				"cpu_pct":             0.0,
 				"memory_peak_buckets": empty[:],
+				"memory_sketch_bin":   contract.SketchBinAbsent,
 				"js_longtask_count":   p.LongTaskCount,
 				"js_blocking_ms":      p.TotalBlockingMS,
 				"js_max_task_ms":      p.MaxTaskMS,
@@ -315,6 +338,8 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"app_version":      batch.Resource.AppVersion,
 				"build_number":     batch.Resource.BuildNumber,
 				"adapter":          adapter,
+				"device_model":     batch.Resource.DeviceModel,
+				"os_version":       batch.Resource.OSVersion,
 				"scene":            scene,
 				"policy_id":        ev.PolicyID,
 				"call_count":       p.CallCount,
@@ -360,6 +385,8 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"app_version":       batch.Resource.AppVersion,
 				"build_number":      batch.Resource.BuildNumber,
 				"adapter":           adapter,
+				"device_model":      batch.Resource.DeviceModel,
+				"os_version":        batch.Resource.OSVersion,
 				"scene":             scene,
 				"policy_id":         ev.PolicyID,
 				"operation":         p.Operation,
@@ -380,34 +407,40 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"ttfb_buckets":      ttfb[:],
 				"body_buckets":      body[:],
 				"total_buckets":     tot[:],
+				"total_sketch_bin":  contract.DDSketchBinForValue(p.TotalMS, contract.DefaultSketchAlpha),
 			})
 
 		case protocol.CustomScenePayload:
 			var dh contract.Histogram
 			dur := 0.0
+			durBin := contract.SketchBinAbsent
 			if p.DurationMS != nil {
 				dur = *p.DurationMS
 				dh[contract.DurationBucketIndex(dur)] = 1
+				durBin = contract.DDSketchBinForValue(dur, contract.DefaultSketchAlpha)
 			}
 			stagesJSON, _ := json.Marshal(p.Stages)
 			tableRows["caliper_custom_scene_events"] = append(tableRows["caliper_custom_scene_events"], map[string]any{
-				"event_id":         ev.EventID,
-				"ingested_at_ms":   nowMS,
-				"occurred_at_ms":   uint64(ev.OccurredAtMS),
-				"day_utc":          dayUTC,
-				"app_id":           batch.Resource.AppID,
-				"platform":         batch.Resource.Platform,
-				"env":              batch.Resource.Env,
-				"app_version":      batch.Resource.AppVersion,
-				"build_number":     batch.Resource.BuildNumber,
-				"adapter":          adapter,
-				"policy_id":        ev.PolicyID,
-				"journey_name":     p.JourneyName,
-				"status":           p.Status,
-				"error_code":       p.ErrorCode,
-				"duration_ms":      dur,
-				"duration_buckets": dh[:],
-				"stages_json":      string(stagesJSON),
+				"event_id":            ev.EventID,
+				"ingested_at_ms":      nowMS,
+				"occurred_at_ms":      uint64(ev.OccurredAtMS),
+				"day_utc":             dayUTC,
+				"app_id":              batch.Resource.AppID,
+				"platform":            batch.Resource.Platform,
+				"env":                 batch.Resource.Env,
+				"app_version":         batch.Resource.AppVersion,
+				"build_number":        batch.Resource.BuildNumber,
+				"adapter":             adapter,
+				"device_model":        batch.Resource.DeviceModel,
+				"os_version":          batch.Resource.OSVersion,
+				"policy_id":           ev.PolicyID,
+				"journey_name":        p.JourneyName,
+				"status":              p.Status,
+				"error_code":          p.ErrorCode,
+				"duration_ms":         dur,
+				"duration_buckets":    dh[:],
+				"duration_sketch_bin": durBin,
+				"stages_json":         string(stagesJSON),
 			})
 
 		case protocol.StabilityPayload:
@@ -428,6 +461,8 @@ func (s *Store) IngestBatch(ctx context.Context, batch *protocol.BatchEnvelope) 
 				"app_version":      batch.Resource.AppVersion,
 				"build_number":     batch.Resource.BuildNumber,
 				"adapter":          adapter,
+				"device_model":     batch.Resource.DeviceModel,
+				"os_version":       batch.Resource.OSVersion,
 				"install_hash":     batch.Resource.InstallHash,
 				"user_hash":        batch.Resource.UserHash,
 				"fingerprint":      p.Fingerprint,
@@ -538,21 +573,29 @@ SELECT
     sumForEach(native_buckets) AS native_buckets,
     sumForEach(runtime_buckets) AS runtime_buckets,
     sumForEach(first_frame_buckets) AS first_frame_buckets,
+    sumMapIf(map(total_sketch_bin, toUInt64(1)), total_sketch_bin != -2147483648) AS total_sketch_bins,
+    sumMapIf(map(native_sketch_bin, toUInt64(1)), native_sketch_bin != -2147483648) AS native_sketch_bins,
+    sumMapIf(map(runtime_sketch_bin, toUInt64(1)), runtime_sketch_bin != -2147483648) AS runtime_sketch_bins,
+    sumMapIf(map(first_frame_sketch_bin, toUInt64(1)), first_frame_sketch_bin != -2147483648) AS first_frame_sketch_bins,
     groupUniqArray(policy_id) AS policy_ids
 FROM %s.caliper_startup_events FINAL
 WHERE %s
 FORMAT JSON`, s.database, where)
 
 	var resp chJSONResp[struct {
-		SuccessCount      flexInt64   `json:"success_count"`
-		AbortedCount      flexInt64   `json:"aborted_count"`
-		TimeoutCount      flexInt64   `json:"timeout_count"`
-		StagedCount       flexInt64   `json:"staged_count"`
-		TotalBuckets      []flexInt64 `json:"total_buckets"`
-		NativeBuckets     []flexInt64 `json:"native_buckets"`
-		RuntimeBuckets    []flexInt64 `json:"runtime_buckets"`
-		FirstFrameBuckets []flexInt64 `json:"first_frame_buckets"`
-		PolicyIDs         []string    `json:"policy_ids"`
+		SuccessCount         flexInt64            `json:"success_count"`
+		AbortedCount         flexInt64            `json:"aborted_count"`
+		TimeoutCount         flexInt64            `json:"timeout_count"`
+		StagedCount          flexInt64            `json:"staged_count"`
+		TotalBuckets         []flexInt64          `json:"total_buckets"`
+		NativeBuckets        []flexInt64          `json:"native_buckets"`
+		RuntimeBuckets       []flexInt64          `json:"runtime_buckets"`
+		FirstFrameBuckets    []flexInt64          `json:"first_frame_buckets"`
+		TotalSketchBins      map[string]flexInt64 `json:"total_sketch_bins"`
+		NativeSketchBins     map[string]flexInt64 `json:"native_sketch_bins"`
+		RuntimeSketchBins    map[string]flexInt64 `json:"runtime_sketch_bins"`
+		FirstFrameSketchBins map[string]flexInt64 `json:"first_frame_sketch_bins"`
+		PolicyIDs            []string             `json:"policy_ids"`
 	}]
 	if err := s.queryJSON(ctx, q, &resp); err != nil {
 		return storage.StartupAggregate{}, err
@@ -570,6 +613,10 @@ FORMAT JSON`, s.database, where)
 	agg.NativeInitHist = toHistogram(row.NativeBuckets)
 	agg.RuntimeHist = toHistogram(row.RuntimeBuckets)
 	agg.FirstFrameHist = toHistogram(row.FirstFrameBuckets)
+	agg.TotalSketch = toDDSketch(row.TotalSketchBins)
+	agg.NativeInitSketch = toDDSketch(row.NativeSketchBins)
+	agg.RuntimeSketch = toDDSketch(row.RuntimeSketchBins)
+	agg.FirstFrameSketch = toDDSketch(row.FirstFrameSketchBins)
 	for _, pid := range row.PolicyIDs {
 		if pid != "" {
 			agg.PolicyIDs[pid] = struct{}{}
@@ -652,6 +699,7 @@ SELECT
     countIf(event_kind = 'resource_window') AS resource_windows,
     sumIf(cpu_pct, event_kind = 'resource_window') AS cpu_pct_sum,
     sumForEachIf(memory_peak_buckets, event_kind = 'resource_window') AS memory_peak_buckets,
+    sumMapIf(map(memory_sketch_bin, toUInt64(1)), event_kind = 'resource_window' AND memory_sketch_bin != -2147483648) AS memory_sketch_bins,
     countIf(event_kind = 'js_longtask_window') AS js_longtask_windows,
     sumIf(js_longtask_count, event_kind = 'js_longtask_window') AS js_longtask_count,
     sumIf(js_blocking_ms, event_kind = 'js_longtask_window') AS js_blocking_sum_ms,
@@ -664,16 +712,17 @@ ORDER BY scene ASC
 FORMAT JSON`, s.database, where)
 
 	var resp chJSONResp[struct {
-		Scene             string      `json:"scene"`
-		MemoryKind        string      `json:"memory_kind"`
-		ResourceWindows   flexInt64   `json:"resource_windows"`
-		CPUPctSum         float64     `json:"cpu_pct_sum"`
-		MemoryPeakBuckets []flexInt64 `json:"memory_peak_buckets"`
-		JSLongTaskWindows flexInt64   `json:"js_longtask_windows"`
-		JSLongTaskCount   flexInt64   `json:"js_longtask_count"`
-		JSBlockingSumMS   float64     `json:"js_blocking_sum_ms"`
-		JSMaxTaskMS       float64     `json:"js_max_task_ms"`
-		PolicyIDs         []string    `json:"policy_ids"`
+		Scene             string               `json:"scene"`
+		MemoryKind        string               `json:"memory_kind"`
+		ResourceWindows   flexInt64            `json:"resource_windows"`
+		CPUPctSum         float64              `json:"cpu_pct_sum"`
+		MemoryPeakBuckets []flexInt64          `json:"memory_peak_buckets"`
+		MemorySketchBins  map[string]flexInt64 `json:"memory_sketch_bins"`
+		JSLongTaskWindows flexInt64            `json:"js_longtask_windows"`
+		JSLongTaskCount   flexInt64            `json:"js_longtask_count"`
+		JSBlockingSumMS   float64              `json:"js_blocking_sum_ms"`
+		JSMaxTaskMS       float64              `json:"js_max_task_ms"`
+		PolicyIDs         []string             `json:"policy_ids"`
 	}]
 	if err := s.queryJSON(ctx, q, &resp); err != nil {
 		return nil, err
@@ -687,16 +736,17 @@ FORMAT JSON`, s.database, where)
 			}
 		}
 		out = append(out, storage.ResourceAggregate{
-			Scene:             r.Scene,
-			MemoryKind:        r.MemoryKind,
-			ResourceWindows:   int64(r.ResourceWindows),
-			CPUPctSum:         r.CPUPctSum,
-			MemoryPeakHistMiB: toHistogram(r.MemoryPeakBuckets),
-			JSLongTaskWindows: int64(r.JSLongTaskWindows),
-			JSLongTaskCount:   int64(r.JSLongTaskCount),
-			JSBlockingSumMS:   r.JSBlockingSumMS,
-			JSMaxTaskMS:       r.JSMaxTaskMS,
-			PolicyIDs:         pids,
+			Scene:               r.Scene,
+			MemoryKind:          r.MemoryKind,
+			ResourceWindows:     int64(r.ResourceWindows),
+			CPUPctSum:           r.CPUPctSum,
+			MemoryPeakHistMiB:   toHistogram(r.MemoryPeakBuckets),
+			MemoryPeakSketchMiB: toDDSketch(r.MemorySketchBins),
+			JSLongTaskWindows:   int64(r.JSLongTaskWindows),
+			JSLongTaskCount:     int64(r.JSLongTaskCount),
+			JSBlockingSumMS:     r.JSBlockingSumMS,
+			JSMaxTaskMS:         r.JSMaxTaskMS,
+			PolicyIDs:           pids,
 		})
 	}
 	return out, nil
@@ -774,7 +824,8 @@ SELECT
     sumForEach(tls_buckets) AS tls_buckets,
     sumForEach(ttfb_buckets) AS ttfb_buckets,
     sumForEach(body_buckets) AS body_buckets,
-    sumForEach(total_buckets) AS total_buckets
+    sumForEach(total_buckets) AS total_buckets,
+    sumMapIf(map(total_sketch_bin, toUInt64(1)), total_sketch_bin != -2147483648) AS total_sketch_bins
 FROM %s.caliper_network_transport_events FINAL
 WHERE %s
 GROUP BY operation, method
@@ -782,19 +833,20 @@ ORDER BY total_count DESC
 FORMAT JSON`, s.database, where)
 
 	var trResp chJSONResp[struct {
-		Operation    string      `json:"operation"`
-		Method       string      `json:"method"`
-		TotalCount   flexInt64   `json:"total_count"`
-		SuccessCnt   flexInt64   `json:"success_cnt"`
-		FailedCnt    flexInt64   `json:"failed_cnt"`
-		TimeoutCnt   flexInt64   `json:"timeout_cnt"`
-		ReusedCnt    flexInt64   `json:"reused_cnt"`
-		DNSBuckets   []flexInt64 `json:"dns_buckets"`
-		TCPBuckets   []flexInt64 `json:"tcp_buckets"`
-		TLSBuckets   []flexInt64 `json:"tls_buckets"`
-		TTFBBuckets  []flexInt64 `json:"ttfb_buckets"`
-		BodyBuckets  []flexInt64 `json:"body_buckets"`
-		TotalBuckets []flexInt64 `json:"total_buckets"`
+		Operation       string               `json:"operation"`
+		Method          string               `json:"method"`
+		TotalCount      flexInt64            `json:"total_count"`
+		SuccessCnt      flexInt64            `json:"success_cnt"`
+		FailedCnt       flexInt64            `json:"failed_cnt"`
+		TimeoutCnt      flexInt64            `json:"timeout_cnt"`
+		ReusedCnt       flexInt64            `json:"reused_cnt"`
+		DNSBuckets      []flexInt64          `json:"dns_buckets"`
+		TCPBuckets      []flexInt64          `json:"tcp_buckets"`
+		TLSBuckets      []flexInt64          `json:"tls_buckets"`
+		TTFBBuckets     []flexInt64          `json:"ttfb_buckets"`
+		BodyBuckets     []flexInt64          `json:"body_buckets"`
+		TotalBuckets    []flexInt64          `json:"total_buckets"`
+		TotalSketchBins map[string]flexInt64 `json:"total_sketch_bins"`
 	}]
 	if err := s.queryJSON(ctx, qTransport, &trResp); err != nil {
 		return out, err
@@ -802,19 +854,20 @@ FORMAT JSON`, s.database, where)
 	for _, r := range trResp.Data {
 		key := r.Method + " " + r.Operation
 		out.TransportSamples[key] = &storage.TransportOpAggregate{
-			Operation:  r.Operation,
-			Method:     r.Method,
-			TotalCount: int64(r.TotalCount),
-			SuccessCnt: int64(r.SuccessCnt),
-			FailedCnt:  int64(r.FailedCnt),
-			TimeoutCnt: int64(r.TimeoutCnt),
-			ReusedCnt:  int64(r.ReusedCnt),
-			DNSHist:    toHistogram(r.DNSBuckets),
-			TCPHist:    toHistogram(r.TCPBuckets),
-			TLSHist:    toHistogram(r.TLSBuckets),
-			TTFBHist:   toHistogram(r.TTFBBuckets),
-			BodyHist:   toHistogram(r.BodyBuckets),
-			TotalHist:  toHistogram(r.TotalBuckets),
+			Operation:   r.Operation,
+			Method:      r.Method,
+			TotalCount:  int64(r.TotalCount),
+			SuccessCnt:  int64(r.SuccessCnt),
+			FailedCnt:   int64(r.FailedCnt),
+			TimeoutCnt:  int64(r.TimeoutCnt),
+			ReusedCnt:   int64(r.ReusedCnt),
+			DNSHist:     toHistogram(r.DNSBuckets),
+			TCPHist:     toHistogram(r.TCPBuckets),
+			TLSHist:     toHistogram(r.TLSBuckets),
+			TTFBHist:    toHistogram(r.TTFBBuckets),
+			BodyHist:    toHistogram(r.BodyBuckets),
+			TotalHist:   toHistogram(r.TotalBuckets),
+			TotalSketch: toDDSketch(r.TotalSketchBins),
 		}
 	}
 	return out, nil
@@ -909,21 +962,23 @@ SELECT
     countIf(status = 'failure') AS failure_count,
     countIf(status = 'timeout') AS timeout_count,
     countIf(status = 'cancelled') AS cancelled_count,
-    sumForEach(duration_buckets) AS duration_buckets
-FROM caliper_custom_scene_events FINAL
+    sumForEach(duration_buckets) AS duration_buckets,
+    sumMapIf(map(duration_sketch_bin, toUInt64(1)), duration_sketch_bin != -2147483648) AS duration_sketch_bins
+FROM %s.caliper_custom_scene_events FINAL
 WHERE %s
 GROUP BY journey_name
 ORDER BY total_count DESC
-LIMIT 100 FORMAT JSON`, where)
+LIMIT 100 FORMAT JSON`, s.database, where)
 
 	var resp chJSONResp[struct {
-		JourneyName     string      `json:"journey_name"`
-		TotalCount      flexInt64   `json:"total_count"`
-		SuccessCount    flexInt64   `json:"success_count"`
-		FailureCount    flexInt64   `json:"failure_count"`
-		TimeoutCount    flexInt64   `json:"timeout_count"`
-		CancelledCount  flexInt64   `json:"cancelled_count"`
-		DurationBuckets []flexInt64 `json:"duration_buckets"`
+		JourneyName        string               `json:"journey_name"`
+		TotalCount         flexInt64            `json:"total_count"`
+		SuccessCount       flexInt64            `json:"success_count"`
+		FailureCount       flexInt64            `json:"failure_count"`
+		TimeoutCount       flexInt64            `json:"timeout_count"`
+		CancelledCount     flexInt64            `json:"cancelled_count"`
+		DurationBuckets    []flexInt64          `json:"duration_buckets"`
+		DurationSketchBins map[string]flexInt64 `json:"duration_sketch_bins"`
 	}]
 	if err := s.queryJSON(ctx, q, &resp); err != nil {
 		return nil, err
@@ -938,6 +993,7 @@ LIMIT 100 FORMAT JSON`, where)
 			TimeoutCount:   int64(r.TimeoutCount),
 			CancelledCount: int64(r.CancelledCount),
 			DurationHist:   toHistogram(r.DurationBuckets),
+			DurationSketch: toDDSketch(r.DurationSketchBins),
 			StageHists:     map[string]contract.Histogram{},
 			ErrorCodes:     map[string]int64{},
 			PolicyIDs:      map[string]struct{}{},
@@ -1134,7 +1190,8 @@ SELECT
     toString(day_utc) AS day_utc,
     topK(1)(app_version)[1] AS dominant_version,
     countIf(result = 'success') AS startup_samples,
-    sumForEach(total_buckets) AS total_buckets
+    sumForEach(total_buckets) AS total_buckets,
+    sumMapIf(map(total_sketch_bin, toUInt64(1)), total_sketch_bin != -2147483648) AS total_sketch_bins
 FROM %s.caliper_startup_events FINAL
 WHERE %s
 GROUP BY day_utc
@@ -1142,10 +1199,11 @@ ORDER BY day_utc ASC
 FORMAT JSON`, s.database, where)
 
 	var resp chJSONResp[struct {
-		DayUTC          string      `json:"day_utc"`
-		DominantVersion string      `json:"dominant_version"`
-		StartupSamples  flexInt64   `json:"startup_samples"`
-		TotalBuckets    []flexInt64 `json:"total_buckets"`
+		DayUTC          string               `json:"day_utc"`
+		DominantVersion string               `json:"dominant_version"`
+		StartupSamples  flexInt64            `json:"startup_samples"`
+		TotalBuckets    []flexInt64          `json:"total_buckets"`
+		TotalSketchBins map[string]flexInt64 `json:"total_sketch_bins"`
 	}]
 	if err := s.queryJSON(ctx, q, &resp); err != nil {
 		return nil, err
@@ -1153,21 +1211,22 @@ FORMAT JSON`, s.database, where)
 	out := make([]storage.DailyTrendPoint, 0, len(resp.Data))
 	for _, r := range resp.Data {
 		h := toHistogram(r.TotalBuckets)
+		sk := toDDSketch(r.TotalSketchBins)
 		pt := storage.DailyTrendPoint{
 			DayUTC:          r.DayUTC,
 			DominantVersion: r.DominantVersion,
 			StartupSamples:  int64(r.StartupSamples),
 		}
-		if q50 := contract.QuantileDuration(h, 0.50, contract.DefaultDisplayMinSamples); q50.Value != nil {
+		if q50 := contract.QuantileDurationSketch(sk, h, 0.50, contract.DefaultDisplayMinSamples); q50.Value != nil {
 			pt.StartupP50MS = q50.Value
 		}
-		if q90 := contract.QuantileDuration(h, 0.90, contract.DefaultDisplayMinSamples); q90.Value != nil {
+		if q90 := contract.QuantileDurationSketch(sk, h, 0.90, contract.DefaultDisplayMinSamples); q90.Value != nil {
 			pt.StartupP90MS = q90.Value
 		}
-		if q95 := contract.QuantileDuration(h, 0.95, contract.DefaultDisplayMinSamples); q95.Value != nil {
+		if q95 := contract.QuantileDurationSketch(sk, h, 0.95, contract.DefaultDisplayMinSamples); q95.Value != nil {
 			pt.StartupP95MS = q95.Value
 		}
-		if q99 := contract.QuantileDuration(h, 0.99, contract.DefaultDisplayMinSamples); q99.Value != nil {
+		if q99 := contract.QuantileDurationSketch(sk, h, 0.99, contract.DefaultDisplayMinSamples); q99.Value != nil {
 			pt.StartupP99MS = q99.Value
 		}
 		out = append(out, pt)
@@ -1544,4 +1603,22 @@ func toHistogram(src []flexInt64) contract.Histogram {
 		h[i] = int64(src[i])
 	}
 	return h
+}
+
+func toDDSketch(src map[string]flexInt64) *contract.DDSketch {
+	if len(src) == 0 {
+		return nil
+	}
+	bins := make(map[int32]int64, len(src))
+	for k, v := range src {
+		if int64(v) <= 0 {
+			continue
+		}
+		idx, err := strconv.ParseInt(strings.TrimSpace(k), 10, 32)
+		if err != nil {
+			continue
+		}
+		bins[int32(idx)] += int64(v)
+	}
+	return contract.DDSketchFromBinMap(contract.DefaultSketchAlpha, bins)
 }

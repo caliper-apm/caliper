@@ -24,4 +24,15 @@ public enum CaliperSystemMetrics {
         guard kr == KERN_SUCCESS else { return nil }
         return Double(info.phys_footprint) / 1024.0
     }
+
+    /// Returns the kernel process start timestamp in Unix milliseconds via public `sysctl(KERN_PROC_PID)`.
+    public static func processStartEpochMS() -> Double? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.size
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0 else { return nil }
+        let tv = info.kp_proc.p_starttime
+        guard tv.tv_sec > 0 else { return nil }
+        return Double(tv.tv_sec) * 1000.0 + Double(tv.tv_usec) / 1000.0
+    }
 }

@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,6 +21,8 @@ import (
 	"github.com/caliper-apm/caliper/server/internal/alerts"
 	"github.com/caliper-apm/caliper/server/internal/analytics"
 	"github.com/caliper-apm/caliper/server/internal/auth"
+	"github.com/caliper-apm/caliper/server/internal/mcp"
+	"github.com/caliper-apm/caliper/server/internal/otlp"
 	"github.com/caliper-apm/caliper/server/internal/protocol"
 	"github.com/caliper-apm/caliper/server/internal/storage"
 	"github.com/caliper-apm/caliper/server/internal/symbolicator"
@@ -31,16 +35,19 @@ type Config struct {
 	MaxPayloadSize int64
 	ConsoleDistDir string
 	MetaEngine     string // "embedded" | "postgres"
+	TraceExporter  *otlp.TracePushExporter
 }
 
-// Handler serves ingestion, policy, release registration, symbolication, alerts, RBAC, and Zero-Lie analytics endpoints.
+// Handler serves ingestion, policy, release registration, symbolication, alerts, RBAC, MCP, and Zero-Lie analytics endpoints.
 type Handler struct {
-	store        storage.AnalyticsStore
-	meta         storage.MetaStore
-	engine       *analytics.Engine
-	symbolicator *symbolicator.Service
-	alerts       *alerts.Engine
-	authz        *auth.Authorizer
+	store             storage.AnalyticsStore
+	meta              storage.MetaStore
+	engine            *analytics.Engine
+	symbolicator      *symbolicator.Service
+	alerts            *alerts.Engine
+	mcpServer         *mcp.Server
+	traceExporter     *otlp.TracePushExporter
+	authz             *auth.Authorizer
 	cfg               Config
 	startedAt         time.Time
 	mux               *http.ServeMux
@@ -59,16 +66,19 @@ func NewHandler(store storage.AnalyticsStore, meta storage.MetaStore, cfg Config
 		authz = auth.NewSingleAPIKey(cfg.APIKey)
 	}
 	eng := analytics.New(store)
+	sym := symbolicator.NewService(meta)
 	h := &Handler{
-		store:        store,
-		meta:         meta,
-		engine:       eng,
-		symbolicator: symbolicator.NewService(meta),
-		alerts:       alerts.NewEngine(store, meta, eng, alerts.NewWebhookDispatcher(5*time.Second)),
-		authz:        authz,
-		cfg:          cfg,
-		startedAt:    time.Now().UTC(),
-		mux:          http.NewServeMux(),
+		store:         store,
+		meta:          meta,
+		engine:        eng,
+		symbolicator:  sym,
+		alerts:        alerts.NewEngine(store, meta, eng, alerts.NewWebhookDispatcher(5*time.Second)),
+		mcpServer:     mcp.NewServer(store, meta, eng, sym),
+		traceExporter: cfg.TraceExporter,
+		authz:         authz,
+		cfg:           cfg,
+		startedAt:     time.Now().UTC(),
+		mux:           http.NewServeMux(),
 	}
 	h.routes()
 	return h
@@ -83,8 +93,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, X-Caliper-Key, Authorization")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding, X-Caliper-Key, Authorization, MCP-Protocol-Version")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -120,6 +130,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/stability/issues/{fingerprint}", h.withPerm(auth.PermReadAnalytics, h.handleIssueDetail))
 	h.mux.HandleFunc("GET /v1/sessions/lookup", h.handleSessionLookup)
 	h.mux.HandleFunc("GET /v1/audit/logs", h.withPerm(auth.PermReadAuditLogs, h.handleListAuditLogs))
+	h.mux.HandleFunc("POST /v1/mcp", h.handleMCP)
 	h.registerV1DiagnosticsRoutes()
 	h.registerOpsRoutes()
 	if h.cfg.ConsoleDistDir != "" {
@@ -168,15 +179,49 @@ func (h *Handler) handleConsoleStatic(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, indexPath)
 }
 
+type principalCtxKey struct{}
+
+func principalFromContext(r *http.Request) auth.Principal {
+	if p, ok := r.Context().Value(principalCtxKey{}).(auth.Principal); ok {
+		return p
+	}
+	return auth.Principal{}
+}
+
 func (h *Handler) withPerm(perm auth.Permission, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		appID := r.URL.Query().Get("app_id")
-		if _, status, code, msg := h.authz.Authorize(r, perm, appID); status != 0 {
+		p, status, code, msg := h.authz.Authorize(r, perm, appID)
+		if status != 0 {
 			writeError(w, status, code, msg)
 			return
 		}
-		next(w, r)
+		ctx := context.WithValue(r.Context(), principalCtxKey{}, p)
+		next(w, r.WithContext(ctx))
 	}
+}
+
+func (h *Handler) resolveAppScopeOrWriteError(w http.ResponseWriter, r *http.Request, requestedAppID string) (string, bool) {
+	resolved, status, code, msg := auth.ResolveAppScope(principalFromContext(r), requestedAppID)
+	if status != 0 {
+		writeError(w, status, code, msg)
+		return "", false
+	}
+	return resolved, true
+}
+
+func (h *Handler) parseFilterOrWriteError(w http.ResponseWriter, r *http.Request) (storage.QueryFilter, bool) {
+	f, err := parseFilter(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return storage.QueryFilter{}, false
+	}
+	scopedAppID, ok := h.resolveAppScopeOrWriteError(w, r, f.AppID)
+	if !ok {
+		return storage.QueryFilter{}, false
+	}
+	f.AppID = scopedAppID
+	return f, true
 }
 
 func (h *Handler) handleWhoAmI(w http.ResponseWriter, r *http.Request) {
@@ -255,7 +300,75 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_batch", err.Error())
 		return
 	}
+	if h.traceExporter != nil && res.Accepted > 0 {
+		h.traceExporter.EnqueueBatch(&batch)
+	}
 	writeJSON(w, http.StatusAccepted, res)
+}
+
+// isAllowedMCPOrigin enforces MCP Streamable HTTP Origin validation to prevent browser DNS-rebinding attacks.
+// CLI / stdio bridges / curl requests without an Origin header are allowed; browser origins must match loopback or r.Host.
+func isAllowedMCPOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	reqHost := strings.TrimSpace(r.Host)
+	if strings.EqualFold(u.Host, reqHost) {
+		return true
+	}
+	if rh, _, splitErr := net.SplitHostPort(reqHost); splitErr == nil && strings.EqualFold(host, rh) {
+		return true
+	}
+	return strings.EqualFold(host, reqHost)
+}
+
+func (h *Handler) handleMCP(w http.ResponseWriter, r *http.Request) {
+	if !isAllowedMCPOrigin(r) {
+		writeError(w, http.StatusForbidden, "forbidden_origin", "cross-origin browser requests to /v1/mcp are blocked")
+		return
+	}
+	principal, status, code, msg := h.authz.Authorize(r, auth.PermReadAnalytics, "")
+	if status != 0 {
+		writeError(w, status, code, msg)
+		return
+	}
+	protoVer := mcp.ProtocolVersion
+	if reqVer := strings.TrimSpace(r.Header.Get("MCP-Protocol-Version")); mcp.IsSupportedProtocolVersion(reqVer) {
+		protoVer = reqVer
+	}
+	w.Header().Set("MCP-Protocol-Version", protoVer)
+
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeJSON(w, http.StatusOK, mcp.RPCResponse{
+			JSONRPC: "2.0",
+			Error:   &mcp.RPCError{Code: -32700, Message: "read error: " + err.Error()},
+		})
+		return
+	}
+	var req mcp.RPCRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeJSON(w, http.StatusOK, mcp.RPCResponse{
+			JSONRPC: "2.0",
+			Error:   &mcp.RPCError{Code: -32700, Message: "parse error: " + err.Error()},
+		})
+		return
+	}
+	resp, isNotif := h.mcpServer.HandleRequestWithPrincipal(r.Context(), req, principal)
+	if isNotif || resp == nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) handleGetPolicy(w http.ResponseWriter, r *http.Request) {
@@ -288,6 +401,20 @@ func (h *Handler) handleRegisterRelease(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_release", "app_id, platform, app_version, and build_number are required")
 		return
 	}
+	scopedAppID, ok := h.resolveAppScopeOrWriteError(w, r, rec.AppID)
+	if !ok {
+		return
+	}
+	rec.AppID = scopedAppID
+	if rec.BinarySizeBytes < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_release", "binary_size_bytes must be non-negative")
+		return
+	}
+	rec.BinaryArtifactKind = strings.ToLower(strings.TrimSpace(rec.BinaryArtifactKind))
+	if !storage.IsValidBinaryArtifactKind(rec.BinaryArtifactKind) {
+		writeError(w, http.StatusBadRequest, "invalid_release", "binary_artifact_kind must be one of apk, aab, ipa, xcarchive, bundle")
+		return
+	}
 	if rec.Env == "" {
 		rec.Env = "prod"
 	}
@@ -300,7 +427,11 @@ func (h *Handler) handleRegisterRelease(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) handleListReleases(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	rels, err := h.meta.ListReleases(r.Context(), q.Get("app_id"), q.Get("platform"), q.Get("env"))
+	appID, ok := h.resolveAppScopeOrWriteError(w, r, q.Get("app_id"))
+	if !ok {
+		return
+	}
+	rels, err := h.meta.ListReleases(r.Context(), appID, q.Get("platform"), q.Get("env"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
 		return
@@ -384,7 +515,11 @@ func (h *Handler) handleUploadSymbol(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleListSymbols(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	syms, err := h.meta.ListSymbols(r.Context(), q.Get("app_id"), q.Get("platform"), q.Get("app_version"), q.Get("build_number"))
+	appID, ok := h.resolveAppScopeOrWriteError(w, r, q.Get("app_id"))
+	if !ok {
+		return
+	}
+	syms, err := h.meta.ListSymbols(r.Context(), appID, q.Get("platform"), q.Get("app_version"), q.Get("build_number"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query_failed", err.Error())
 		return
@@ -422,9 +557,8 @@ func parseFilter(r *http.Request) (storage.QueryFilter, error) {
 }
 
 func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	rep, err := h.engine.Overview(r.Context(), f)
@@ -436,9 +570,8 @@ func (h *Handler) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleTimeseries(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	points, err := h.engine.DailyTrends(r.Context(), f)
@@ -450,9 +583,8 @@ func (h *Handler) handleTimeseries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleBreakdown(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	dim := strings.TrimSpace(r.URL.Query().Get("dimension"))
@@ -468,9 +600,8 @@ func (h *Handler) handleBreakdown(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleStartup(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	rep, err := h.engine.Startup(r.Context(), f)
@@ -482,9 +613,8 @@ func (h *Handler) handleStartup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleFluency(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	rep, err := h.engine.Fluency(r.Context(), f)
@@ -508,9 +638,8 @@ func (h *Handler) handleFluency(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleResources(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	rep, err := h.engine.Resources(r.Context(), f)
@@ -522,9 +651,8 @@ func (h *Handler) handleResources(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleNetwork(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	rep, err := h.engine.Network(r.Context(), f)
@@ -545,6 +673,11 @@ func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_compare", "platform, baseline_version, and candidate_version are required")
 		return
 	}
+	scopedAppID, ok := h.resolveAppScopeOrWriteError(w, r, req.AppID)
+	if !ok {
+		return
+	}
+	req.AppID = scopedAppID
 	rep, err := h.engine.Compare(r.Context(), req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "compare_failed", err.Error())
@@ -554,9 +687,8 @@ func (h *Handler) handleCompare(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleIssues(w http.ResponseWriter, r *http.Request) {
-	f, err := parseFilter(r)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
+	f, ok := h.parseFilterOrWriteError(w, r)
+	if !ok {
 		return
 	}
 	limit := 50
@@ -602,8 +734,12 @@ func (h *Handler) handleIssues(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 	fp := r.PathValue("fingerprint")
 	q := r.URL.Query()
+	appID, ok := h.resolveAppScopeOrWriteError(w, r, q.Get("app_id"))
+	if !ok {
+		return
+	}
 	f := storage.QueryFilter{
-		AppID:       q.Get("app_id"),
+		AppID:       appID,
 		Platform:    q.Get("platform"),
 		AppVersion:  q.Get("app_version"),
 		BuildNumber: q.Get("build_number"),
@@ -779,10 +915,11 @@ func (h *Handler) handleScanRegressions(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid_request", "baseline_version and candidate_version are required")
 		return
 	}
-	if _, status, code, msg := h.authz.Authorize(r, auth.PermReadAnalytics, req.AppID); status != 0 {
-		writeError(w, status, code, msg)
+	scopedAppID, ok := h.resolveAppScopeOrWriteError(w, r, req.AppID)
+	if !ok {
 		return
 	}
+	req.AppID = scopedAppID
 	rep, err := h.engine.ScanRegressions(r.Context(), req)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "scan_failed", err.Error())
@@ -794,11 +931,12 @@ func (h *Handler) handleScanRegressions(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) handleSessionLookup(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	appID := strings.TrimSpace(q.Get("app_id"))
-	principal, status, code, msg := h.authz.Authorize(r, auth.PermSessionLookup, appID)
+	principal, scopedAppID, status, code, msg := h.authz.AuthorizeScoped(r, auth.PermSessionLookup, appID)
 	if status != 0 {
 		writeError(w, status, code, msg)
 		return
 	}
+	appID = scopedAppID
 
 	installHash := strings.TrimSpace(q.Get("install_hash"))
 	userHash := strings.TrimSpace(q.Get("user_hash"))

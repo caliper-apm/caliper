@@ -280,8 +280,9 @@ type MetricComparison struct {
 	RelativePct     *float64    `json:"relative_pct"`   // nil when baseline == 0
 	Status          string      `json:"status"`         // "regressed" | "improved" | "neutral" | "gated"
 	GateReason      string      `json:"gate_reason,omitempty"`
-	StatTest        string      `json:"stat_test,omitempty"` // "two_proportion_z" | "histogram_ks" | "threshold_only"
+	StatTest        string      `json:"stat_test,omitempty"` // "two_proportion_z" | "cluster_proportion_z" | "ddsketch_ks" | "histogram_ks" | "threshold_only"
 	PValue          *float64    `json:"p_value,omitempty"`
+	AdjustedPValue  *float64    `json:"adjusted_p_value,omitempty"` // Benjamini-Hochberg FDR q-value in multi-scene scans
 	StatSignificant *bool       `json:"statistically_significant,omitempty"`
 	BaselineCI95    *[2]float64 `json:"baseline_ci95,omitempty"`
 	CandidateCI95   *[2]float64 `json:"candidate_ci95,omitempty"`

@@ -99,7 +99,23 @@ class NativeProbesTest {
         assertEquals("android.app.ActivityThread\$H", captured[0].first.target)
         assertEquals("com.atlas.DbMigrationTask", captured[0].first.callback)
         assertEquals("159", captured[0].first.what)
-        assertEquals(2, captured[0].second)
+        assertEquals(2, captured.size.let { captured[0].second })
         assertEquals(2, tracker.snapshotHistory().size)
+    }
+
+    @Test
+    fun processCpuSamplerParsesProcStatAndComputesDeltaPct() {
+        val sampler = CaliperProcessCpuSampler(clockTicksPerSecond = 100L)
+        // Process name intentionally contains spaces and parentheses.
+        val stat1 = "12345 (com.example (app)) S 1 12345 12345 0 -1 4194304 100 0 0 0 150 50 0 0 20 0 12 0 1000"
+        val stat2 = "12345 (com.example (app)) S 1 12345 12345 0 -1 4194304 100 0 0 0 210 70 0 0 20 0 12 0 1000"
+
+        // Baseline returns null (no prior observation -> never fabricate 0%).
+        assertNull(sampler.sample(stat1, wallMs = 10_000L))
+
+        // +80 ticks (= 0.80s CPU) over 10.0s wall time -> 8.0% of 1 core.
+        val pct = sampler.sample(stat2, wallMs = 20_000L)
+        assertNotNull(pct)
+        assertEquals(8.0, pct!!, 0.001)
     }
 }

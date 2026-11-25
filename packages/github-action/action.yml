@@ -31,7 +31,7 @@ inputs:
     required: false
     default: ""
   kind:
-    description: "Symbol bundle kind: r8_mapping | dsym | hermes_sourcemap | breakpad"
+    description: "Symbol bundle kind: r8_mapping | dsym | native_elf | hermes_sourcemap | breakpad"
     required: true
   symbol-file:
     description: "Path to the symbol file to upload"

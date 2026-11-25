@@ -243,3 +243,61 @@ class LooperDispatchTracker(
         }
     }
 }
+
+/**
+ * Pure-Kotlin Linux `/proc/self/stat` CPU delta sampler (100% = 1 full CPU core).
+ * Safe against process names containing spaces or nested parentheses; runs strictly off main thread.
+ */
+class CaliperProcessCpuSampler(
+    private val clockTicksPerSecond: Long = 100L,
+) {
+    private val lock = Any()
+    private var prevCpuTicks: Long = -1L
+    private var prevWallMs: Long = -1L
+
+    /**
+     * Records one `/proc/self/stat` snapshot at monotonic [wallMs].
+     * Returns `null` on the initial baseline observation (or invalid inputs), and normalized
+     * single-core CPU percentage (`[0.0, 1600.0]`) on subsequent observations.
+     */
+    fun sample(procStatLine: String, wallMs: Long): Double? {
+        val ticks = parseProcessCpuTicks(procStatLine) ?: return null
+        synchronized(lock) {
+            val lastTicks = prevCpuTicks
+            val lastWall = prevWallMs
+            prevCpuTicks = ticks
+            prevWallMs = wallMs
+            if (lastTicks < 0L || lastWall < 0L) return null
+            val dtWallMs = wallMs - lastWall
+            if (dtWallMs <= 0L) return null
+            val dtTicks = (ticks - lastTicks).coerceAtLeast(0L)
+            val cpuSec = dtTicks.toDouble() / clockTicksPerSecond.coerceAtLeast(1L).toDouble()
+            val wallSec = dtWallMs.toDouble() / 1000.0
+            return ((cpuSec / wallSec) * 100.0).coerceIn(0.0, 1600.0)
+        }
+    }
+
+    /** Convenience helper reading `/proc/self/stat` directly on Android/Linux hosts (fail-closed). */
+    fun sampleSelf(wallMs: Long = System.currentTimeMillis()): Double? {
+        val line = runCatching { File("/proc/self/stat").readText(Charsets.UTF_8) }.getOrNull() ?: return null
+        return sample(line, wallMs)
+    }
+
+    companion object {
+        /**
+         * Extracts `utime + stime` (fields 14 and 15 in `/proc/<pid>/stat`, 1-based) by locating
+         * the closing `')'` of the `comm` field so process names with spaces/parens parse reliably.
+         */
+        fun parseProcessCpuTicks(statLine: String): Long? {
+            val rparen = statLine.lastIndexOf(')')
+            if (rparen < 0 || rparen + 2 >= statLine.length) return null
+            val fields = statLine.substring(rparen + 2).trim().split(Regex("\\s+"))
+            // After ") ": index 0 is state (field 3), so utime (field 14) is index 11 and stime (field 15) is index 12.
+            if (fields.size <= 12) return null
+            val utime = fields[11].toLongOrNull() ?: return null
+            val stime = fields[12].toLongOrNull() ?: return null
+            if (utime < 0L || stime < 0L) return null
+            return utime + stime
+        }
+    }
+}

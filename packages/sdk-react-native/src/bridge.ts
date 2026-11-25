@@ -1,3 +1,5 @@
+export const NATIVE_MODULE_NAME = 'CaliperReactNativeBridge';
+
 /**
  * TurboModule / JSI bridge contract connecting the optional RN adapter to
  * Caliper Native SDK (sdk-android / sdk-ios). All heavy persistence, queuing,
@@ -8,6 +10,31 @@ export interface CaliperNativeBridgeSpec {
   addBreadcrumb(category: string, message: string): void;
   notifyFirstFrameReady(jsEntryToFirstFrameMs: number): void;
   enqueueEvent(kind: string, scene: string, windowId: string | null, payloadJson: string): void;
+  flush?(): void;
+}
+
+/**
+ * Resolves the registered Caliper NativeModule / TurboModule from React Native without
+ * introducing a hard runtime dependency on `react-native` in pure-TS/Node test environments.
+ */
+export function resolveNativeBridge(reactNativeRuntime?: {
+  TurboModuleRegistry?: { get?: (name: string) => unknown };
+  NativeModules?: Record<string, unknown>;
+}): CaliperNativeBridgeSpec | null {
+  const fromTurbo = reactNativeRuntime?.TurboModuleRegistry?.get?.(NATIVE_MODULE_NAME);
+  const candidate = (fromTurbo ?? reactNativeRuntime?.NativeModules?.[NATIVE_MODULE_NAME]) as
+    | Partial<CaliperNativeBridgeSpec>
+    | undefined;
+  if (
+    candidate &&
+    typeof candidate.setScene === 'function' &&
+    typeof candidate.addBreadcrumb === 'function' &&
+    typeof candidate.notifyFirstFrameReady === 'function' &&
+    typeof candidate.enqueueEvent === 'function'
+  ) {
+    return candidate as CaliperNativeBridgeSpec;
+  }
+  return null;
 }
 
 export type FailureDomain = 'http' | 'business' | 'parse' | 'network' | 'timeout';

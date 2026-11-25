@@ -396,7 +396,7 @@ func (s *miniPGWireServer) execSimpleQuery(bw *bufio.Writer, q string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if strings.HasPrefix(upper, "CREATE TABLE") || strings.HasPrefix(upper, "CREATE INDEX") {
+	if strings.HasPrefix(upper, "CREATE TABLE") || strings.HasPrefix(upper, "CREATE INDEX") || strings.HasPrefix(upper, "ALTER TABLE") {
 		s.ddlCount++
 		writePGComplete(bw, "CREATE TABLE")
 		return
@@ -405,8 +405,10 @@ func (s *miniPGWireServer) execSimpleQuery(bw *bufio.Writer, q string) {
 		vals := extractValues(q)
 		r := storage.ReleaseRecord{
 			AppID: vals[0], Platform: vals[1], Env: vals[2], AppVersion: vals[3], BuildNumber: vals[4],
-			GitSHA: vals[5], SymbolID: vals[6], Adapter: vals[7], Registered: parseBool(vals[8]),
-			FirstSeenMS: parseI64(vals[9]), LastSeenMS: parseI64(vals[10]), EventCount: parseI64(vals[11]),
+			GitSHA: vals[5], SymbolID: vals[6], Adapter: vals[7],
+			BinarySizeBytes: parseI64(vals[8]), BinaryArtifactKind: vals[9],
+			Registered: parseBool(vals[10]),
+			FirstSeenMS: parseI64(vals[11]), LastSeenMS: parseI64(vals[12]), EventCount: parseI64(vals[13]),
 		}
 		key := r.AppID + "|" + r.Platform + "|" + r.Env + "|" + r.AppVersion + "|" + r.BuildNumber
 		if ex, ok := s.releases[key]; ok {
@@ -418,6 +420,12 @@ func (s *miniPGWireServer) execSimpleQuery(bw *bufio.Writer, q string) {
 			}
 			if r.Adapter == "" {
 				r.Adapter = ex.Adapter
+			}
+			if r.BinarySizeBytes <= 0 {
+				r.BinarySizeBytes = ex.BinarySizeBytes
+			}
+			if r.BinaryArtifactKind == "" {
+				r.BinaryArtifactKind = ex.BinaryArtifactKind
 			}
 			r.Registered = ex.Registered || r.Registered
 			if ex.FirstSeenMS < r.FirstSeenMS {
@@ -433,7 +441,7 @@ func (s *miniPGWireServer) execSimpleQuery(bw *bufio.Writer, q string) {
 		return
 	}
 	if strings.Contains(upper, "FROM CALIPER_RELEASES") {
-		cols := []string{"app_id", "platform", "env", "app_version", "build_number", "git_sha", "symbol_id", "adapter", "registered", "first_seen_ms", "last_seen_ms", "event_count"}
+		cols := []string{"app_id", "platform", "env", "app_version", "build_number", "git_sha", "symbol_id", "adapter", "binary_size_bytes", "binary_artifact_kind", "registered", "first_seen_ms", "last_seen_ms", "event_count"}
 		writePGRowDesc(bw, cols)
 		var rows []storage.ReleaseRecord
 		for _, r := range s.releases {
@@ -443,7 +451,7 @@ func (s *miniPGWireServer) execSimpleQuery(bw *bufio.Writer, q string) {
 		}
 		sort.Slice(rows, func(i, j int) bool { return rows[i].LastSeenMS > rows[j].LastSeenMS })
 		for _, r := range rows {
-			writePGDataRow(bw, []any{r.AppID, r.Platform, r.Env, r.AppVersion, r.BuildNumber, r.GitSHA, r.SymbolID, r.Adapter, boolStr(r.Registered), i64Str(r.FirstSeenMS), i64Str(r.LastSeenMS), i64Str(r.EventCount)})
+			writePGDataRow(bw, []any{r.AppID, r.Platform, r.Env, r.AppVersion, r.BuildNumber, r.GitSHA, r.SymbolID, r.Adapter, i64Str(r.BinarySizeBytes), r.BinaryArtifactKind, boolStr(r.Registered), i64Str(r.FirstSeenMS), i64Str(r.LastSeenMS), i64Str(r.EventCount)})
 		}
 		writePGComplete(bw, fmt.Sprintf("SELECT %d", len(rows)))
 		return

@@ -142,6 +142,8 @@ public enum EventPayload: Codable, Sendable {
     case networkSummary(NetworkSummaryPayload)
     case networkTransport(NetworkTransportPayload)
     case customScene(CustomScenePayload)
+    case cpuProfile(CPUProfilePayload)
+    case heapSnapshot(HeapSnapshotPayload)
 
     public func encode(to encoder: Encoder) throws {
         switch self {
@@ -153,6 +155,8 @@ public enum EventPayload: Codable, Sendable {
         case .networkSummary(let v): try v.encode(to: encoder)
         case .networkTransport(let v): try v.encode(to: encoder)
         case .customScene(let v): try v.encode(to: encoder)
+        case .cpuProfile(let v): try v.encode(to: encoder)
+        case .heapSnapshot(let v): try v.encode(to: encoder)
         }
     }
 
@@ -163,6 +167,8 @@ public enum EventPayload: Codable, Sendable {
         if let v = try? NetworkTransportPayload(from: decoder) { self = .networkTransport(v); return }
         if let v = try? NetworkSummaryPayload(from: decoder) { self = .networkSummary(v); return }
         if let v = try? JSLongTaskPayload(from: decoder) { self = .jsLongTask(v); return }
+        if let v = try? CPUProfilePayload(from: decoder) { self = .cpuProfile(v); return }
+        if let v = try? HeapSnapshotPayload(from: decoder) { self = .heapSnapshot(v); return }
         if let v = try? StabilityPayload(from: decoder) { self = .stability(v); return }
         self = .customScene(try CustomScenePayload(from: decoder))
     }
@@ -201,7 +207,7 @@ public struct StartupPayload: Codable, Sendable {
     }
 }
 
-public struct StackFrame: Codable, Sendable {
+public struct StackFrame: Codable, Sendable, Equatable {
     public let module: String?
     public let symbol: String
     public let file: String?
@@ -488,6 +494,114 @@ public struct CustomScenePayload: Codable, Sendable {
         self.durationMS = durationMS
         self.errorCode = errorCode
         self.stages = stages
+    }
+}
+
+/// One folded root-to-leaf callstack and sample count for server-side interactive CPU flamegraphs.
+public struct ProfileStackSample: Codable, Sendable, Equatable {
+    public let frames: [String]
+    public let samples: Int64
+
+    public init(frames: [String], samples: Int64) {
+        self.frames = frames
+        self.samples = samples
+    }
+}
+
+/// Bounded Native (Mach) or Hermes CPU sampling profile matching `kind = "cpu_profile"`.
+public struct CPUProfilePayload: Codable, Sendable, Equatable {
+    public let runtime: String // "native" | "hermes"
+    public let threadName: String?
+    public let sampleIntervalMS: Int
+    public let durationMS: Int64
+    public let totalSamples: Int64
+    public let stacks: [ProfileStackSample]
+
+    enum CodingKeys: String, CodingKey {
+        case runtime
+        case threadName = "thread_name"
+        case sampleIntervalMS = "sample_interval_ms"
+        case durationMS = "duration_ms"
+        case totalSamples = "total_samples"
+        case stacks
+    }
+
+    public init(
+        runtime: String = "native",
+        threadName: String? = "main",
+        sampleIntervalMS: Int,
+        durationMS: Int64,
+        totalSamples: Int64,
+        stacks: [ProfileStackSample]
+    ) {
+        self.runtime = runtime
+        self.threadName = threadName
+        self.sampleIntervalMS = sampleIntervalMS
+        self.durationMS = durationMS
+        self.totalSamples = totalSamples
+        self.stacks = stacks
+    }
+}
+
+/// Zero-PII class-level retained memory dominator entry (never carries raw user object values).
+public struct HeapDominator: Codable, Sendable, Equatable {
+    public let className: String
+    public let instanceCount: Int64
+    public let retainedKiB: Double
+    public let retainerPath: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case className = "class_name"
+        case instanceCount = "instance_count"
+        case retainedKiB = "retained_kib"
+        case retainerPath = "retainer_path"
+    }
+
+    public init(
+        className: String,
+        instanceCount: Int64,
+        retainedKiB: Double,
+        retainerPath: [String]? = nil
+    ) {
+        self.className = className
+        self.instanceCount = instanceCount
+        self.retainedKiB = retainedKiB
+        self.retainerPath = retainerPath
+    }
+}
+
+/// Privacy-safe trimmed heap/OOM dominator snapshot matching `kind = "heap_snapshot"`.
+public struct HeapSnapshotPayload: Codable, Sendable, Equatable {
+    public let triggerReason: String // "oom_warning" | "high_watermark" | "manual"
+    public let memoryKind: String    // "ios_phys_footprint_kib" | "hermes_heap_kib"
+    public let totalAllocatedKiB: Double
+    public let totalRetainedKiB: Double
+    public let memoryLimitKiB: Double?
+    public let dominators: [HeapDominator]
+
+    enum CodingKeys: String, CodingKey {
+        case triggerReason = "trigger_reason"
+        case memoryKind = "memory_kind"
+        case totalAllocatedKiB = "total_allocated_kib"
+        case totalRetainedKiB = "total_retained_kib"
+        case memoryLimitKiB = "memory_limit_kib"
+        case dominators
+    }
+
+    public init(
+        triggerReason: String = "high_watermark",
+        memoryKind: String = "ios_phys_footprint_kib",
+        totalAllocatedKiB: Double,
+        totalRetainedKiB: Double,
+        memoryLimitKiB: Double? = nil,
+        dominators: [HeapDominator]
+    ) {
+        self.triggerReason = triggerReason
+        self.memoryKind = memoryKind
+        self.totalAllocatedKiB = totalAllocatedKiB
+        self.totalRetainedKiB = totalRetainedKiB
+        self.memoryLimitKiB = memoryLimitKiB
+        self.dominators = dominators
     }
 }
 

@@ -48,7 +48,9 @@ class CaliperFastlaneUploaderTest < Minitest::Test
       build_number: "110",
       git_sha: "1100002abcdef",
       kind: "dsym",
-      symbol_path: tmp.path
+      symbol_path: tmp.path,
+      binary_size_bytes: 34_812_416,
+      binary_artifact_kind: "ipa"
     )
 
     thread.join(5)
@@ -58,6 +60,9 @@ class CaliperFastlaneUploaderTest < Minitest::Test
     assert_equal 2, received.length
     assert_includes received[0][:line], "POST /v1/releases/register"
     assert_equal "ios-ci-key", received[0][:headers]["x-caliper-key"]
+    reg_json = JSON.parse(received[0][:body])
+    assert_equal 34_812_416, reg_json["binary_size_bytes"]
+    assert_equal "ipa", reg_json["binary_artifact_kind"]
 
     assert_includes received[1][:line], "POST /v1/symbols/upload"
     assert_equal "gzip", received[1][:headers]["content-encoding"]

@@ -9,18 +9,30 @@ import (
 
 // ReleaseRecord tracks auto-discovered and CI-registered app builds.
 type ReleaseRecord struct {
-	AppID       string `json:"app_id"`
-	Platform    string `json:"platform"`
-	Env         string `json:"env"`
-	AppVersion  string `json:"app_version"`
-	BuildNumber string `json:"build_number"`
-	GitSHA      string `json:"git_sha,omitempty"`
-	SymbolID    string `json:"symbol_id,omitempty"`
-	Adapter     string `json:"adapter,omitempty"`
-	Registered  bool   `json:"registered"`
-	FirstSeenMS int64  `json:"first_seen_ms"`
-	LastSeenMS  int64  `json:"last_seen_ms"`
-	EventCount  int64  `json:"event_count"`
+	AppID              string `json:"app_id"`
+	Platform           string `json:"platform"`
+	Env                string `json:"env"`
+	AppVersion         string `json:"app_version"`
+	BuildNumber        string `json:"build_number"`
+	GitSHA             string `json:"git_sha,omitempty"`
+	SymbolID           string `json:"symbol_id,omitempty"`
+	Adapter            string `json:"adapter,omitempty"`
+	BinarySizeBytes    int64  `json:"binary_size_bytes,omitempty"`
+	BinaryArtifactKind string `json:"binary_artifact_kind,omitempty"` // apk | aab | ipa | xcarchive | bundle
+	Registered         bool   `json:"registered"`
+	FirstSeenMS        int64  `json:"first_seen_ms"`
+	LastSeenMS         int64  `json:"last_seen_ms"`
+	EventCount         int64  `json:"event_count"`
+}
+
+// IsValidBinaryArtifactKind checks whether kind is empty or a canonical release artifact format.
+func IsValidBinaryArtifactKind(kind string) bool {
+	switch kind {
+	case "", "apk", "aab", "ipa", "xcarchive", "bundle":
+		return true
+	default:
+		return false
+	}
 }
 
 // SamplingPolicy configures deterministic client-side collection boundaries.

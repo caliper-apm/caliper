@@ -203,19 +203,23 @@ func (s *Store) RegisterRelease(ctx context.Context, r storage.ReleaseRecord) er
 	const q = `
 INSERT INTO caliper_releases (
     app_id, platform, env, app_version, build_number,
-    git_sha, symbol_id, adapter, registered, first_seen_ms, last_seen_ms, event_count
-) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+    git_sha, symbol_id, adapter, binary_size_bytes, binary_artifact_kind,
+    registered, first_seen_ms, last_seen_ms, event_count
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
 ON CONFLICT (app_id, platform, env, app_version, build_number) DO UPDATE SET
-    git_sha       = CASE WHEN EXCLUDED.git_sha <> '' THEN EXCLUDED.git_sha ELSE caliper_releases.git_sha END,
-    symbol_id     = CASE WHEN EXCLUDED.symbol_id <> '' THEN EXCLUDED.symbol_id ELSE caliper_releases.symbol_id END,
-    adapter       = CASE WHEN EXCLUDED.adapter <> '' THEN EXCLUDED.adapter ELSE caliper_releases.adapter END,
-    registered    = caliper_releases.registered OR EXCLUDED.registered,
-    first_seen_ms = LEAST(caliper_releases.first_seen_ms, EXCLUDED.first_seen_ms),
-    last_seen_ms  = GREATEST(caliper_releases.last_seen_ms, EXCLUDED.last_seen_ms),
-    event_count   = caliper_releases.event_count + EXCLUDED.event_count`
+    git_sha              = CASE WHEN EXCLUDED.git_sha <> '' THEN EXCLUDED.git_sha ELSE caliper_releases.git_sha END,
+    symbol_id            = CASE WHEN EXCLUDED.symbol_id <> '' THEN EXCLUDED.symbol_id ELSE caliper_releases.symbol_id END,
+    adapter              = CASE WHEN EXCLUDED.adapter <> '' THEN EXCLUDED.adapter ELSE caliper_releases.adapter END,
+    binary_size_bytes    = CASE WHEN EXCLUDED.binary_size_bytes > 0 THEN EXCLUDED.binary_size_bytes ELSE caliper_releases.binary_size_bytes END,
+    binary_artifact_kind = CASE WHEN EXCLUDED.binary_artifact_kind <> '' THEN EXCLUDED.binary_artifact_kind ELSE caliper_releases.binary_artifact_kind END,
+    registered           = caliper_releases.registered OR EXCLUDED.registered,
+    first_seen_ms        = LEAST(caliper_releases.first_seen_ms, EXCLUDED.first_seen_ms),
+    last_seen_ms         = GREATEST(caliper_releases.last_seen_ms, EXCLUDED.last_seen_ms),
+    event_count          = caliper_releases.event_count + EXCLUDED.event_count`
 	_, err := s.db.ExecContext(ctx, q,
 		r.AppID, r.Platform, r.Env, r.AppVersion, r.BuildNumber,
-		r.GitSHA, r.SymbolID, r.Adapter, r.Registered, r.FirstSeenMS, r.LastSeenMS, r.EventCount,
+		r.GitSHA, r.SymbolID, r.Adapter, r.BinarySizeBytes, r.BinaryArtifactKind,
+		r.Registered, r.FirstSeenMS, r.LastSeenMS, r.EventCount,
 	)
 	return err
 }
@@ -226,7 +230,7 @@ func (s *Store) ListReleases(ctx context.Context, appID, platform, env string) (
 		{"platform", platform},
 		{"env", env},
 	})
-	q := `SELECT app_id, platform, env, app_version, build_number, git_sha, symbol_id, adapter, registered, first_seen_ms, last_seen_ms, event_count
+	q := `SELECT app_id, platform, env, app_version, build_number, git_sha, symbol_id, adapter, binary_size_bytes, binary_artifact_kind, registered, first_seen_ms, last_seen_ms, event_count
 FROM caliper_releases` + where + ` ORDER BY last_seen_ms DESC, app_version DESC`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -238,7 +242,8 @@ FROM caliper_releases` + where + ` ORDER BY last_seen_ms DESC, app_version DESC`
 		var r storage.ReleaseRecord
 		if err := rows.Scan(
 			&r.AppID, &r.Platform, &r.Env, &r.AppVersion, &r.BuildNumber,
-			&r.GitSHA, &r.SymbolID, &r.Adapter, &r.Registered, &r.FirstSeenMS, &r.LastSeenMS, &r.EventCount,
+			&r.GitSHA, &r.SymbolID, &r.Adapter, &r.BinarySizeBytes, &r.BinaryArtifactKind,
+			&r.Registered, &r.FirstSeenMS, &r.LastSeenMS, &r.EventCount,
 		); err != nil {
 			return nil, err
 		}

@@ -6,13 +6,15 @@
 
 ## 1. Installation (Swift Package Manager)
 
-Add `packages/sdk-ios` to your `Package.swift` or Xcode project:
+`CaliperSDK` lives as a standalone SwiftPM package at `packages/sdk-ios` inside this monorepo. Add it as a local package (via git submodule or vendored checkout) in `Package.swift` or Xcode (`File → Add Package Dependencies → Add Local...` pointing to `packages/sdk-ios`):
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/<your-org>/caliper-apm.git", from: "1.4.1")
+    .package(path: "../caliper-apm/packages/sdk-ios")
 ]
 ```
+
+Then add `.product(name: "CaliperSDK", package: "sdk-ios")` to your app target's `dependencies`.
 
 ---
 

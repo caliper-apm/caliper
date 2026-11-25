@@ -149,4 +149,41 @@ func TestScanRegressionsRanksPerSceneFindings(t *testing.T) {
 	if !foundHomeFeedScene {
 		t.Fatalf("expected statistically significant scene:home_feed finding, got %+v", scan.Findings)
 	}
+	if scan.FDRMethod != "benjamini_hochberg" || scan.EvaluatedTests < 4 {
+		t.Fatalf("expected BH-FDR metadata in scan report, got method=%q evaluated=%d", scan.FDRMethod, scan.EvaluatedTests)
+	}
+}
+
+func TestClusteredFluencyZTestAndBenjaminiHochbergFDR(t *testing.T) {
+	// 1. Cluster-level effective sample size prevents frame-level autocorrelation false alarms:
+	//    1.0% vs 1.6% over 120 windows (72,000 frames): naive frame Z-test screams p < 1e-10,
+	//    whereas window-clustered Z-test honestly flags it as statistically insignificant (p > 0.5).
+	pNaive, _ := TwoProportionZTest(720, 72000, 1152, 72000)
+	pCluster, ok := ClusteredProportionZTest(0.01, 120, 0.016, 120)
+	if !ok || pNaive >= 1e-6 || pCluster < 0.5 {
+		t.Fatalf("expected cluster test to resist frame correlation: pNaive=%g pCluster=%g", pNaive, pCluster)
+	}
+
+	// Genuine large regression (1% -> 12% across 120 windows) remains strongly significant.
+	pReal, ok := ClusteredProportionZTest(0.01, 120, 0.12, 120)
+	if !ok || pReal >= 0.005 {
+		t.Fatalf("expected genuine 1%%->12%% regression to remain significant: pReal=%g", pReal)
+	}
+
+	// 2. Benjamini-Hochberg FDR adjustment monotonicity & false-discovery control:
+	//    When scanning 10 scenes where only 1 has a borderline p=0.008 and 9 are null (p=0.5),
+	//    BH-adjusted q = 0.008 * 10 / 1 = 0.08 >= 0.01 (filtered out as multiple-testing noise).
+	raw := []float64{0.008, 0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.92, 0.95, 0.99}
+	adj := BenjaminiHochbergAdjust(raw)
+	if len(adj) != len(raw) {
+		t.Fatalf("expected %d adjusted p-values, got %d", len(raw), len(adj))
+	}
+	if adj[0] < 0.079 || adj[0] > 0.081 {
+		t.Fatalf("expected BH q[0] = 0.08, got %g", adj[0])
+	}
+	for i, q := range adj {
+		if q < raw[i]-1e-12 || q > 1.0 {
+			t.Fatalf("BH q[%d]=%g violated bounds [p=%g, 1]", i, q, raw[i])
+		}
+	}
 }

@@ -1,4 +1,5 @@
 import Foundation
+import CaliperCrashCore
 
 /// Bounded FIFO offline disk queue for surviving iOS OOM kills and offline sessions.
 public final class CaliperDiskQueue: @unchecked Sendable {
@@ -120,13 +121,17 @@ public final class CaliperDiagnosticRingLog: @unchecked Sendable {
 }
 
 /// Background Main-Thread Hang / Watchdog monitor using a DispatchSemaphore ping onto DispatchQueue.main.
+/// On hang timeout, suspends the actual main thread via Mach (`caliper_capture_main_thread_frames`),
+/// reads its registers & vm_read_overwrite-protected FP stack, immediately resumes the main thread,
+/// and reports slide-relative frames compatible with server-side Mach-O DWARF symbolication.
 public final class CaliperMainThreadWatchdog: @unchecked Sendable {
     private let thresholdMS: Int
     private let pollIntervalMS: Int
     private let queue = DispatchQueue(label: "dev.caliper.apm.watchdog", qos: .utility)
     private let lock = NSLock()
     private var running = false
-    private let onHang: @Sendable (Int, [String]) -> Void
+    private let onHang: (@Sendable (Int, [String]) -> Void)?
+    private let onHangFrames: (@Sendable (Int, [StackFrame]) -> Void)?
 
     public init(
         thresholdMS: Int = 2000,
@@ -136,11 +141,32 @@ public final class CaliperMainThreadWatchdog: @unchecked Sendable {
         self.thresholdMS = max(50, thresholdMS)
         self.pollIntervalMS = max(20, pollIntervalMS)
         self.onHang = onHang
+        self.onHangFrames = nil
+    }
+
+    public init(
+        thresholdMS: Int = 2000,
+        pollIntervalMS: Int = 250,
+        onHangFrames: @escaping @Sendable (Int, [StackFrame]) -> Void
+    ) {
+        self.thresholdMS = max(50, thresholdMS)
+        self.pollIntervalMS = max(20, pollIntervalMS)
+        self.onHang = nil
+        self.onHangFrames = onHangFrames
     }
 
     public func start(pingTarget: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = { ack in
         DispatchQueue.main.async { ack() }
     }) {
+        // Ensure main thread Mach port & lock-free dyld image table are registered before monitoring.
+        if Thread.isMainThread {
+            caliper_register_main_thread()
+        } else {
+            DispatchQueue.main.async {
+                caliper_register_main_thread()
+            }
+        }
+
         lock.lock()
         if running {
             lock.unlock()
@@ -158,8 +184,19 @@ public final class CaliperMainThreadWatchdog: @unchecked Sendable {
                 let waitResult = sem.wait(timeout: .now() + .milliseconds(self.thresholdMS))
                 if waitResult == .timedOut && self.isRunning() {
                     let durMS = Int(Date().timeIntervalSince(start) * 1000)
-                    let symbols = Thread.callStackSymbols.prefix(32).map { String($0) }
-                    self.onHang(durMS, symbols)
+                    let frames = Self.captureMainThreadFrames(maxFrames: 32)
+                    if let onHangFrames = self.onHangFrames {
+                        onHangFrames(durMS, frames)
+                    } else if let onHang = self.onHang {
+                        let formatted = frames.map { f -> String in
+                            let mod = f.module ?? "unknown"
+                            if let addr = f.address, f.symbol != addr {
+                                return "\(mod) \(f.symbol) + \(addr)"
+                            }
+                            return "\(mod) \(f.symbol)"
+                        }
+                        onHang(durMS, formatted)
+                    }
                 }
                 Thread.sleep(forTimeInterval: Double(self.pollIntervalMS) / 1000.0)
             }
@@ -172,6 +209,48 @@ public final class CaliperMainThreadWatchdog: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Captures the hung main thread's actual call stack from a background thread using Mach
+    /// `thread_suspend` + `thread_get_state` + `vm_read_overwrite` + `thread_resume`.
+    /// Returns an empty array if called on the main thread itself (never self-deadlocks).
+    public static func captureMainThreadFrames(maxFrames: Int = 32) -> [StackFrame] {
+        let cap = max(1, min(maxFrames, 48))
+        var raw = Array(repeating: caliper_captured_frame_t(), count: cap)
+        let count = Int(caliper_capture_main_thread_frames(&raw, Int32(cap)))
+        guard count > 0 else { return [] }
+        return convertCapturedFrames(raw.prefix(count))
+    }
+
+    internal static func captureThreadFrames(machThreadPort: UInt32, maxFrames: Int = 32) -> [StackFrame] {
+        let cap = max(1, min(maxFrames, 48))
+        var raw = Array(repeating: caliper_captured_frame_t(), count: cap)
+        let count = Int(caliper_capture_thread_frames_safe(machThreadPort, &raw, Int32(cap)))
+        guard count > 0 else { return [] }
+        return convertCapturedFrames(raw.prefix(count))
+    }
+
+    private static func convertCapturedFrames<S: Sequence>(_ items: S) -> [StackFrame] where S.Element == caliper_captured_frame_t {
+        var out: [StackFrame] = []
+        for item in items {
+            let mod = cString(from: item.module)
+            let sym = cString(from: item.symbol)
+            let relHex = "0x" + String(item.relative_addr, radix: 16)
+            out.append(StackFrame(
+                module: mod.isEmpty ? "unknown" : mod,
+                symbol: sym.isEmpty ? relHex : sym,
+                address: relHex,
+                inApp: CaliperModuleClassifier.isInAppModule(mod)
+            ))
+        }
+        return out
+    }
+
+    private static func cString<T>(from tuple: T) -> String {
+        withUnsafeBytes(of: tuple) { raw in
+            let bytes = raw.prefix { $0 != 0 }
+            return String(decoding: bytes, as: UTF8.self)
+        }
+    }
+
     private func isRunning() -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -179,11 +258,124 @@ public final class CaliperMainThreadWatchdog: @unchecked Sendable {
     }
 }
 
+/// Parsed frames and Mach-O binary UUIDs extracted from Apple's `MXCallStackTree.jsonRepresentation()`.
+public struct ParsedMetricKitCallStack: Sendable, Equatable {
+    public let frames: [StackFrame]
+    public let binaryUUIDs: [String]
+    public let threadAttributed: Bool
+
+    public init(frames: [StackFrame], binaryUUIDs: [String], threadAttributed: Bool) {
+        self.frames = frames
+        self.binaryUUIDs = binaryUUIDs
+        self.threadAttributed = threadAttributed
+    }
+}
+
+/// Cross-platform pure-Swift parser for Apple MetricKit `MXCallStackTree.jsonRepresentation()`.
+///
+/// Accepts both direct `MXCallStackTree` JSON (`{"callStackPerThread": ..., "callStacks": [...]}`)
+/// and wrapped diagnostic JSON (`{"callStackTree": {"callStacks": [...]}}`).
+/// Walks the attributed (or hottest sampled) call stack from root to leaf and reverses into
+/// Caliper's canonical leaf-first order with `offsetIntoBinaryTextSegment` formatted as `0x...`
+/// for direct server-side Mach-O `.dSYM` DWARF symbolication.
+public enum CaliperMetricKitCallStackParser {
+    private struct WrappedTree: Decodable {
+        let callStackTree: TreePayload?
+        let callStacks: [ThreadStack]?
+    }
+
+    private struct TreePayload: Decodable {
+        let callStacks: [ThreadStack]?
+    }
+
+    private struct ThreadStack: Decodable {
+        let threadAttributed: Bool?
+        let callStackRootFrames: [RawFrame]?
+    }
+
+    private struct RawFrame: Decodable {
+        let binaryName: String?
+        let binaryUUID: String?
+        let address: UInt64?
+        let offsetIntoBinaryTextSegment: UInt64?
+        let sampleCount: Int?
+        let subFrames: [RawFrame]?
+    }
+
+    public static func parse(jsonData: Data, maxFrames: Int = 48) -> ParsedMetricKitCallStack {
+        guard !jsonData.isEmpty,
+              let root = try? JSONDecoder().decode(WrappedTree.self, from: jsonData) else {
+            return ParsedMetricKitCallStack(frames: [], binaryUUIDs: [], threadAttributed: false)
+        }
+
+        let stacks = root.callStacks ?? root.callStackTree?.callStacks ?? []
+        guard !stacks.isEmpty else {
+            return ParsedMetricKitCallStack(frames: [], binaryUUIDs: [], threadAttributed: false)
+        }
+
+        // Prefer the crashing/attributed thread; fall back to the first stack containing frames.
+        let chosen = stacks.first(where: { $0.threadAttributed == true && !($0.callStackRootFrames?.isEmpty ?? true) })
+            ?? stacks.first(where: { !($0.callStackRootFrames?.isEmpty ?? true) })
+        guard let chosen, let roots = chosen.callStackRootFrames, !roots.isEmpty else {
+            return ParsedMetricKitCallStack(frames: [], binaryUUIDs: [], threadAttributed: false)
+        }
+
+        let limit = max(1, min(maxFrames, 64))
+        var rootToLeaf: [RawFrame] = []
+        var current: RawFrame? = pickHottest(roots)
+        while let node = current, rootToLeaf.count < limit {
+            rootToLeaf.append(node)
+            if let children = node.subFrames, !children.isEmpty {
+                current = pickHottest(children)
+            } else {
+                current = nil
+            }
+        }
+
+        // Reverse to leaf-first order (crashing / hanging frame at index 0).
+        var frames: [StackFrame] = []
+        var uuids = Set<String>()
+        for raw in rootToLeaf.reversed() {
+            let mod = (raw.binaryName?.isEmpty == false) ? raw.binaryName! : "unknown"
+            if let uuid = raw.binaryUUID, !uuid.isEmpty {
+                uuids.insert(uuid)
+            }
+            let relOrAbs = raw.offsetIntoBinaryTextSegment ?? raw.address
+            let addrHex = relOrAbs.map { "0x" + String($0, radix: 16) } ?? "0x0"
+            frames.append(StackFrame(
+                module: mod,
+                symbol: addrHex,
+                address: addrHex,
+                inApp: CaliperModuleClassifier.isInAppModule(mod)
+            ))
+        }
+
+        return ParsedMetricKitCallStack(
+            frames: frames,
+            binaryUUIDs: uuids.sorted(),
+            threadAttributed: chosen.threadAttributed == true
+        )
+    }
+
+    private static func pickHottest(_ candidates: [RawFrame]) -> RawFrame? {
+        guard var best = candidates.first else { return nil }
+        var bestSamples = best.sampleCount ?? 0
+        for item in candidates.dropFirst() {
+            let sc = item.sampleCount ?? 0
+            if sc > bestSamples {
+                best = item
+                bestSamples = sc
+            }
+        }
+        return best
+    }
+}
+
 #if canImport(MetricKit) && os(iOS)
 import MetricKit
 
-/// Subscribes to Apple MetricKit (iOS 14+) diagnostic payloads (crashes, hangs, disk writes)
-/// and forwards them into CaliperClient without private APIs or unsafe swizzling.
+/// Subscribes to Apple MetricKit (iOS 14+) diagnostic payloads (crashes, hangs)
+/// and forwards parsed `callStackTree` frames into CaliperClient without private APIs.
 @available(iOS 14.0, *)
 public final class CaliperMetricKitBridge: NSObject, MXMetricManagerSubscriber {
     private let client: CaliperClient
@@ -205,8 +397,16 @@ public final class CaliperMetricKitBridge: NSObject, MXMetricManagerSubscriber {
         for payload in payloads {
             if let crashes = payload.crashDiagnostics {
                 for crash in crashes {
-                    let title = "MetricKit Crash (signal=\(crash.signal?.intValue ?? 0) code=\(crash.exceptionCode?.intValue ?? 0))"
-                    let fp = "mx-crash-\(crash.signal?.intValue ?? 0)-\(crash.exceptionType?.intValue ?? 0)"
+                    let parsed = CaliperMetricKitCallStackParser.parse(
+                        jsonData: crash.callStackTree.jsonRepresentation()
+                    )
+                    let top = parsed.frames.first(where: { $0.inApp == true }) ?? parsed.frames.first
+                    let sigNum = crash.signal?.intValue ?? 0
+                    let excType = crash.exceptionType?.intValue ?? 0
+                    let excCode = crash.exceptionCode?.intValue ?? 0
+                    let locSuffix = top.map { "-\($0.module ?? "app")-\($0.address ?? $0.symbol)" } ?? ""
+                    let fp = "mx-crash-\(sigNum)-\(excType)\(locSuffix)"
+                    let title = "MetricKit Crash (signal=\(sigNum) code=\(excCode))"
                     client.enqueue(
                         kind: "crash",
                         payload: .stability(StabilityPayload(
@@ -214,7 +414,8 @@ public final class CaliperMetricKitBridge: NSObject, MXMetricManagerSubscriber {
                             title: title,
                             fatal: true,
                             exceptionType: "MetricKitCrash",
-                            frames: []
+                            threadName: parsed.threadAttributed ? "attributed-thread" : "unknown",
+                            frames: parsed.frames
                         )),
                         bypassSampling: true
                     )
@@ -223,14 +424,25 @@ public final class CaliperMetricKitBridge: NSObject, MXMetricManagerSubscriber {
             if let hangs = payload.hangDiagnostics {
                 for hang in hangs {
                     let durMS = Int(hang.hangDuration.converted(to: .milliseconds).value)
+                    let parsed = CaliperMetricKitCallStackParser.parse(
+                        jsonData: hang.callStackTree.jsonRepresentation()
+                    )
+                    let top = parsed.frames.first(where: { $0.inApp == true }) ?? parsed.frames.first
+                    let fp: String
+                    if let top {
+                        fp = "mx-hang-\(top.module ?? "app")-\(top.address ?? top.symbol)"
+                    } else {
+                        fp = "mx-hang-\(durMS / 500 * 500)"
+                    }
                     client.enqueue(
                         kind: "anr",
                         payload: .stability(StabilityPayload(
-                            fingerprint: "mx-hang-\(durMS / 500 * 500)",
+                            fingerprint: fp,
                             title: "MetricKit Main-Thread Hang (\(durMS)ms)",
                             fatal: false,
                             exceptionType: "Hang",
-                            frames: []
+                            threadName: "main",
+                            frames: parsed.frames
                         )),
                         bypassSampling: true
                     )

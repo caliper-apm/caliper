@@ -26,6 +26,14 @@ module Fastlane
           server_url: params[:server_url],
           api_key: params[:api_key]
         )
+        bin_size = params[:binary_size_bytes]
+        bin_kind = params[:binary_artifact_kind]
+        if params[:binary_path] && File.file?(params[:binary_path])
+          bin_size ||= File.size(params[:binary_path])
+          ext = File.extname(params[:binary_path]).delete_prefix(".").downcase
+          bin_kind ||= ext if %w[apk aab ipa xcarchive bundle].include?(ext)
+        end
+
         uploader.register_release(
           app_id: params[:app_id],
           platform: params[:platform] || "ios",
@@ -33,7 +41,9 @@ module Fastlane
           app_version: params[:app_version],
           build_number: params[:build_number],
           git_sha: git_sha,
-          adapter: params[:adapter] || "native"
+          adapter: params[:adapter] || "native",
+          binary_size_bytes: bin_size,
+          binary_artifact_kind: bin_kind
         )
         uploader.upload_symbol(
           app_id: params[:app_id],

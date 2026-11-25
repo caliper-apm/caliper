@@ -26,6 +26,8 @@ jobs:
           go vet ./...
           go test -race -v ./...
           go build -o bin/caliper ./cmd/caliper
+          go build -o bin/caliper-gate ./cmd/caliper-gate
+          go build -o bin/caliper-mcp ./cmd/caliper-mcp
           go build -o bin/seed-replay ./cmd/seed-replay
       - name: Build cli-symbols
         working-directory: packages/cli-symbols
@@ -80,6 +82,8 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.12'
       - name: Run Kotlin core golden contract tests
         working-directory: packages/sdk-android
         run: gradle test
@@ -93,6 +97,8 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.12'
       - name: Test Gradle symbols plugin (Kotlin)
         working-directory: packages/gradle-plugin
         run: gradle test

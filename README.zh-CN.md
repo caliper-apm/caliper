@@ -14,10 +14,10 @@
 - 商业闭源 APM 黑盒昂贵，统计口径不透明。
 
 **Caliper APM** 的五大核心特性：
-1. **Native 优先内核 + RN 一等适配**：`sdk-android`（Kotlin）与 `sdk-ios`（Swift SPM）**零 RN 依赖**；混合 App 挂接 `sdk-react-native` 后，自动与原生生命周期、窗口关联与符号化时间线合二为一。
-2. **Zero-Lie 统计引擎**：19 桶固定边界直方图可合并分位数（绝不平均每日 P90）、缺值绝不补零、零帧窗口绝不误判为 0% 卡顿、Android `deadline` 与 `heuristic` 算法严格隔离、版本对比强制样本量门禁（`n >= 100`）。
-3. **内置多格式自动符号化**：纯 Go 实现 **R8/ProGuard Retrace**、**Source Map v3 VLQ（JS/Hermes）**、**原生 Mach-O `.dSYM`/`.dSYM.zip` 与 Android NDK ELF `.so` DWARF 解析（含内联栈展开与 Itanium C++ Demangle）** 以及 Breakpad `.sym` 自动还原，直接将崩溃堆栈与流畅度同窗卡顿栈还原到精确源码行。
-4. **真告警与多渠道 Webhook**：样本量门禁防误报 + 冷却去重 + 恢复自动通知，原生支持 **飞书交互卡片、Slack Block Kit、Discord Embed、通用 JSON**。
+1. **Native 优先内核 + RN 一等适配**：`sdk-android`（Kotlin + NDK）与 `sdk-ios`（Swift SPM + C/Mach）**零 RN 依赖**；混合 App 挂接 `sdk-react-native` 后，自动与原生生命周期、窗口关联、W3C `traceparent` 与符号化时间线合二为一。
+2. **Zero-Lie 统计引擎**：内置纯 Go 零依赖 **DDSketch（$\alpha = 2\%$）** 可合并分位数引擎（精确输出 `P50 / P90 / P95 / P99` 与 **`DDSketchKSTest`** 桶内劣化检测，零破坏兼容 19 桶直方图线性插值，绝不平均每日 P90）、缺值绝不补零、零帧窗口绝不误判为 0% 卡顿、Android `deadline` 与 `heuristic` 严格隔离、版本对比强制样本量门禁（`n >= 100`）。
+3. **内置多格式自动符号化**：纯 Go 实现 **R8/ProGuard Retrace**、**Source Map v3 VLQ（JS/Hermes）**、**原生 Mach-O `.dSYM`/`.dSYM.zip` 与 Android NDK ELF `.so` DWARF 解析（含内联栈展开、纯 Go Swift 5+ Demangler 与 Itanium C++ Demangle）** 以及 Breakpad `.sym` 自动还原，直接将崩溃堆栈与流畅度同窗卡顿栈还原到精确源码行。
+4. **真告警与多渠道 Webhook**：样本量门禁防误报（支持 `P95`/`P99` 长尾指标告警）+ 冷却去重 + 恢复自动通知，原生支持 **飞书交互卡片、Slack Block Kit、Discord Embed、通用 JSON**。
 5. **单二进制自托管 + Chaos Lab 故障实验室**：单 Go 二进制同时托管采集/分析 API 与 5 页真数据 Web 控制台，自带 **Atlas Reader** 混合 Demo 与一键故障注入实验室。
 
 ---
@@ -26,8 +26,8 @@
 
 ### 方式一：Docker Compose（推荐）
 ```bash
-git clone https://github.com/<your-org>/caliper-apm.git
-cd caliper-apm
+git clone https://github.com/caliper-apm/caliper.git
+cd caliper
 docker compose up --build
 # 打开 http://localhost:8080 即可查看预置的 v1.0.0 -> v1.1.0（回归）-> v1.2.0（修复）完整闭环
 ```
@@ -63,30 +63,52 @@ docker compose up --build
 ## 生产级集群与工程化能力（v0.5）
 
 详见 [`docs/roadmap-v0.5.md`](docs/roadmap-v0.5.md)：
-- **ClickHouse 生产存储后端**：零 CGO 原生 HTTP 协议驱动（`--storage-driver=clickhouse`），基于分区 `ReplacingMergeTree` 与 `sumForEach` 向量化直方图合并，支持 `docker compose --profile cluster up` 一键拉起集群模式。
-- **统计显著性回归检测引擎**：比例指标采用双比例 Z 检验 + Wilson 95% 置信区间，耗时/内存直方图采用双样本 Kolmogorov-Smirnov（KS）检验，内置 `POST /v1/analytics/regressions/scan` 分场景自动归因排序。
+- **ClickHouse 生产存储后端**：零 CGO 原生 HTTP 协议驱动（`--storage-driver=clickhouse`），基于分区 `ReplacingMergeTree`、`sumForEach` 向量化直方图合并以及 `sumMapIf` 原生 **DDSketch（±2%）持久化**，消除单机与集群模式精度割裂（`docker compose --profile cluster up`）。
+- **统计显著性回归检测引擎**：API 比例指标采用双比例 Z 检验 + Wilson 95% 置信区间，流畅度卡顿率采用**窗口聚类 Z 检验（`cluster_proportion_z`）**避免帧级自相关误报，耗时/内存采用 **`DDSketchKSTest`（`ddsketch_ks`）** + 19 桶回退，分场景批量扫描（`POST /v1/analytics/regressions/scan`）内置 **Benjamini-Hochberg FDR** 多重检验校正。
 - **RBAC 权限控制与强制审计的 UID/Session 排查**：支持 `--auth-config` 四级角色（`ingest_only` / `viewer` / `operator` / `admin`）与 App 作用域隔离；单用户问题排查（`GET /v1/sessions/lookup`）仅接受非 PII 十六进制哈希且强制填写工单原因，Fail-Closed 写入不可篡改审计日志（`GET /v1/audit/logs`）。
 - **零手工运维 CI 构建插件**：内置 Android Gradle 插件（`packages/gradle-plugin`，`io.caliper.apm.symbols`）、iOS Fastlane 插件（`packages/fastlane-plugin`）与复合 GitHub Action（`packages/github-action`）。
 
-## 深度诊断与 OpenTelemetry 互通（v1.0）
+## 深度诊断、OTLP 异步推送与 AI 原生 MCP Server（v1.0 – v1.10）
 
 详见 [`docs/roadmap-v1.0.md`](docs/roadmap-v1.0.md)：
-- **在线 Native 与 Hermes CPU 火焰图**：有界折叠调用栈采集（`cpu_profile`），服务端自动通过 R8 / SourceMap v3 / iOS dSYM 符号化，Web 控制台内置可点击缩放的交互式火焰图。
-- **裁剪式堆内存 / OOM 深度诊断**：零 PII 类级别 Dominator 摘要（`heap_snapshot`），支持跨版本内存增量对比与自动泄漏嫌疑识别（`POST /v1/diagnostics/heap/compare`）。
-- **强审计远程日志捞取任务**：支持按 `user_hash` / `install_hash` 下发带 TTL 与字节上限的远程日志拉取任务，SDK 轮询 + Gzip 加密摘要回传，全链路 Fail-Closed 写入审计日志。
-- **全双工 OTLP 互通**：原生接收标准 OpenTelemetry Traces / Logs（`POST /v1/otlp/v1/traces`、`/v1/otlp/v1/logs`），并支持以标准 `resourceMetrics` 导出聚合指标（`GET /v1/otlp/export`）。
+- **CPU 火焰图与裁剪堆内存诊断 *（服务端引擎就绪 + Android Java 采样器）***：服务端折叠栈自动符号化火焰图（`GET /v1/diagnostics/profiles/{id}/flamegraph`）与跨版本类级 Dominator Diff（`POST /v1/diagnostics/heap/compare`）已全链路验证；Android 端提供 `CaliperCpuProfiler`，iOS/Hermes 自动采样器与端侧可选内存诊断插件已排入 v2.0 路线图。
+- **强审计远程日志捞取任务**：支持按 `user_hash` / `install_hash` 下发带 TTL 与字节上限的远程日志拉取任务，SDK 轮询 + Gzip 摘要回传，全链路 Fail-Closed 写入审计日志。
+- **全双工 OTLP 互通与 Trace 异步推送**：原生接收标准 OpenTelemetry Traces / Logs（`POST /v1/otlp/v1/traces`、`/v1/otlp/v1/logs`），支持聚合指标拉取（`GET /v1/otlp/export`）与 W3C `CLIENT` Span 查询（`GET /v1/otlp/export/traces`），并内置有界异步 **OTLP Trace Push Exporter**（`--otlp-traces-endpoint=http://tempo:4318/v1/traces`），直接向 Jaeger / Grafana Tempo / OTel Collector 推送移动端全链路 Span。
+- **AI 原生 Caliper MCP Server（`POST /v1/mcp` + `caliper-mcp`）**：纯 Go 零依赖实现标准 Model Context Protocol (MCP) JSON-RPC 2.0（兼容 Streamable HTTP `2025-06-18` / `2025-03-26` / `2024-11-05`、`Origin` 防 DNS Rebinding 校验、Fail-Closed RBAC `app_id` 租户隔离与输出体积保护），向 Cursor / Claude Code / Codex / Antigravity 暴露 `caliper_overview`、`caliper_compare_releases`、`caliper_evaluate_gate`、`caliper_scan_regressions`、`caliper_list_issues`、`caliper_inspect_issue`（自动触发 R8/dSYM/SourceMap/Swift 5+ 符号化）六大诊断工具，且**服务端无需配置外部 LLM Key**：
+  ```json
+  {
+    "mcpServers": {
+      "caliper-apm": {
+        "command": "caliper-mcp",
+        "args": ["--server", "http://127.0.0.1:8080"]
+      }
+    }
+  }
+  ```
+- **Zero-Lie 版本包体积追踪（`binary_size_bytes` + `binary_artifact_kind`）**：由 CI 插件（`caliper-symbols` / Fastlane）在注册版本时可选上报 `apk`/`aab`/`ipa`/`xcarchive`/`bundle` 字节数，端侧开销为 0；门禁报告仅对比同类型产物（绝不拿 `.aab` 与 `.apk` 混比，缺失绝不补零）。
 
-## 企业级控制台 2.4、生产 SDK 与 CI 质量门禁（v1.1 – v1.5）
+## 生态差异化定位（零夸大诚实对标）
+
+| 开源/商业方案 | 协议 | 核心长板 | 与 Caliper APM 的定位差异 |
+|---|---|---|---|
+| **腾讯 Matrix / 字节开源工具（`btrace`/`ShadowHook`/`ByteHook`/`Tailor`）/ 快手 KOOM / xCrash** | BSD-3 / Apache-2.0 / MIT | 业界顶尖的端侧底层 Hook、HPROF 裁剪、Perfetto 深度 Trace 与内存泄漏分析。 | 属于纯端侧诊断工具，缺少开箱即用的采集后端、符号化流水线、大盘与发版门禁。Caliper 提供 15 分钟自托管的端云全栈平台，核心 SDK 坚守零 Hook 低开销安全红线。 |
+| **Sentry Self-Hosted** *（及轻量化平替 GlitchTip / Bugsink）* | FSL-1.1-Apache-2.0 *（允许企业免费内部自托管，禁止包装为竞品 SaaS，2 年后转 Apache-2.0）* | 30+ 语言成熟生态、移动端 Session Replay 与海量集成插件。 | Sentry 自托管需 16~32GB 内存与 20+ 容器；GlitchTip/Bugsink 侧重错误追踪而非移动端性能回归体系。Caliper 为纯 OSI **Apache-2.0**，单二进制零 CGO 启动（内置有界去重与 WAL 快照压缩），生产可平滑切 ClickHouse + PG + S3，聚焦移动端 Zero-Lie 统计学发版门禁。 |
+| **Measure.sh** | Apache-2.0 | 新一代移动端全栈开源 APM，支持 Android/iOS/Flutter/RN(Expo)/KMP、轻量视图树快照时间线、Adaptive Capture 与 MCP Server。 | Caliper 差异化在于 **Zero-Lie 统计学严谨度**（单机与 ClickHouse 全链路 DDSketch ±2%、零帧与算法隔离、窗口聚类 Z 检验、BH-FDR 多重检验校正）、零 CGO 单二进制极速启动 + 纯 Go Swift 5+/DWARF 符号化，以及原生 CI/CD `caliper-gate` 阻断门禁。 |
+| **OpenTelemetry Mobile / Embrace 开源 SDK + Grafana / SigNoz** | Apache-2.0 | 开放中立的 OTLP 生态，易于与后端微服务可观测性统一。 | 需自建移动端流畅度/FOOM 口径、原生 dSYM/R8/SourceMap 自动符号化与灰度统计门禁。Caliper 通过 OTLP 接收 + 异步 Trace 推送与其无缝互通，同时开箱即用补齐移动端专属分析闭环。 |
+
+## 企业级控制台 2.4、生产 SDK、DDSketch 与 CI 质量门禁（v1.1 – v1.10）
 
 详见 [`CHANGELOG.md`](CHANGELOG.md)：
-- **Console 2.4 企业级多维可视化**：中英双语、**暗黑 / 亮色一键主题切换**、**全局机型 / 系统版本 / 场景 / 版本 / 适配层筛选栏（`GET /v1/ops/dimensions`）**、**可分享 URL 筛选状态**、**一键导出 JSON 诊断报告**、Vite vendor 拆包（首屏业务包仅 `32 KB` gz）、14 天版本放量趋势标注、19 桶分布直方图、5 域网络失败占比、HTTP 状态码分布、**慢请求/异常请求单次瀑布样本抽屉**、**核心业务链路自定义多阶段追踪（`GET /v1/analytics/journeys`）**、跨页下钻与可视化单用户会话时间线。
+- **纯 Go 零依赖 DDSketch（$\pm 2\%$）长尾分位与 `DDSketchKSTest`（`v1.10`）**：洁净室实现可合并对数分位草图（`server/internal/contract/ddsketch.go`），在启动、资源峰值、网络传输、自定义链路、14 天趋势、告警规则、OTLP 导出与 Console 2.4 全链路提供误差 $\le 2\%$ 的 `P50 / P90 / P95 / P99` 指标与桶内 `ddsketch_ks` 回归检测，并无缝回退兼容 19 桶直方图线性插值。
+- **纯 Go Swift 5+ Demangler、全链路 W3C `traceparent` 与 AGP 8.7 + R8 全混淆实测（`v1.9`）**：零 CGO Swift 5+ 符号还原（覆盖常见生产栈帧，经 32 组单元向量 + 18 个实编符号与 Apple `xcrun swift-demangle` 交叉验证匹配，未知语法诚实回退）；Android（`CaliperOkHttpNetworkBridge`）、iOS（`CaliperAutoURLSessionDelegate`）、RN（`wrapFetchForDenominator`）三端支持域名白名单注入 W3C `traceparent`，贯通 ClickHouse、Console 2.4 `trace:` 标签与 `GET /v1/otlp/export/traces`；通过 `examples/android-agp-r8-sample` 完成真实 AGP 8.7.3 + OkHttp 4.12 + NDK 27 + R8 8.7.18 `dexdump` 实测。
+- **Console 2.4 企业级多维可视化**：中英双语、**暗黑 / 亮色一键主题切换**、**全局机型 / 系统版本 / 场景 / 版本 / 适配层筛选栏（`GET /v1/ops/dimensions`）**、**可分享 URL 筛选状态**、**一键导出 JSON 诊断报告**、Vite vendor 拆包（首屏业务包约 `33 KB` gz）、14 天版本放量与 P50/P90/P95/P99 趋势标注、19 桶分布直方图、5 域网络失败占比、HTTP 状态码分布、**慢请求/异常请求单次瀑布与 W3C `trace:` 抽屉**、**核心业务链路自定义多阶段追踪（`GET /v1/analytics/journeys`）**、跨页下钻与可视化单用户会话时间线。
 - **CI/CD 灰度质量门禁（`caliper-gate` CLI + GitHub PR Comment Action）**：基于 Z 检验 + KS 检验 + 符号覆盖率的零谎言发版红绿灯（`POST /v1/analytics/release-gate`）及一键 PR 评论 Action（`packages/github-action/release-gate/action.yml`），退出码 `0`（PASS）、`2`（BLOCK 显著劣化）、`3`（GATED 样本不足）：
   ```bash
   caliper-gate --server http://127.0.0.1:8080 --platform android --baseline 1.0.0 --candidate 1.1.0 --format markdown
   ```
 - **稳定性异常流转与影响分布**：异常全生命周期处置（待处理 / 处理中 / 已修复 / 已忽略、负责人、修复版本、备注 + 审计留痕）、按机型/系统诚实计数筛选、单异常的机型/系统/版本 ECharts 分布图，以及抽屉内一键跳转单点追查。
 - **远程动态采样策略与运维自检**：控制台热更新采样率（% / PPM）、单设备 24h 上限、租约 TTL 与各探针开关（`GET/PUT /v1/policy`），配套告警规则一键测通/启停/删除、数据源健康自检（`GET /v1/ops/source-health`）与 Prometheus `GET /metrics`。
-- **生产端无侵入自动接入、底层深度与无状态集群高可用（`v1.6 – v1.8`）**：**Android Gradle ASM9 字节码插桩插件（`io.caliper.apm.autoinstrument`，自动织入 OkHttp 与 `@CaliperTrace`）**、**iOS 一行集成 `CaliperIOSAgent` + SwiftUI `.caliperScene()` + 安全透传 `URLSession` 代理**、**双端电量/热节流、零 PII 磁盘审计与 WebView/WKWebView 白屏/首屏探针**、**iOS 实时 C/Mach 崩溃内核（`8.4 KiB`）与 9 分支 FOOM 状态机**、**Android NDK C++ 信号崩溃 & `SIGQUIT` ANR 库（`libcaliper_native.so`）与主线程 `Looper` 耗时回溯**、**运行时零 CGO PostgreSQL `MetaStore` 驱动（`--meta-driver=postgres`）**、AWS SigV4 S3/MinIO、ClickHouse、原生 `.dSYM`/`.so` DWARF 符号化与 Kubernetes Helm Chart。
+- **生产端无侵入自动接入、底层深度与无状态集群高可用（`v1.6 – v1.8`）**：**Android Gradle ASM9 字节码插桩插件（`io.caliper.apm.autoinstrument`，自动织入 OkHttp 与 `@CaliperTrace`）**、**iOS 一行集成 `CaliperIOSAgent` + SwiftUI `.caliperScene()` + 安全透传 `URLSession` 代理**、**双端电量/热节流、零 PII 磁盘审计与 WebView/WKWebView 白屏/首屏探针**、**iOS 实时 C/Mach 崩溃内核（`8.4 KiB`）与 9 分支 FOOM 状态机**、**Android NDK C++ 信号崩溃 & `SIGQUIT` ANR 库（`libcaliper_native.so`，零 `libc++_shared.so` 依赖）与主线程 `Looper` 耗时回溯**、**运行时零 CGO PostgreSQL `MetaStore` 驱动（`--meta-driver=postgres`）**、AWS SigV4 S3/MinIO、ClickHouse、原生 `.dSYM`/`.so` DWARF 符号化与 Kubernetes Helm Chart。
 
 ---
 

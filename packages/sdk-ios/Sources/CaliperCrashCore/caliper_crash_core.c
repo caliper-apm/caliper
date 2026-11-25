@@ -1,5 +1,7 @@
 #include "caliper_crash_core.h"
 
+#include <TargetConditionals.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <execinfo.h>
 #include <fcntl.h>
@@ -8,6 +10,7 @@
 #include <mach/mach.h>
 #include <mach/mach_init.h>
 #include <mach/thread_act.h>
+#include <mach/vm_map.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -16,10 +19,17 @@
 #include <string.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
+#include <sys/ucontext.h>
 #include <unistd.h>
+#if defined(__arm64e__) && defined(__has_include)
+#if __has_include(<ptrauth.h>)
+#include <ptrauth.h>
+#endif
+#endif
 
 #define CALIPER_MAX_PATH 1024
 #define CALIPER_MAX_SCENE 128
+#define CALIPER_MAX_REASON 256
 #define CALIPER_MAX_IMAGES 512
 #define CALIPER_MAX_FRAMES 48
 #define CALIPER_ALT_STACK_SIZE (64 * 1024)
@@ -43,6 +53,14 @@ static _Atomic uint32_t g_image_count = 0;
 static _Atomic int g_dyld_registered = 0;
 static _Atomic int g_installed = 0;
 static _Atomic int g_crash_written = 0;
+static _Atomic uint32_t g_main_mach_thread = MACH_PORT_NULL;
+
+__attribute__((constructor))
+static void caliper_capture_main_thread_at_load(void) {
+    if (pthread_main_np() != 0) {
+        atomic_store(&g_main_mach_thread, (uint32_t)pthread_mach_thread_np(pthread_self()));
+    }
+}
 
 static const int g_handled_signals[] = {
     SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGTRAP, SIGSYS
@@ -240,6 +258,12 @@ static void record_dyld_image(const struct mach_header *mh, intptr_t vmaddr_slid
     slot->uuid[sizeof(slot->uuid) - 1] = '\0';
 }
 
+static void ensure_dyld_registered(void) {
+    if (atomic_exchange(&g_dyld_registered, 1) == 0) {
+        _dyld_register_func_for_add_image(record_dyld_image);
+    }
+}
+
 static const caliper_image_info_t *find_image_for_pc(uintptr_t pc) {
     uint32_t count = atomic_load(&g_image_count);
     if (count > CALIPER_MAX_IMAGES) count = CALIPER_MAX_IMAGES;
@@ -251,21 +275,135 @@ static const caliper_image_info_t *find_image_for_pc(uintptr_t pc) {
     return NULL;
 }
 
+// ===== Safe Cross-Thread / Corrupt-Stack Memory Read & FP Unwinder =====
+
+static uintptr_t strip_pac(uintptr_t addr) {
+#if defined(__arm64e__) && defined(__has_feature)
+#if __has_feature(ptrauth_calls)
+    return (uintptr_t)ptrauth_strip((void *)addr, ptrauth_key_return_address);
+#else
+    return addr & (uintptr_t)0x0000007FFFFFFFFFULL;
+#endif
+#elif defined(__arm64__) || defined(__aarch64__)
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+    return addr & (uintptr_t)0x0000007FFFFFFFFFULL;
+#else
+    return addr & (uintptr_t)0x00007FFFFFFFFFFFULL;
+#endif
+#else
+    return addr;
+#endif
+}
+
+// Uses Mach vm_read_overwrite so walking a corrupted or unmapped frame pointer NEVER
+// causes a secondary EXC_BAD_ACCESS inside the crash reporter or watchdog thread.
+static bool safe_read_memory(uintptr_t addr, void *dst, size_t len) {
+    if (addr == 0 || dst == NULL || len == 0) {
+        return false;
+    }
+    vm_size_t out_size = 0;
+    kern_return_t kr = vm_read_overwrite(
+        mach_task_self(),
+        (vm_address_t)addr,
+        (vm_size_t)len,
+        (vm_address_t)dst,
+        &out_size
+    );
+    return (kr == KERN_SUCCESS && out_size == (vm_size_t)len);
+}
+
+static int walk_fp_chain_safe(
+    uintptr_t pc,
+    uintptr_t lr,
+    uintptr_t fp,
+    uintptr_t *out,
+    int max_frames
+) {
+    int count = 0;
+    if (out == NULL || max_frames <= 0) {
+        return 0;
+    }
+    pc = strip_pac(pc);
+    lr = strip_pac(lr);
+    if (pc != 0 && count < max_frames) {
+        out[count++] = pc;
+    }
+    if (lr != 0 && lr != pc && count < max_frames) {
+        out[count++] = lr;
+    }
+    for (int step = 0; step < max_frames && count < max_frames && fp != 0 && (fp & 0x7) == 0; step++) {
+        uintptr_t pair[2] = {0, 0};
+        if (!safe_read_memory(fp, pair, sizeof(pair))) {
+            break;
+        }
+        uintptr_t next_fp = pair[0];
+        uintptr_t ret_pc = strip_pac(pair[1]);
+        if (ret_pc == 0) {
+            break;
+        }
+        // Avoid duplicating LR when the non-leaf prologue saved LR right at [fp + 8].
+        if (!(step == 0 && ret_pc == lr)) {
+            out[count++] = ret_pc;
+        }
+        if (next_fp <= fp || (next_fp - fp) > (1024 * 1024)) {
+            break;
+        }
+        fp = next_fp;
+    }
+    return count;
+}
+
+static int capture_ucontext_frames(const void *ucontext_ptr, uintptr_t *out, int max_frames) {
+    if (!ucontext_ptr) return 0;
+    const ucontext_t *uc = (const ucontext_t *)ucontext_ptr;
+    if (!uc->uc_mcontext) return 0;
+#if defined(__arm64__) || defined(__aarch64__)
+    const _STRUCT_ARM_THREAD_STATE64 *ss = &uc->uc_mcontext->__ss;
+    uintptr_t pc = (uintptr_t)arm_thread_state64_get_pc(*ss);
+    uintptr_t lr = (uintptr_t)arm_thread_state64_get_lr(*ss);
+    uintptr_t fp = (uintptr_t)arm_thread_state64_get_fp(*ss);
+    return walk_fp_chain_safe(pc, lr, fp, out, max_frames);
+#elif defined(__x86_64__)
+    const _STRUCT_X86_THREAD_STATE64 *ss = &uc->uc_mcontext->__ss;
+    uintptr_t pc = (uintptr_t)ss->__rip;
+    uintptr_t fp = (uintptr_t)ss->__rbp;
+    return walk_fp_chain_safe(pc, 0, fp, out, max_frames);
+#else
+    (void)out;
+    (void)max_frames;
+    return 0;
+#endif
+}
+
 // ===== Async-signal-safe Tombstone Writer =====
 
-static void write_tombstone(
+static void safe_write_sanitized_line(int fd, const char *s, size_t max_len) {
+    if (!s || s[0] == '\0') return;
+    char buf[CALIPER_MAX_REASON];
+    size_t cap = max_len < sizeof(buf) ? max_len : sizeof(buf);
+    size_t n = 0;
+    while (s[n] != '\0' && n < cap) {
+        char c = s[n];
+        if (c == '\n' || c == '\r') c = ' ';
+        buf[n++] = c;
+    }
+    safe_write_all(fd, buf, n);
+}
+
+static int write_tombstone(
     const char *mechanism,
     const char *signal_or_exc,
+    const char *reason,
     int64_t code,
     uint64_t fault_addr,
     const uintptr_t *frames,
     int frame_count
 ) {
     if (atomic_exchange(&g_crash_written, 1) != 0) {
-        return; // Already written by the first winning handler (Mach vs Signal)
+        return 1; // Already written by the first winning handler (NSException vs Mach vs Signal)
     }
     if (g_tombstone_dir[0] == '\0') {
-        return;
+        return -1;
     }
 
     struct timeval tv;
@@ -275,7 +413,7 @@ static void write_tombstone(
     // Build path: <dir>/caliper-crash-<ts>.tombstone without snprintf
     char path[CALIPER_MAX_PATH + 64];
     size_t dlen = safe_strlen(g_tombstone_dir);
-    if (dlen >= CALIPER_MAX_PATH - 1) return;
+    if (dlen >= CALIPER_MAX_PATH - 1) return -1;
     memcpy(path, g_tombstone_dir, dlen);
     size_t pos = dlen;
     if (pos > 0 && path[pos - 1] != '/') {
@@ -303,7 +441,7 @@ static void write_tombstone(
     path[pos] = '\0';
 
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return;
+    if (fd < 0) return -1;
 
     safe_write_str(fd, "format=caliper_native_crash_v1\n");
     safe_write_str(fd, "mechanism=");
@@ -312,6 +450,11 @@ static void write_tombstone(
     safe_write_str(fd, "exception=");
     safe_write_str(fd, signal_or_exc);
     safe_write_str(fd, "\n");
+    if (reason && reason[0] != '\0') {
+        safe_write_str(fd, "reason=");
+        safe_write_sanitized_line(fd, reason, CALIPER_MAX_REASON);
+        safe_write_str(fd, "\n");
+    }
     safe_write_str(fd, "code=");
     safe_write_dec(fd, code);
     safe_write_str(fd, "\n");
@@ -326,7 +469,7 @@ static void write_tombstone(
     safe_write_str(fd, "\n");
 
     for (int i = 0; i < frame_count && i < CALIPER_MAX_FRAMES; i++) {
-        uintptr_t pc = frames[i];
+        uintptr_t pc = strip_pac(frames[i]);
         if (pc == 0) continue;
         const caliper_image_info_t *img = find_image_for_pc(pc);
         safe_write_str(fd, "frame=");
@@ -350,22 +493,26 @@ static void write_tombstone(
 
     fsync(fd);
     close(fd);
+    return 0;
 }
 
 // ===== Unix Signal Handler (altstack, async-signal-safe) =====
 
 static void caliper_signal_handler(int sig, siginfo_t *info, void *ucontext) {
-    (void)ucontext;
-    void *raw_frames[CALIPER_MAX_FRAMES];
-    int n = backtrace(raw_frames, CALIPER_MAX_FRAMES);
     uintptr_t pcs[CALIPER_MAX_FRAMES];
-    for (int i = 0; i < n && i < CALIPER_MAX_FRAMES; i++) {
-        pcs[i] = (uintptr_t)raw_frames[i];
+    int n = capture_ucontext_frames(ucontext, pcs, CALIPER_MAX_FRAMES);
+    if (n == 0) {
+        void *raw_frames[CALIPER_MAX_FRAMES];
+        int bn = backtrace(raw_frames, CALIPER_MAX_FRAMES);
+        for (int i = 0; i < bn && i < CALIPER_MAX_FRAMES; i++) {
+            pcs[i] = strip_pac((uintptr_t)raw_frames[i]);
+        }
+        n = bn;
     }
     uint64_t fault_addr = info ? (uint64_t)(uintptr_t)info->si_addr : 0;
     int64_t code = info ? (int64_t)info->si_code : 0;
 
-    write_tombstone("signal", signal_name_str(sig), code, fault_addr, pcs, n);
+    (void)write_tombstone("signal", signal_name_str(sig), NULL, code, fault_addr, pcs, n);
 
     // Restore default / chain previous handler and re-raise so OS terminates cleanly.
     for (size_t i = 0; i < CALIPER_NUM_SIGNALS; i++) {
@@ -399,8 +546,9 @@ typedef struct {
 } caliper_mach_reply_msg_t;
 #pragma pack(pop)
 
+// Must ONLY invoke pure Mach kernel traps (thread_get_state + vm_read_overwrite):
+// zero malloc, zero dyld/dladdr locks, safe to execute while target thread is suspended.
 static int capture_thread_frames(thread_t thread, uintptr_t *out, int max_frames) {
-    int count = 0;
 #if defined(__arm64__) || defined(__aarch64__)
     arm_thread_state64_t state;
     mach_msg_type_number_t state_cnt = ARM_THREAD_STATE64_COUNT;
@@ -408,20 +556,7 @@ static int capture_thread_frames(thread_t thread, uintptr_t *out, int max_frames
         uintptr_t pc = (uintptr_t)arm_thread_state64_get_pc(state);
         uintptr_t lr = (uintptr_t)arm_thread_state64_get_lr(state);
         uintptr_t fp = (uintptr_t)arm_thread_state64_get_fp(state);
-        if (pc != 0 && count < max_frames) out[count++] = pc;
-        if (lr != 0 && lr != pc && count < max_frames) out[count++] = lr;
-        // Walk arm64 frame pointer chain safely within monotonic stack growth bounds.
-        for (int i = 0; i < max_frames - 2 && fp != 0 && (fp & 0x7) == 0; i++) {
-            uintptr_t *frame_ptr = (uintptr_t *)fp;
-            uintptr_t next_fp = frame_ptr[0];
-            uintptr_t ret_pc = frame_ptr[1];
-            // Strip arm64e PAC bits if present in upper byte.
-            ret_pc &= 0x0000007FFFFFFFFFULL;
-            if (ret_pc == 0) break;
-            out[count++] = ret_pc;
-            if (next_fp <= fp || (next_fp - fp) > (1024 * 1024)) break;
-            fp = next_fp;
-        }
+        return walk_fp_chain_safe(pc, lr, fp, out, max_frames);
     }
 #elif defined(__x86_64__)
     x86_thread_state64_t state;
@@ -429,19 +564,14 @@ static int capture_thread_frames(thread_t thread, uintptr_t *out, int max_frames
     if (thread_get_state(thread, x86_THREAD_STATE64, (thread_state_t)&state, &state_cnt) == KERN_SUCCESS) {
         uintptr_t pc = (uintptr_t)state.__rip;
         uintptr_t fp = (uintptr_t)state.__rbp;
-        if (pc != 0 && count < max_frames) out[count++] = pc;
-        for (int i = 0; i < max_frames - 1 && fp != 0 && (fp & 0x7) == 0; i++) {
-            uintptr_t *frame_ptr = (uintptr_t *)fp;
-            uintptr_t next_fp = frame_ptr[0];
-            uintptr_t ret_pc = frame_ptr[1];
-            if (ret_pc == 0) break;
-            out[count++] = ret_pc;
-            if (next_fp <= fp || (next_fp - fp) > (1024 * 1024)) break;
-            fp = next_fp;
-        }
+        return walk_fp_chain_safe(pc, 0, fp, out, max_frames);
     }
+#else
+    (void)thread;
+    (void)out;
+    (void)max_frames;
 #endif
-    return count;
+    return 0;
 }
 
 static void *mach_exception_loop(void *arg) {
@@ -470,7 +600,7 @@ static void *mach_exception_loop(void *arg) {
         int64_t code0 = req.codeCnt > 0 ? req.code[0] : 0;
         uint64_t fault_addr = req.codeCnt > 1 ? (uint64_t)req.code[1] : 0;
 
-        write_tombstone("mach", mach_exception_name(req.exception), code0, fault_addr, frames, n);
+        (void)write_tombstone("mach", mach_exception_name(req.exception), NULL, code0, fault_addr, frames, n);
 
         // Reply KERN_FAILURE so the exception cascades to Unix signal / Apple CrashReporter cleanly.
         caliper_mach_reply_msg_t reply;
@@ -504,10 +634,8 @@ int caliper_crash_install(const char *tombstone_dir, bool enable_mach_handler) {
     void *warm[4];
     (void)backtrace(warm, 4);
 
-    // Register dyld image listener once (invoked immediately for all loaded images).
-    if (atomic_exchange(&g_dyld_registered, 1) == 0) {
-        _dyld_register_func_for_add_image(record_dyld_image);
-    }
+    // Register dyld image listener and main thread Mach port once.
+    caliper_register_main_thread();
 
     // Install dedicated 64 KiB alternate signal stack for stack-overflow safety.
     stack_t alt;
@@ -585,6 +713,133 @@ void caliper_crash_uninstall(void) {
     }
 }
 
+int caliper_crash_write_exception_tombstone(
+    const char *exception_name,
+    const char *reason,
+    const uintptr_t *frames,
+    int frame_count
+) {
+    if (!exception_name || exception_name[0] == '\0') {
+        return -1;
+    }
+    ensure_dyld_registered();
+    int safe_count = frame_count > 0 ? frame_count : 0;
+    if (safe_count > CALIPER_MAX_FRAMES) safe_count = CALIPER_MAX_FRAMES;
+    return write_tombstone("nsexception", exception_name, reason, 0, 0, frames, safe_count);
+}
+
+void caliper_register_main_thread(void) {
+    ensure_dyld_registered();
+    if (pthread_main_np() != 0) {
+        atomic_store(&g_main_mach_thread, (uint32_t)pthread_mach_thread_np(pthread_self()));
+    }
+}
+
+void caliper_resolve_pc_frame(
+    uintptr_t pc,
+    bool resolve_dladdr,
+    caliper_captured_frame_t *out_frame
+) {
+    if (!out_frame) return;
+    memset(out_frame, 0, sizeof(*out_frame));
+    pc = strip_pac(pc);
+    if (pc == 0) return;
+
+    ensure_dyld_registered();
+    out_frame->absolute_addr = (uint64_t)pc;
+
+    const caliper_image_info_t *img = find_image_for_pc(pc);
+    if (img) {
+        out_frame->relative_addr = (uint64_t)(pc - img->base);
+        strncpy(out_frame->module, img->name, sizeof(out_frame->module) - 1);
+        strncpy(out_frame->uuid, img->uuid, sizeof(out_frame->uuid) - 1);
+    } else {
+        out_frame->relative_addr = (uint64_t)pc;
+        strncpy(out_frame->module, "unknown", sizeof(out_frame->module) - 1);
+    }
+
+    if (resolve_dladdr) {
+        Dl_info dli;
+        if (dladdr((const void *)pc, &dli) != 0) {
+            if (dli.dli_sname && dli.dli_sname[0] != '\0') {
+                strncpy(out_frame->symbol, dli.dli_sname, sizeof(out_frame->symbol) - 1);
+            }
+            if (!img && dli.dli_fname && dli.dli_fname[0] != '\0') {
+                const char *slash = strrchr(dli.dli_fname, '/');
+                const char *base_name = slash ? (slash + 1) : dli.dli_fname;
+                strncpy(out_frame->module, base_name, sizeof(out_frame->module) - 1);
+                if (dli.dli_fbase && pc >= (uintptr_t)dli.dli_fbase) {
+                    out_frame->relative_addr = (uint64_t)(pc - (uintptr_t)dli.dli_fbase);
+                }
+            }
+        }
+    }
+}
+
+static int capture_thread_pcs_raw(uint32_t mach_thread_port, uintptr_t *out_pcs, int max_frames) {
+    if (mach_thread_port == MACH_PORT_NULL || out_pcs == NULL || max_frames <= 0) {
+        return 0;
+    }
+    if (atomic_load(&g_crash_written) != 0) {
+        return 0;
+    }
+    thread_t target = (thread_t)mach_thread_port;
+    thread_t self = (thread_t)pthread_mach_thread_np(pthread_self());
+    if (target == self) {
+        return 0; // Never suspend the calling thread!
+    }
+
+    int limit = max_frames < CALIPER_MAX_FRAMES ? max_frames : CALIPER_MAX_FRAMES;
+    if (thread_suspend(target) != KERN_SUCCESS) {
+        return 0;
+    }
+    // Critical section: ONLY Mach kernel traps (thread_get_state + vm_read_overwrite).
+    // ZERO malloc, ZERO locks, ZERO dyld/ObjC/dladdr calls while target is suspended.
+    int raw_count = capture_thread_frames(target, out_pcs, limit);
+    (void)thread_resume(target);
+    return raw_count;
+}
+
+int caliper_capture_main_thread_pcs(uintptr_t *out_pcs, int max_frames) {
+    uint32_t main_port = atomic_load(&g_main_mach_thread);
+    if (main_port == MACH_PORT_NULL) {
+        return 0;
+    }
+    return capture_thread_pcs_raw(main_port, out_pcs, max_frames);
+}
+
+int caliper_capture_thread_frames_safe(
+    uint32_t mach_thread_port,
+    caliper_captured_frame_t *out_frames,
+    int max_frames
+) {
+    if (mach_thread_port == MACH_PORT_NULL || out_frames == NULL || max_frames <= 0) {
+        return 0;
+    }
+    // Ensure lock-free image cache is populated BEFORE suspending target thread.
+    ensure_dyld_registered();
+
+    int limit = max_frames < CALIPER_MAX_FRAMES ? max_frames : CALIPER_MAX_FRAMES;
+    uintptr_t raw_pcs[CALIPER_MAX_FRAMES];
+    int raw_count = capture_thread_pcs_raw(mach_thread_port, raw_pcs, limit);
+
+    int written = 0;
+    for (int i = 0; i < raw_count && written < limit; i++) {
+        uintptr_t pc = strip_pac(raw_pcs[i]);
+        if (pc == 0) continue;
+        caliper_resolve_pc_frame(pc, true, &out_frames[written++]);
+    }
+    return written;
+}
+
+int caliper_capture_main_thread_frames(caliper_captured_frame_t *out_frames, int max_frames) {
+    uint32_t main_port = atomic_load(&g_main_mach_thread);
+    if (main_port == MACH_PORT_NULL) {
+        return 0;
+    }
+    return caliper_capture_thread_frames_safe(main_port, out_frames, max_frames);
+}
+
 bool caliper_is_debugger_attached(void) {
     struct kinfo_proc info;
     memset(&info, 0, sizeof(info));
@@ -604,4 +859,19 @@ int64_t caliper_boot_time_sec(void) {
         return 0;
     }
     return (int64_t)boottime.tv_sec;
+}
+
+int64_t caliper_process_start_time_ms(void) {
+    struct kinfo_proc info;
+    memset(&info, 0, sizeof(info));
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+    size_t sz = sizeof(info);
+    if (sysctl(mib, 4, &info, &sz, NULL, 0) != 0) {
+        return 0;
+    }
+    struct timeval st = info.kp_proc.p_starttime;
+    if (st.tv_sec <= 0) {
+        return 0;
+    }
+    return (int64_t)st.tv_sec * 1000LL + (int64_t)(st.tv_usec / 1000);
 }

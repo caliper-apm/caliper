@@ -24,6 +24,20 @@ type ReleaseGateRequest struct {
 	RequireSymbolBound  bool   `json:"require_symbol_bound,omitempty"`
 }
 
+// BinarySizeComparison reports optional Zero-Lie release binary size deltas.
+// Sizes are only compared when both baseline and candidate report positive sizes of the
+// exact same artifact kind (e.g. apk vs apk or ipa vs ipa; never mixing aab with apk).
+type BinarySizeComparison struct {
+	BaselineBytes  int64    `json:"baseline_bytes,omitempty"`
+	CandidateBytes int64    `json:"candidate_bytes,omitempty"`
+	BaselineKind   string   `json:"baseline_kind,omitempty"`
+	CandidateKind  string   `json:"candidate_kind,omitempty"`
+	DeltaBytes     *int64   `json:"delta_bytes,omitempty"`
+	DeltaPct       *float64 `json:"delta_pct,omitempty"`
+	Comparable     bool     `json:"comparable"`
+	Reason         string   `json:"reason,omitempty"`
+}
+
 // ReleaseGateReport is the Zero-Lie CI/CD canary promotion decision artifact.
 type ReleaseGateReport struct {
 	Platform             string                      `json:"platform"`
@@ -35,6 +49,7 @@ type ReleaseGateReport struct {
 	HealthScore          int                         `json:"health_score"`
 	ScoreFormula         string                      `json:"score_formula"`
 	CandidateSymbolBound bool                        `json:"candidate_symbol_bound"`
+	BinarySize           *BinarySizeComparison       `json:"binary_size,omitempty"`
 	RegressedCount       int                         `json:"regressed_count"`
 	GatedCount           int                         `json:"gated_count"`
 	EvaluatedCount       int                         `json:"evaluated_count"`
@@ -72,16 +87,26 @@ func (e *Engine) EvaluateReleaseGate(ctx context.Context, meta storage.MetaStore
 	}
 
 	symbolBound := false
+	var binarySize *BinarySizeComparison
 	if meta != nil {
 		if syms, symErr := meta.ListSymbols(ctx, req.AppID, req.Platform, req.CandidateVersion, ""); symErr == nil && len(syms) > 0 {
 			symbolBound = true
-		} else if rels, relErr := meta.ListReleases(ctx, req.AppID, req.Platform, req.Env); relErr == nil {
-			for _, r := range rels {
+		}
+		if rels, relErr := meta.ListReleases(ctx, req.AppID, req.Platform, req.Env); relErr == nil {
+			var baseRel, candRel *storage.ReleaseRecord
+			for i := range rels {
+				r := &rels[i]
 				if r.AppVersion == req.CandidateVersion && r.SymbolID != "" {
 					symbolBound = true
-					break
+				}
+				if r.AppVersion == req.BaselineVersion && r.BinarySizeBytes > 0 && baseRel == nil {
+					baseRel = r
+				}
+				if r.AppVersion == req.CandidateVersion && r.BinarySizeBytes > 0 && candRel == nil {
+					candRel = r
 				}
 			}
+			binarySize = compareReleaseBinarySize(baseRel, candRel)
 		}
 	}
 
@@ -154,6 +179,7 @@ func (e *Engine) EvaluateReleaseGate(ctx context.Context, meta storage.MetaStore
 		HealthScore:          score,
 		ScoreFormula:         "100 - 18*global_regressions - 6*scene_regressions - 10*(missing_symbols)",
 		CandidateSymbolBound: symbolBound,
+		BinarySize:           binarySize,
 		RegressedCount:       cmp.RegressedCount,
 		GatedCount:           cmp.GatedCount,
 		EvaluatedCount:       evaluated,
@@ -164,6 +190,42 @@ func (e *Engine) EvaluateReleaseGate(ctx context.Context, meta storage.MetaStore
 	}
 	rep.MarkdownSummary = renderGateMarkdown(rep)
 	return rep, nil
+}
+
+func compareReleaseBinarySize(baseRel, candRel *storage.ReleaseRecord) *BinarySizeComparison {
+	if baseRel == nil && candRel == nil {
+		return nil
+	}
+	out := &BinarySizeComparison{}
+	if baseRel != nil {
+		out.BaselineBytes = baseRel.BinarySizeBytes
+		out.BaselineKind = baseRel.BinaryArtifactKind
+	}
+	if candRel != nil {
+		out.CandidateBytes = candRel.BinarySizeBytes
+		out.CandidateKind = candRel.BinaryArtifactKind
+	}
+	if out.BaselineBytes <= 0 || out.CandidateBytes <= 0 {
+		out.Comparable = false
+		out.Reason = "missing_binary_size"
+		return out
+	}
+	if out.BaselineKind == "" || out.CandidateKind == "" {
+		out.Comparable = false
+		out.Reason = "missing_artifact_kind"
+		return out
+	}
+	if out.BaselineKind != out.CandidateKind {
+		out.Comparable = false
+		out.Reason = "artifact_kind_mismatch"
+		return out
+	}
+	delta := out.CandidateBytes - out.BaselineBytes
+	pct := (float64(delta) / float64(out.BaselineBytes)) * 100.0
+	out.DeltaBytes = &delta
+	out.DeltaPct = &pct
+	out.Comparable = true
+	return out
 }
 
 func fmtOptFloat(v *float64) string {
@@ -186,8 +248,21 @@ func renderGateMarkdown(r ReleaseGateReport) string {
 	fmt.Fprintf(&b, "- **Platform / Env**: `%s` / `%s`\n", r.Platform, r.Env)
 	fmt.Fprintf(&b, "- **Comparison**: `v%s` -> `v%s`\n", r.BaselineVersion, r.CandidateVersion)
 	fmt.Fprintf(&b, "- **Health Score**: **%d / 100** (`%s`)\n", r.HealthScore, r.ScoreFormula)
-	fmt.Fprintf(&b, "- **Symbols Bound**: `%v` | **Regressed**: `%d` | **Gated**: `%d`\n\n",
+	fmt.Fprintf(&b, "- **Symbols Bound**: `%v` | **Regressed**: `%d` | **Gated**: `%d`\n",
 		r.CandidateSymbolBound, r.RegressedCount, r.GatedCount)
+	if r.BinarySize != nil {
+		if r.BinarySize.Comparable && r.BinarySize.DeltaBytes != nil && r.BinarySize.DeltaPct != nil {
+			baseMiB := float64(r.BinarySize.BaselineBytes) / (1024.0 * 1024.0)
+			candMiB := float64(r.BinarySize.CandidateBytes) / (1024.0 * 1024.0)
+			deltaKiB := float64(*r.BinarySize.DeltaBytes) / 1024.0
+			fmt.Fprintf(&b, "- **Binary Size (`%s`)**: `%.2f MiB` -> `%.2f MiB` (`%+.1f KiB` / `%+.2f%%`)\n",
+				r.BinarySize.CandidateKind, baseMiB, candMiB, deltaKiB, *r.BinarySize.DeltaPct)
+		} else {
+			fmt.Fprintf(&b, "- **Binary Size**: not comparable (`%s`: baseline `%s`, candidate `%s`)\n",
+				r.BinarySize.Reason, r.BinarySize.BaselineKind, r.BinarySize.CandidateKind)
+		}
+	}
+	b.WriteString("\n")
 
 	if len(r.BlockingReasons) > 0 {
 		b.WriteString("#### Blocking Regressions\n")

@@ -13,6 +13,9 @@ import {
   SlidingQuota,
   CaliperReactNativeAdapter,
   wrapFetchForDenominator,
+  resolveNativeBridge,
+  installReactNativeAutoHooks,
+  NATIVE_MODULE_NAME,
 } from '../src/index.ts';
 import type { CaliperNativeBridgeSpec } from '../src/index.ts';
 
@@ -153,4 +156,98 @@ test('wrapFetchForDenominator injects W3C traceparent only on configured targets
   assert.match(seenHeaders[0].headers?.traceparent ?? '', /^00-[a-f0-9]{32}-[a-f0-9]{16}-01$/);
   assert.equal(seenHeaders[1].headers?.traceparent, undefined);
   assert.equal(seenHeaders[2].headers?.Traceparent, preset);
+});
+
+test('resolveNativeBridge discovers TurboModule or NativeModules safely', () => {
+  assert.equal(resolveNativeBridge({}), null);
+  const mockBridge: CaliperNativeBridgeSpec = {
+    setScene: () => {},
+    addBreadcrumb: () => {},
+    notifyFirstFrameReady: () => {},
+    enqueueEvent: () => {},
+    flush: () => {},
+  };
+  const fromTurbo = resolveNativeBridge({
+    TurboModuleRegistry: { get: name => (name === NATIVE_MODULE_NAME ? mockBridge : null) },
+  });
+  assert.equal(fromTurbo, mockBridge);
+
+  const fromLegacy = resolveNativeBridge({
+    NativeModules: { [NATIVE_MODULE_NAME]: mockBridge },
+  });
+  assert.equal(fromLegacy, mockBridge);
+});
+
+test('installReactNativeAutoHooks chains ErrorUtils, observes longtasks, wraps fetch, and restores cleanly', async () => {
+  let clock = 200_000;
+  const sent: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+  const bridge: CaliperNativeBridgeSpec = {
+    setScene: () => {},
+    addBreadcrumb: () => {},
+    notifyFirstFrameReady: () => {},
+    enqueueEvent: (kind, _s, _w, payloadJson) => {
+      sent.push({ kind, payload: JSON.parse(payloadJson) });
+    },
+  };
+  const adapter = new CaliperReactNativeAdapter(bridge, () => clock);
+
+  let hostSawError = false;
+  let activeHandler: ((e: Error, isFatal?: boolean) => void) | undefined = () => {
+    hostSawError = true;
+  };
+  let triggerLongTasks: ((entries: Array<{ duration: number }>) => void) | undefined;
+  let observerDisconnected = false;
+
+  class MockPerfObserver {
+    private readonly cb: (list: { getEntries(): Array<{ duration: number }> }) => void;
+    constructor(cb: (list: { getEntries(): Array<{ duration: number }> }) => void) {
+      this.cb = cb;
+    }
+    observe(): void {
+      triggerLongTasks = entries => this.cb({ getEntries: () => entries });
+    }
+    disconnect(): void {
+      observerDisconnected = true;
+    }
+  }
+
+  const origFetch = async (_url: string) => {
+    clock += 75;
+    return { status: 200, ok: true };
+  };
+  const runtime = {
+    ErrorUtils: {
+      getGlobalHandler: () => activeHandler,
+      setGlobalHandler: (h: (e: Error, isFatal?: boolean) => void) => {
+        activeHandler = h;
+      },
+    },
+    PerformanceObserver: MockPerfObserver,
+    fetch: origFetch,
+  };
+
+  const handle = installReactNativeAutoHooks(adapter, {
+    flushIntervalMs: 0,
+    fetch: { allowlist: ['/api/'], nowMs: () => clock },
+    runtime,
+  });
+
+  // Trigger LongTask, wrapped fetch, and global JS error.
+  triggerLongTasks?.([{ duration: 92 }, { duration: 130 }]);
+  await runtime.fetch('https://api.example.com/api/items');
+  clock += 5_000;
+  activeHandler?.(new RangeError('Invalid feed index'), true);
+
+  assert.equal(hostSawError, true);
+  assert.ok(sent.some(e => e.kind === 'crash'));
+  const lt = sent.find(e => e.kind === 'js_longtask_window');
+  assert.ok(lt);
+  assert.equal((lt.payload as { longtask_count: number }).longtask_count, 2);
+  const net = sent.find(e => e.kind === 'network_summary');
+  assert.ok(net);
+  assert.equal((net.payload as { call_count: number }).call_count, 1);
+
+  handle.uninstall();
+  assert.equal(observerDisconnected, true);
+  assert.equal(runtime.fetch, origFetch);
 });

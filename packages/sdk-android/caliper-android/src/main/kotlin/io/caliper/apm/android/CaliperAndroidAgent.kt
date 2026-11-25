@@ -19,12 +19,14 @@ import io.caliper.apm.CaliperAutoInstrumentHooks
 import io.caliper.apm.CaliperClient
 import io.caliper.apm.CaliperConfig
 import io.caliper.apm.CaliperDiagnosticRingLog
+import io.caliper.apm.CaliperProcessCpuSampler
 import io.caliper.apm.CaliperRemoteLogAgent
 import io.caliper.apm.CaliperWatchdog
 import io.caliper.apm.FluencyWindowAccumulator
 import io.caliper.apm.PolicyLease
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Drop-in Pure-Native Android APM Agent (Zero React Native dependencies).
@@ -40,11 +42,16 @@ object CaliperAndroidAgent {
     private val installed = AtomicBoolean(false)
     private lateinit var client: CaliperClient
     private val ringLog = CaliperDiagnosticRingLog(maxLines = 500)
+    private val cpuSampler = CaliperProcessCpuSampler()
+    private val activeForegroundActivities = AtomicInteger(0)
+    @Volatile
+    private var currentScene: String = "startup"
     private var watchdog: CaliperWatchdog? = null
     private var looperMonitor: CaliperLooperMonitor? = null
     private var processStartElapsedMs: Long = 0L
     private var nativeInitDoneElapsedMs: Long = 0L
     private val firstFrameReported = AtomicBoolean(false)
+    private const val RESOURCE_SAMPLE_INTERVAL_MS = 30_000L
 
     @JvmStatic
     fun install(application: Application, config: CaliperConfig, defaultLease: PolicyLease? = null): CaliperClient {
@@ -108,12 +115,19 @@ object CaliperAndroidAgent {
     }
 
     @JvmStatic
-    fun captureProcessMemoryAndCpu(scene: String, cpuPct: Double, windowDurationMs: Long = 30_000L) {
+    @JvmOverloads
+    fun captureProcessMemoryAndCpu(
+        scene: String = currentScene,
+        cpuPct: Double? = null,
+        windowDurationMs: Long = RESOURCE_SAMPLE_INTERVAL_MS,
+    ) {
         if (!installed.get()) return
         val memInfo = Debug.MemoryInfo()
         Debug.getMemoryInfo(memInfo)
         val totalPssKiB = memInfo.totalPss.toDouble().coerceAtLeast(0.0)
-        val payload = """{"window_duration_ms":$windowDurationMs,"cpu_pct":${cpuPct.coerceAtLeast(0.0)},"memory_kind":"android_pss_kib","memory_peak_kib":$totalPssKiB,"memory_avg_kib":$totalPssKiB,"sample_count":1}"""
+        val resolvedCpu = (cpuPct ?: cpuSampler.sampleSelf(SystemClock.elapsedRealtime()) ?: 0.0).coerceAtLeast(0.0)
+        val safeWindow = windowDurationMs.coerceAtLeast(1L)
+        val payload = """{"window_duration_ms":$safeWindow,"cpu_pct":$resolvedCpu,"memory_kind":"android_pss_kib","memory_peak_kib":$totalPssKiB,"memory_avg_kib":$totalPssKiB,"sample_count":1}"""
         client.enqueue(kind = "resource_window", payloadJson = payload, scene = scene)
     }
 
@@ -178,15 +192,48 @@ object CaliperAndroidAgent {
         }
     }
 
+    private data class ActiveFluencyWindow(
+        val algorithm: String,
+        val accumulator: FluencyWindowAccumulator,
+        val listener: Window.OnFrameMetricsAvailableListener,
+        val resumedAtElapsedMs: Long,
+    )
+
     private fun installLifecycleAndFrameMetrics(application: Application) {
         val metricsThread = HandlerThread("caliper-framemetrics", Process.THREAD_PRIORITY_BACKGROUND).apply { start() }
         val metricsHandler = Handler(metricsThread.looper)
 
+        // Prime CPU baseline off the main thread and schedule low-frequency foreground PSS/CPU sampling.
+        metricsHandler.post { runCatching { cpuSampler.sampleSelf(SystemClock.elapsedRealtime()) } }
+        val periodicResourceSampler = object : Runnable {
+            override fun run() {
+                if (!installed.get()) return
+                if (activeForegroundActivities.get() > 0) {
+                    runCatching {
+                        captureProcessMemoryAndCpu(scene = currentScene, cpuPct = null, windowDurationMs = RESOURCE_SAMPLE_INTERVAL_MS)
+                    }
+                }
+                metricsHandler.postDelayed(this, RESOURCE_SAMPLE_INTERVAL_MS)
+            }
+        }
+        metricsHandler.postDelayed(periodicResourceSampler, RESOURCE_SAMPLE_INTERVAL_MS)
+
         application.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
-            private val listeners = HashMap<Int, Triple<String, FluencyWindowAccumulator, Window.OnFrameMetricsAvailableListener>>()
+            private val listeners = HashMap<Int, ActiveFluencyWindow>()
+
+            override fun onActivityStarted(a: Activity) {
+                activeForegroundActivities.incrementAndGet()
+            }
+
+            override fun onActivityStopped(a: Activity) {
+                if (activeForegroundActivities.decrementAndGet() < 0) {
+                    activeForegroundActivities.set(0)
+                }
+            }
 
             override fun onActivityResumed(activity: Activity) {
                 val scene = activity.javaClass.simpleName
+                currentScene = scene
                 client.setScene(scene)
                 CaliperNativeBridge.setScene(scene)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -207,26 +254,29 @@ object CaliperAndroidAgent {
                     }
                     runCatching {
                         activity.window?.addOnFrameMetricsAvailableListener(listener, metricsHandler)
-                        listeners[System.identityHashCode(activity)] = Triple(algo, acc, listener)
+                        listeners[System.identityHashCode(activity)] = ActiveFluencyWindow(
+                            algorithm = algo,
+                            accumulator = acc,
+                            listener = listener,
+                            resumedAtElapsedMs = SystemClock.elapsedRealtime(),
+                        )
                     }
                 }
             }
 
             override fun onActivityPaused(activity: Activity) {
                 val entry = listeners.remove(System.identityHashCode(activity)) ?: return
-                val (algo, acc, listener) = entry
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    runCatching { activity.window?.removeOnFrameMetricsAvailableListener(listener) }
+                    runCatching { activity.window?.removeOnFrameMetricsAvailableListener(entry.listener) }
                 }
-                val buckets = acc.frameDurationBuckets.joinToString(",")
-                val payload = """{"algorithm":"$algo","window_duration_ms":10000,"frame_count":${acc.frameCount},"jank_frame_count":${acc.jankFrameCount},"severe_jank_frame_count":${acc.severeJankFrameCount},"frame_duration_buckets":[$buckets]}"""
+                val windowDurationMs = (SystemClock.elapsedRealtime() - entry.resumedAtElapsedMs).coerceAtLeast(1L)
+                val buckets = entry.accumulator.frameDurationBuckets.joinToString(",")
+                val payload = """{"algorithm":"${entry.algorithm}","window_duration_ms":$windowDurationMs,"frame_count":${entry.accumulator.frameCount},"jank_frame_count":${entry.accumulator.jankFrameCount},"severe_jank_frame_count":${entry.accumulator.severeJankFrameCount},"frame_duration_buckets":[$buckets]}"""
                 client.enqueue(kind = "fluency_window", payloadJson = payload, scene = activity.javaClass.simpleName)
                 client.flushAsync()
             }
 
             override fun onActivityCreated(a: Activity, s: Bundle?) {}
-            override fun onActivityStarted(a: Activity) {}
-            override fun onActivityStopped(a: Activity) {}
             override fun onActivitySaveInstanceState(a: Activity, outState: Bundle) {}
             override fun onActivityDestroyed(a: Activity) {}
         })

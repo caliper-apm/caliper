@@ -22,6 +22,7 @@
 
 # Go
 /server/bin/
+/packages/cli-symbols/bin/
 *.exe
 *.test
 *.out
@@ -37,8 +38,9 @@ build/
 .vite/
 *.tsbuildinfo
 
-# Android / Gradle
+# Android / Gradle / Kotlin
 .gradle/
+.kotlin/
 .cxx/
 local.properties
 *.apk
