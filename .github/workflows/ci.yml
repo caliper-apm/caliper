@@ -66,7 +66,9 @@ jobs:
           npm run build
 
   sdk-ios-swift:
-    runs-on: macos-15
+    # Use macos-15-intel to avoid GitHub-hosted macOS arm64 pool queue starvation while still
+    # executing the full Swift Package & C Mach/signal golden contract test suite on macOS 15.
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - name: Run Swift Package golden contract tests
