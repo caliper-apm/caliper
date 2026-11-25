@@ -31,6 +31,9 @@ export function detectInitialLang(queryLang?: string | null): Lang {
 export const DICT = {
   en: {
     appSub: 'Mobile APM & Diagnostics',
+    demoBannerBadge: 'INTERACTIVE DEMO',
+    demoBannerText: 'Pre-computed from 30,000+ real Caliper replay events (v1.0.0 → v1.1.0 regression → v1.2.0 fix). Switch platforms, releases, themes & 6 languages freely.',
+    demoBannerCta: 'Self-Host in 60s on GitHub →',
     grpOverview: 'Overview',
     grpStability: 'Stability',
     grpPerformance: 'Performance',
@@ -108,6 +111,9 @@ export const DICT = {
   },
   zh: {
     appSub: '移动端可观测与性能平台',
+    demoBannerBadge: '在线交互演示',
+    demoBannerText: '基于 30,000+ 条真实回放样本生成（v1.0.0 → v1.1.0 劣化回归 → v1.2.0 修复），支持自由切换 Android/iOS、版本、场景、亮暗主题与 6 国语言。',
+    demoBannerCta: '60 秒单二进制自托管 →',
     grpOverview: '监控概览',
     grpStability: '稳定性监控',
     grpPerformance: '性能与体验',
@@ -185,6 +191,9 @@ export const DICT = {
   },
   ja: {
     appSub: 'モバイル APM・診断プラットフォーム',
+    demoBannerBadge: 'インタラクティブデモ',
+    demoBannerText: '30,000 件超の実リプレイデータ（v1.0.0 → v1.1.0 劣化 → v1.2.0 改善）から生成。プラットフォーム・リリース・テーマ・6 言語を自由に操作できます。',
+    demoBannerCta: '60 秒でセルフホスト →',
     grpOverview: '概要',
     grpStability: '安定性',
     grpPerformance: 'パフォーマンス',
@@ -262,6 +271,9 @@ export const DICT = {
   },
   ko: {
     appSub: '모바일 APM 및 성능 진단 플랫폼',
+    demoBannerBadge: '인터랙티브 데모',
+    demoBannerText: '30,000+ 실제 리플레이 이벤트(v1.0.0 → v1.1.0 회귀 → v1.2.0 복구) 기반 스냅샷입니다. 플랫폼·버전·테마·6개 언어를 자유롭게 탐색해 보세요.',
+    demoBannerCta: '60초 셀프호스팅 →',
     grpOverview: '개요',
     grpStability: '안정성',
     grpPerformance: '성능 및 체감',
@@ -339,6 +351,9 @@ export const DICT = {
   },
   es: {
     appSub: 'APM Móvil y Diagnóstico',
+    demoBannerBadge: 'DEMO INTERACTIVA',
+    demoBannerText: 'Generada con 30,000+ eventos reales (v1.0.0 → regresión v1.1.0 → corrección v1.2.0). Cambia de plataforma, versión, tema e idioma libremente.',
+    demoBannerCta: 'Despliega en 60s en GitHub →',
     grpOverview: 'Resumen',
     grpStability: 'Estabilidad',
     grpPerformance: 'Rendimiento',
@@ -416,6 +431,9 @@ export const DICT = {
   },
   de: {
     appSub: 'Mobiles APM & Diagnose',
+    demoBannerBadge: 'INTERAKTIVE DEMO',
+    demoBannerText: 'Berechnet aus 30.000+ echten Replay-Events (v1.0.0 → v1.1.0 Regression → v1.2.0 Fix). Plattform, Release, Theme & 6 Sprachen frei wechseln.',
+    demoBannerCta: 'In 60s selbst hosten →',
     grpOverview: 'Übersicht',
     grpStability: 'Stabilität',
     grpPerformance: 'Performance',

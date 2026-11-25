@@ -1,3 +1,4 @@
+import { demoApi } from './demoApi.ts';
 import type {
   AlertIncident,
   AlertRule,
@@ -66,7 +67,7 @@ function filterQuery(f: GlobalFilters, extra?: Record<string, string | undefined
   });
 }
 
-export const api = {
+const liveApi = {
   health: () => requestJson<HealthResponse>('/healthz'),
 
   dimensions: (platform: Platform, env = 'prod') =>
@@ -311,3 +312,7 @@ export const api = {
       },
     ),
 };
+
+export const IS_DEMO_MODE = import.meta.env.VITE_DEMO_MODE === 'true';
+
+export const api: typeof liveApi = IS_DEMO_MODE ? demoApi : liveApi;

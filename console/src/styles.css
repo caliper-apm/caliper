@@ -683,3 +683,42 @@ tbody tr:hover { background: var(--surface-hover); }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-2); font-weight: 600; }
 .empty { padding: 28px; text-align: center; color: var(--muted); font-size: 12px; }
+
+.demo-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 18px;
+  background: linear-gradient(90deg, rgba(22, 93, 255, 0.14), rgba(15, 198, 194, 0.12));
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text);
+  flex-wrap: wrap;
+}
+.demo-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.demo-banner-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+  white-space: nowrap;
+}
+.demo-banner-cta {
+  color: var(--primary);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.demo-banner-cta:hover {
+  text-decoration: underline;
+}

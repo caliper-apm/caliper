@@ -37,6 +37,7 @@ dist/
 build/
 .vite/
 *.tsbuildinfo
+console/public/demo-snapshot.json
 
 # Android / Gradle / Kotlin
 .gradle/

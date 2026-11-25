@@ -4,6 +4,7 @@
 
 **专为客户端工程师打造的开源移动端 APM：Native 优先、React Native 一等融合、双端真机实测超低开销、统计学零谎言（Zero-Lie）。**
 
+[![在线体验](https://img.shields.io/badge/%E5%9C%A8%E7%BA%BF%E4%BD%93%E9%AA%8C-Console%202.4%20%E6%BC%94%E7%A4%BA%E5%90%8E%E5%8F%B0-00b42a)](https://caliper-apm.github.io/caliper/?lang=zh&theme=dark)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/caliper-apm/caliper?color=165dff)](https://github.com/caliper-apm/caliper/releases)
 [![CI](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml/badge.svg)](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml)
@@ -12,13 +13,13 @@
 
 [English](README.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Deutsch](README.de.md)
 
-[Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN 适配层](docs/sdk-react-native.md) · [真机实测报告](benchmarks/REPORT.md) · [系统架构](docs/architecture.md) · [自托管部署](docs/self-hosting.md) · [更新日志](CHANGELOG.md)
+**[🚀 在线体验 Web 后台（3 万条真实回放数据）](https://caliper-apm.github.io/caliper/?lang=zh&theme=dark)** · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN 适配层](docs/sdk-react-native.md) · [真机实测报告](benchmarks/REPORT.md) · [系统架构](docs/architecture.md) · [自托管部署](docs/self-hosting.md) · [更新日志](CHANGELOG.md)
 
 <br />
 
-<img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — 应用总览大盘（暗黑模式）" width="100%" />
+<a href="https://caliper-apm.github.io/caliper/?lang=zh&theme=dark"><img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — 点击直接进入在线演示 Web 后台" width="100%" /></a>
 
-*基于纯 Go 零 CGO 单二进制运行的真数据 Console 2.4（闲置 ~15 MiB / 3 万事件 ~69 MiB 内存），内置 DDSketch（±2%）P50/P90/P95/P99 趋势、灰度版本放量标注、Native vs RN 切面对比、暗黑/亮色主题与 6 国语言界面。*
+*点击上方预览图（或 **[直接打开在线交互演示后台](https://caliper-apm.github.io/caliper/?lang=zh&theme=dark)**），无需部署即可在浏览器里实操 30,002 条真实回放数据——支持切换 Android / iOS、灰度版本对比、Native vs RN 切面、在线 CPU 火焰图、堆内存泄漏对比、暗黑/亮色主题与 6 国语言。*
 
 </div>
 

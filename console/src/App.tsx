@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api } from './api.ts';
+import { api, IS_DEMO_MODE } from './api.ts';
 import { detectInitialLang, SUPPORTED_LANGS, t, type Lang } from './i18n.ts';
 import { OverviewPage } from './pages/OverviewPage.tsx';
 import { StabilityPage } from './pages/StabilityPage.tsx';
@@ -42,7 +42,11 @@ function readInitialQuery() {
     lang: detectInitialLang(sp.get('lang')),
     theme: (rawTheme === 'dark' || rawTheme === 'light'
       ? rawTheme
-      : (window.localStorage.getItem('caliper-theme') === 'dark' ? 'dark' : 'light')) as 'light' | 'dark',
+      : (window.localStorage.getItem('caliper-theme') === 'dark'
+        ? 'dark'
+        : (window.localStorage.getItem('caliper-theme') === 'light'
+          ? 'light'
+          : (IS_DEMO_MODE ? 'dark' : 'light')))) as 'light' | 'dark',
     rangeDays: (rawRange === 0 || rawRange === 7 || rawRange === 14 ? rawRange : 14) as 0 | 7 | 14,
   };
 }
@@ -106,7 +110,8 @@ export function App() {
     sp.set('lang', lang);
     if (theme === 'dark') sp.set('theme', 'dark');
     const qs = sp.toString();
-    window.history.replaceState(null, '', qs ? `?${qs}` : '/');
+    const basePath = window.location.pathname || '/';
+    window.history.replaceState(null, '', qs ? `${basePath}?${qs}` : basePath);
   }, [tab, platform, env, appVersion, adapter, scene, deviceModel, osVersion, rangeDays, lang, theme]);
 
   function openIssueDetail(fingerprint: string) {
@@ -290,6 +295,23 @@ export function App() {
           </select>
         </div>
       </header>
+
+      {IS_DEMO_MODE && (
+        <div className="demo-banner" role="status">
+          <div className="demo-banner-left">
+            <span className="demo-banner-badge">{t(lang, 'demoBannerBadge')}</span>
+            <span>{t(lang, 'demoBannerText')}</span>
+          </div>
+          <a
+            className="demo-banner-cta"
+            href="https://github.com/caliper-apm/caliper"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {t(lang, 'demoBannerCta')}
+          </a>
+        </div>
+      )}
 
       <div className="workspace-body">
         <aside className="sidebar">

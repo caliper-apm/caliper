@@ -4,6 +4,7 @@
 
 **Open-source mobile APM built for mobile engineers: Native-first SDKs, first-class React Native fusion, ultra-low measured Release overhead, and Zero-Lie statistical release gating.**
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Interactive%20Console%202.4-00b42a)](https://caliper-apm.github.io/caliper/?lang=en&theme=dark)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/caliper-apm/caliper?color=165dff)](https://github.com/caliper-apm/caliper/releases)
 [![CI](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml/badge.svg)](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml)
@@ -12,13 +13,13 @@
 
 **English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Deutsch](README.de.md)
 
-[Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN Adapter](docs/sdk-react-native.md) · [Device Benchmarks](benchmarks/REPORT.md) · [Architecture](docs/architecture.md) · [Self-Hosting](docs/self-hosting.md) · [Changelog](CHANGELOG.md)
+**[🚀 Launch Live Demo Console](https://caliper-apm.github.io/caliper/?lang=en&theme=dark)** · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN Adapter](docs/sdk-react-native.md) · [Device Benchmarks](benchmarks/REPORT.md) · [Architecture](docs/architecture.md) · [Self-Hosting](docs/self-hosting.md) · [Changelog](CHANGELOG.md)
 
 <br />
 
-<img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — App Overview (Dark Mode)" width="100%" />
+<a href="https://caliper-apm.github.io/caliper/?lang=en&theme=dark"><img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — Click to open Live Interactive Demo" width="100%" /></a>
 
-*Live Console 2.4 running on a single zero-CGO Go binary (~15 MiB idle / ~69 MiB at 30k events) with DDSketch (±2%) P50/P90/P95/P99 trends, release rollout markers, Native vs RN slicing, Dark/Light themes, and 6 languages.*
+*Click the preview above (or **[open Live Interactive Demo](https://caliper-apm.github.io/caliper/?lang=en&theme=dark)**) to explore 30,002 real replay events directly in your browser — DDSketch (±2%) P50/P90/P95/P99 trends, release rollout markers, Native vs RN slicing, CPU flamegraphs, heap dominator diff, Dark/Light themes & 6 languages.*
 
 </div>
 

@@ -1,0 +1,91 @@
+name: Deploy Live Demo Console (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'console/**'
+      - 'server/**'
+      - 'packages/cli-symbols/**'
+      - 'demo-app/chaos-lab/symbols/**'
+      - 'scripts/export-demo-snapshot.mjs'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Generate real 30k-event replay snapshot from Caliper Go engine
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'kill ${CALIPER_PID:-0} 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT
+
+          (cd server && go build -o "$TMP_DIR/caliper" ./cmd/caliper && go build -o "$TMP_DIR/seed-replay" ./cmd/seed-replay)
+          (cd packages/cli-symbols && go build -o "$TMP_DIR/caliper-symbols" .)
+
+          "$TMP_DIR/caliper" --addr 127.0.0.1:18080 --data-dir "$TMP_DIR/data" --alert-interval 0s >"$TMP_DIR/caliper.log" 2>&1 &
+          CALIPER_PID=$!
+
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1; then break; fi
+            sleep 0.1
+          done
+
+          "$TMP_DIR/caliper-symbols" upload --server http://127.0.0.1:18080 --app-id dev.caliper.demo --platform android --version 1.1.0 --build 110 --git-sha 1100002abcdef --kind r8_mapping --file demo-app/chaos-lab/symbols/atlas-android-1.1.0-110.r8.txt >/dev/null
+          "$TMP_DIR/caliper-symbols" upload --server http://127.0.0.1:18080 --app-id dev.caliper.demo --platform android --version 1.1.0 --build 110 --git-sha 1100002abcdef --kind hermes_sourcemap --file demo-app/chaos-lab/symbols/atlas-rn-1.1.0-110.sourcemap.json >/dev/null
+          "$TMP_DIR/caliper-symbols" upload --server http://127.0.0.1:18080 --app-id dev.caliper.demo --platform ios --version 1.1.0 --build 110 --git-sha 1100002abcdef --kind dsym --file demo-app/chaos-lab/symbols/atlas-ios-1.1.0-110.dsym.json >/dev/null
+          "$TMP_DIR/seed-replay" --target http://127.0.0.1:18080 --events 30000 --verify=true
+
+          node scripts/export-demo-snapshot.mjs --server http://127.0.0.1:18080 --out console/public/demo-snapshot.json
+
+          kill "$CALIPER_PID" 2>/dev/null || true
+          wait "$CALIPER_PID" 2>/dev/null || true
+
+      - name: Build static Interactive Demo Console 2.4
+        working-directory: console
+        env:
+          VITE_DEMO_MODE: 'true'
+          VITE_BASE_PATH: '/caliper/'
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npx tsc --noEmit
+          npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: console/dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

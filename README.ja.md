@@ -4,6 +4,7 @@
 
 **Native ファースト・React Native 一級対応・統計ゼロ虚偽（Zero-Lie）のオープンソース・モバイル APM プラットフォーム**
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Console%202.4-00b42a)](https://caliper-apm.github.io/caliper/?lang=ja&theme=dark)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/caliper-apm/caliper?color=165dff)](https://github.com/caliper-apm/caliper/releases)
 [![CI](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml/badge.svg)](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml)
@@ -12,11 +13,11 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [한국어](README.ko.md) · [Español](README.es.md) · [Deutsch](README.de.md)
 
-[アーキテクチャ](docs/architecture.md) · [セルフホスト](docs/self-hosting.md) · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN アダプター](docs/sdk-react-native.md) · [実測ベンチマーク](benchmarks/REPORT.md) · [更新履歴](CHANGELOG.md)
+**[🚀 オンラインデモ Console を開く](https://caliper-apm.github.io/caliper/?lang=ja&theme=dark)** · [アーキテクチャ](docs/architecture.md) · [セルフホスト](docs/self-hosting.md) · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN アダプター](docs/sdk-react-native.md) · [実測ベンチマーク](benchmarks/REPORT.md) · [更新履歴](CHANGELOG.md)
 
 <br />
 
-<img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — アプリ概要（ダークモード）" width="100%" />
+<a href="https://caliper-apm.github.io/caliper/?lang=ja&theme=dark"><img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — クリックしてオンラインデモを開く" width="100%" /></a>
 
 *ゼロ CGO 単一 Go バイナリ（待機 ~15 MiB / 3 万イベント ~69 MiB）で動作する実データ Console 2.4。DDSketch（±2%）P50/P90/P95/P99 推移、リリース切替マーカー、Native vs React Native 比較、ダーク/ライトテーマ、6 言語 UI を搭載。*
 

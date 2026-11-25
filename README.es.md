@@ -4,6 +4,7 @@
 
 **APM Móvil Open-Source Native-First, Compatible con React Native y Basado en Evidencia (Zero-Lie)**
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Console%202.4-00b42a)](https://caliper-apm.github.io/caliper/?lang=es&theme=dark)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/caliper-apm/caliper?color=165dff)](https://github.com/caliper-apm/caliper/releases)
 [![CI](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml/badge.svg)](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml)
@@ -12,11 +13,11 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · **Español** · [Deutsch](README.de.md)
 
-[Arquitectura](docs/architecture.md) · [Auto-hospedaje](docs/self-hosting.md) · [SDK Android](docs/sdk-android.md) · [SDK iOS](docs/sdk-ios.md) · [Adaptador RN](docs/sdk-react-native.md) · [Benchmarks](benchmarks/REPORT.md) · [Changelog](CHANGELOG.md)
+**[🚀 Abrir Demo Interactiva](https://caliper-apm.github.io/caliper/?lang=es&theme=dark)** · [Arquitectura](docs/architecture.md) · [Auto-hospedaje](docs/self-hosting.md) · [SDK Android](docs/sdk-android.md) · [SDK iOS](docs/sdk-ios.md) · [Adaptador RN](docs/sdk-react-native.md) · [Benchmarks](benchmarks/REPORT.md) · [Changelog](CHANGELOG.md)
 
 <br />
 
-<img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — Panel General (Modo Oscuro)" width="100%" />
+<a href="https://caliper-apm.github.io/caliper/?lang=es&theme=dark"><img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — Haz clic para abrir la Demo Interactiva" width="100%" /></a>
 
 *Console 2.4 con datos reales ejecutándose en un único binario Go sin CGO (~15 MiB en reposo / ~69 MiB con 30k eventos): tendencias DDSketch (±2%) P50/P90/P95/P99, marcadores de despliegue, corte Native vs React Native, tema oscuro/claro e interfaz en 6 idiomas.*
 
