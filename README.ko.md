@@ -46,6 +46,37 @@
 
 ---
 
+## 모바일 SDK 핵심 기능 매트릭스 (Android · iOS · React Native)
+
+| 영역 | Android SDK (Kotlin + C++ NDK · **RN 의존성 0**) | iOS SDK (Swift SPM + `8.4 KiB` C/Mach · **RN 의존성 0**) | React Native 어댑터 (선택 TS) |
+|---|---|---|---|
+| **콜드 스타트 & 프레임** | 3단계 콜드 스타트, `FrameMetrics`(`DEADLINE`/`heuristic` 격리), `Looper` 지연 이력, `CaliperWatchdog` | 3단계 콜드 스타트, `CADisplayLink`(120Hz ProMotion), Mach `thread_suspend` Watchdog | JS Event-Loop `LongTask`, 라우트 전환, Native vs RN 슬라이싱 |
+| **크래시 · ANR · FOOM** | NDK `libcaliper_native.so`(`libc++_shared.so` 무의존, `SIGQUIT` ANR 전달) + `ApplicationExitInfo` | 순수 C Mach 예외 + `sigaltstack` + **9분기 FOOM 상태 머신** + `MetricKit` 파서 | 미처리 JS/Hermes 에러 + Hermes `SourceMap v3` 자동 심볼 복원 |
+| **네트워크 · CPU · 빌드** | `OkHttp` 5단계 워터폴 + W3C `traceparent` + Gradle ASM9/R8 플러그인, `CaliperCpuProfiler` | `CaliperAutoURLSessionDelegate` 투과 프록시, `CaliperIOSCPUProfiler`(Mach PC 샘플링), SwiftUI `.caliperScene()`, Fastlane `.dSYM`/IPA 플러그인 | `wrapFetchForDenominator`(5대 실패 도메인 분모 · **`42 ns` / 550× 브리지 압축**) |
+| **안전 가드 & 공존** | 위험한 전역 Hook 배제, `CaliperExternalProbeBridge`로 Matrix/KOOM 등 기존 프로브 연동, FNV-1a 리스 + 유한 디스크 큐 | 동일: `CaliperExternalProbeBridge` 내장, PII 자동 마스킹 링 로그 + 감사 원격 로그 수집 | Native `CaliperClient`의 샘플링 리스 · 디스크 큐 · `traceparent` 공유 |
+
+### 한 줄 모바일 SDK 연동 (상세: [`sdk-android.md`](docs/sdk-android.md) · [`sdk-ios.md`](docs/sdk-ios.md) · [`sdk-react-native.md`](docs/sdk-react-native.md))
+
+```kotlin
+// Android (Application.onCreate) — Gradle ASM9/R8 플러그인 지원
+CaliperAndroidAgent.install(this, config)
+window.decorView.post { CaliperAndroidAgent.markFirstContentFrame() }
+```
+
+```swift
+// iOS (SwiftPM) — SwiftUI .caliperScene() & URLSession 투과 프록시 지원
+let client = CaliperIOSAgent.install(config: config)
+CaliperIOSAgent.markFirstContentFrame()
+```
+
+```ts
+// React Native — 550× 브리지 압축 & 5대 실패 도메인 API 분모
+globalThis.fetch = wrapFetchForDenominator(globalThis.fetch, caliperRN, { allowHosts: ['api.example.com'] });
+caliperRN.setScene('home_feed');
+```
+
+---
+
 ## 시스템 아키텍처
 
 <p align="center">

@@ -46,6 +46,37 @@
 
 ---
 
+## モバイル SDK 機能一覧（Android · iOS · React Native）
+
+| 監視領域 | Android SDK（Kotlin + C++ NDK · **RN 依存ゼロ**） | iOS SDK（Swift SPM + `8.4 KiB` C/Mach · **RN 依存ゼロ**） | React Native アダプター（任意 TS） |
+|---|---|---|---|
+| **起動・滑らかさ** | 3 段階コールド起動、`FrameMetrics`（`DEADLINE`/`heuristic` 隔離）、`Looper` 遅延履歴、`CaliperWatchdog` | 3 段階コールド起動、`CADisplayLink`（120Hz ProMotion）、Mach `thread_suspend` Watchdog | JS Event-Loop `LongTask`、ルート計測、Native vs RN 比較 |
+| **クラッシュ・ANR・FOOM** | NDK `libcaliper_native.so`（`libc++_shared.so` 不要、`SIGQUIT` ANR 転送）+ `ApplicationExitInfo` | 純 C Mach 例外 + `sigaltstack` + **9 分岐 FOOM 検出** + `MetricKit` 解析 | 未処理 JS/Hermes 例外 + Hermes `SourceMap v3` 自動復元 |
+| **ネットワーク・CPU・連携** | `OkHttp` 5 段階ウォーターフォール + W3C `traceparent` + Gradle ASM9/R8 プラグイン、`CaliperCpuProfiler` | `CaliperAutoURLSessionDelegate` 透過プロキシ、`CaliperIOSCPUProfiler`（Mach PC 採取）、SwiftUI `.caliperScene()`、Fastlane `.dSYM`/IPA 連携 | `wrapFetchForDenominator`（5 ドメイン失敗分母・**`42 ns` / 550× 過橋圧縮**） |
+| **安全ガード & 共存** | 危険なグローバル Hook ゼロ、`CaliperExternalProbeBridge` で Matrix/KOOM 等の外部プローブを統合可能、FNV-1a サンプリング + 有界ディスクキュー | 同左：`CaliperExternalProbeBridge` 完備、PII 自動マスク付きリングログ + 監査付きリモートログ取得 | Native `CaliperClient` のリース・キュー・W3C `traceparent` を共有 |
+
+### 1 行モバイル SDK 導入（詳細：[`sdk-android.md`](docs/sdk-android.md) · [`sdk-ios.md`](docs/sdk-ios.md) · [`sdk-react-native.md`](docs/sdk-react-native.md)）
+
+```kotlin
+// Android (Application.onCreate) — Gradle ASM9/R8 プラグイン併用可
+CaliperAndroidAgent.install(this, config)
+window.decorView.post { CaliperAndroidAgent.markFirstContentFrame() }
+```
+
+```swift
+// iOS (SwiftPM) — SwiftUI .caliperScene() & URLSession 透過プロキシ対応
+let client = CaliperIOSAgent.install(config: config)
+CaliperIOSAgent.markFirstContentFrame()
+```
+
+```ts
+// React Native — 550× 過橋圧縮 & 5 ドメイン API 分母
+globalThis.fetch = wrapFetchForDenominator(globalThis.fetch, caliperRN, { allowHosts: ['api.example.com'] });
+caliperRN.setScene('home_feed');
+```
+
+---
+
 ## システムアーキテクチャ
 
 <p align="center">

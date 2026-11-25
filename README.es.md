@@ -46,6 +46,37 @@ La mayoría de las apps móviles medianas y grandes combinan **código Nativo en
 
 ---
 
+## Capacidades de los SDK Móviles (Android · iOS · React Native)
+
+| Dominio | Android SDK (Kotlin + C++ NDK · **Cero RN**) | iOS SDK (Swift SPM + `8.4 KiB` C/Mach · **Cero RN**) | Adaptador React Native (TS Opcional) |
+|---|---|---|---|
+| **Arranque y Fluidez** | Arranque en frío en 3 fases, `FrameMetrics` (`DEADLINE` vs `heuristic`), historial `Looper`, `CaliperWatchdog` | Arranque en 3 fases, `CADisplayLink` (120Hz ProMotion), Watchdog Mach `thread_suspend` sin deadlock | `LongTask` del bucle JS, rutas y comparativa Native vs RN |
+| **Crash · ANR · FOOM** | NDK `libcaliper_native.so` (sin `libc++_shared.so`, reenvío `SIGQUIT` ANR) + `ApplicationExitInfo` | Excepción Mach en C + `sigaltstack` + **detector FOOM de 9 ramas** + parser `MetricKit` | Errores JS/Hermes simbolizados con `SourceMap v3` a líneas TS/TSX |
+| **Red · CPU · Build** | Cascada `OkHttp` de 5 fases + W3C `traceparent` + plugins Gradle ASM9/R8, `CaliperCpuProfiler` | Proxy transparente `CaliperAutoURLSessionDelegate`, `CaliperIOSCPUProfiler` (Mach PC), SwiftUI `.caliperScene()`, plugin Fastlane `.dSYM`/IPA | `wrapFetchForDenominator` (5 dominios de fallo · **`42 ns` / compresión 550×**) |
+| **Seguridad y Coexistencia** | Sin hooks globales frágiles; `CaliperExternalProbeBridge` integra Matrix/KOOM/sondas propias; sampling FNV-1a + cola en disco acotada | Igual: `CaliperExternalProbeBridge`, logs con limpieza automática de PII y extracción remota auditada | Reutiliza la cola offline, lease FNV-1a y `traceparent` del cliente Nativo |
+
+### Integración en Una Línea ([`sdk-android.md`](docs/sdk-android.md) · [`sdk-ios.md`](docs/sdk-ios.md) · [`sdk-react-native.md`](docs/sdk-react-native.md))
+
+```kotlin
+// Android (Application.onCreate) — con plugins Gradle ASM9 y R8
+CaliperAndroidAgent.install(this, config)
+window.decorView.post { CaliperAndroidAgent.markFirstContentFrame() }
+```
+
+```swift
+// iOS (SwiftPM) — compatible con SwiftUI .caliperScene() y proxy URLSession
+let client = CaliperIOSAgent.install(config: config)
+CaliperIOSAgent.markFirstContentFrame()
+```
+
+```ts
+// React Native — reducción 550× del puente y denominador API de 5 dominios
+globalThis.fetch = wrapFetchForDenominator(globalThis.fetch, caliperRN, { allowHosts: ['api.example.com'] });
+caliperRN.setScene('home_feed');
+```
+
+---
+
 ## Arquitectura del Sistema
 
 <p align="center">
