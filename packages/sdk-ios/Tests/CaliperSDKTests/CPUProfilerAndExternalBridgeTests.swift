@@ -35,9 +35,24 @@ final class CPUProfilerAndExternalBridgeTests: XCTestCase {
             XCTAssertNil(profiler.sampleMainThreadBlocking(durationMS: 60, intervalMS: 10))
         }
 
+        final class ResultBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: CPUProfilePayload?
+            func set(_ payload: CPUProfilePayload?) {
+                lock.lock()
+                defer { lock.unlock() }
+                value = payload
+            }
+            func get() -> CPUProfilePayload? {
+                lock.lock()
+                defer { lock.unlock() }
+                return value
+            }
+        }
+
         let client = makeActiveClient()
         let exp = expectation(description: "async mach cpu profile")
-        var captured: CPUProfilePayload?
+        let box = ResultBox()
         profiler.sampleMainThreadAsync(
             client: client,
             scene: "video_feed",
@@ -45,7 +60,7 @@ final class CPUProfilerAndExternalBridgeTests: XCTestCase {
             intervalMS: 15,
             bypassSampling: true
         ) { payload in
-            captured = payload
+            box.set(payload)
             exp.fulfill()
         }
 
@@ -53,7 +68,7 @@ final class CPUProfilerAndExternalBridgeTests: XCTestCase {
         caliperTestCPUProfileHotMarker(durationSec: 0.24)
         wait(for: [exp], timeout: 3.0)
 
-        guard let profile = captured else {
+        guard let profile = box.get() else {
             XCTFail("expected non-nil CPUProfilePayload from Mach profiler")
             return
         }

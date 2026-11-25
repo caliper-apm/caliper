@@ -711,6 +711,7 @@ void caliper_crash_uninstall(void) {
         mach_port_deallocate(mach_task_self(), g_exc_port);
         g_exc_port = MACH_PORT_NULL;
     }
+    atomic_store(&g_crash_written, 0);
 }
 
 int caliper_crash_write_exception_tombstone(
