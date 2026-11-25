@@ -46,6 +46,22 @@
 
 ---
 
+## 시스템 아키텍처
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.png" />
+    <img src="docs/assets/architecture-light.png" alt="Caliper APM — 엔드투엔드 시스템 아키텍처" width="100%" />
+  </picture>
+</p>
+
+- **데이터 플레인 & 컨트롤 루프 분리**: 모바일 SDK는 gzip 배치 텔레메트리(`POST /v1/ingest`, W3C `traceparent`)를 전송하고, FNV-1a 결정론적 샘플링 리스(`GET /v1/policy`)와 원격 로그 수집 작업을 제어 루프로 수신합니다.
+- **순수 Go 제로 CGO 올인원 엔진**: 단일 바이너리(`CGO_ENABLED=0`) 안에서 Fail-Closed 멀티테넌트 RBAC, Zero-Lie `DDSketch (±2%)` 통계·프로파일링 엔진, 5종 포맷 프로세스 내 심볼라이저(R8, SourceMap v3, Mach-O `.dSYM`/ELF `.so` DWARF, Swift 5+ / C++, Breakpad)를 사이드카 없이 실행합니다.
+- **듀얼 모드 스토리지 & 확장 생태계**: 단일 바이너리 Embedded WAL(~50–100 MiB RAM)에서 SDK 변경 없이 **ClickHouse + PostgreSQL + S3/MinIO** 클러스터로 수평 확장하며, Console 2.4 · `caliper-gate` · AI MCP(`2025-06-18`) · 알림 Webhook · OTLP 푸시를 통합 제공합니다.
+
+---
+
 ## 빠른 시작 (1분 이내)
 
 ### Docker Compose (권장)

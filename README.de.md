@@ -46,6 +46,22 @@ Viele mittlere und große mobile Apps setzen **nativen Code für leistungskritis
 
 ---
 
+## Systemarchitektur
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.png" />
+    <img src="docs/assets/architecture-light.png" alt="Caliper APM — End-to-End Systemarchitektur" width="100%" />
+  </picture>
+</p>
+
+- **Datenebene vs. Kontrollschleife**: Mobile SDKs senden gzip-komprimierte Telemetrie (`POST /v1/ingest`, W3C `traceparent`) und beziehen im Rückkanal deterministische FNV-1a-Sampling-Leases (`GET /v1/policy`) sowie auditierte Remote-Log-Aufträge; die CI-Pipeline lädt Symbole und `binary_size_bytes` hoch.
+- **Zero-CGO Pure-Go-Kernplattform**: `server/cmd/caliper` (`CGO_ENABLED=0`) bündelt Fail-Closed-Mandanten-RBAC, Zero-Lie-Statistik (`DDSketch ±2%`, geclusterter Z-Test, KS, FDR) sowie In-Process-Symbolisierung für alle 5 Formate (R8, SourceMap v3, Mach-O `.dSYM`/ELF `.so` DWARF, Swift 5+ / C++, Breakpad) ohne externe Sidecars.
+- **Austauschbare Dual-Mode-Persistenz**: Starte in < 60 s mit Embedded WAL (~50–100 MiB RAM) oder skaliere ohne SDK-Änderung horizontal auf **ClickHouse + PostgreSQL + S3/MinIO** — als einheitliche Basis für Console 2.4, `caliper-gate`, MCP (`2025-06-18`), Webhooks und OTLP/HTTP-Push.
+
+---
+
 ## Schnellstart (< 1 Minute)
 
 ### Docker Compose (Empfohlen)

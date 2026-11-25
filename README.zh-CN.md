@@ -50,6 +50,22 @@
 
 ---
 
+## 整体系统架构
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.png" />
+    <img src="docs/assets/architecture-light.png" alt="Caliper APM — 端到端系统架构图（Native-First 移动端边缘层、纯 Go 零 CGO 核心引擎、双模存储与 CI 门禁 / AI MCP 生态）" width="100%" />
+  </picture>
+</p>
+
+- **数据面与控制面双闭环**：Android / iOS / RN 端侧通过 `POST /v1/ingest`（Gzip + W3C `traceparent`）上报遥测流，同时反向拉取 FNV-1a 确定性采样租约（`GET /v1/policy`）与有界远程日志捞取任务；CI 构建插件同步上传全格式符号表与同格式包体积元数据（`binary_size_bytes`）。
+- **单二进制零 CGO 纯 Go 引擎**：`server/cmd/caliper`（`CGO_ENABLED=0`）单进程整合 Fail-Closed 多租户 RBAC、Zero-Lie `DDSketch (±2%)` 统计学回归引擎（聚类 Z 检验 / KS / FDR）、火焰图与堆 Dominator 分析，以及 R8 / SourceMap v3 / Mach-O `.dSYM` / ELF `.so` DWARF / Swift 5+ 全格式进程内符号化，无需独立 Symbolicator 微服务。
+- **双模可插拔存储与开放生态**：通过统一的 `storage.Store` 与 `objectstore.Store` 接口，既可 60 秒单二进制嵌入式 WAL 轻量化起步（~50–100 MiB RAM），也可零改动 SDK 平滑水平扩展至 **ClickHouse + PostgreSQL + S3/MinIO** 生产集群，统一对外驱动 6 语言 Console 2.4、`caliper-gate` 发布门禁、AI 原生 MCP Server（`2025-06-18`）、告警 Webhook 与 OTLP/HTTP 异步推送。
+
+---
+
 ## 快速体验（1 分钟内）
 
 ### 方式一：Docker Compose（推荐）

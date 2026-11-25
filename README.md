@@ -52,27 +52,17 @@ Most mid-to-large mobile apps run **Native code for performance-critical core fl
 
 ## Architecture
 
-```text
-┌────────────────────────────────────────────────────────────────────┐
-│  Native-First Mobile SDKs (Zero RN deps in Android / iOS cores)    │
-│  ├─ packages/sdk-android (Kotlin): FrameMetrics, PSS/CPU, OkHttp   │
-│  ├─ packages/sdk-ios (Swift SPM): CADisplayLink, phys_footprint,   │
-│  │                                getrusage, URLSession metrics    │
-│  └─ packages/sdk-react-native (Optional TS Adapter): LongTask,     │
-│                                API denominator, JS errors, routes  │
-└───────────────────────────────┬────────────────────────────────────┘
-                                │ POST /v1/ingest (Gzip, OTLP-aligned)
-                                ▼
-┌────────────────────────────────────────────────────────────────────┐
-│  Single-Binary Go Server (server/cmd/caliper)                      │
-│  ├─ Collector & Policy API   (POST /v1/ingest, GET /v1/policy)     │
-│  ├─ Storage Interface        (Embedded WAL; ClickHouse+PG+S3 HA)   │
-│  ├─ Zero-Lie Analytics       (DDSketch ±2% P50/P90/P95/P99 & KS)   │
-│  ├─ Auto-Symbolicator        (R8, SMv3, Mach-O/ELF DWARF, Swift5+) │
-│  ├─ Alert & OTLP Engine      (Feishu/Slack/Discord + W3C Traces)   │
-│  └─ Static Web Console Host  (React 19 + TS 5-Page Real-Data UI)   │
-└────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.png" />
+    <img src="docs/assets/architecture-light.png" alt="Caliper APM — End-to-End System Architecture (Native-First Mobile Edge, Pure-Go Zero-CGO Server Platform, Dual-Mode Storage, CI Gate & AI MCP)" width="100%" />
+  </picture>
+</p>
+
+- **Data Plane vs. Control Loop**: Mobile SDKs push gzipped OTLP-aligned telemetry (`POST /v1/ingest`, W3C `traceparent`) while pulling deterministic FNV-1a sampling leases (`GET /v1/policy`) and bounded remote log tasks (`/v1/diagnostics/log-tasks/*`) back from the Go Core.
+- **Zero-CGO All-in-One Server Platform**: `server/cmd/caliper` (`CGO_ENABLED=0`) unifies fail-closed multi-tenant RBAC, Zero-Lie `DDSketch (±2%)` statistical analytics & profiling, and pure-Go in-process symbolication (R8, SourceMap v3, Mach-O `.dSYM`/ELF `.so` DWARF, Swift 5+ & Itanium C++, Breakpad) with zero external symbolicator sidecars.
+- **Pluggable Dual-Mode Storage & Ecosystem**: Start in < 60s with embedded JSONL WAL + local artifacts (~50–100 MiB RAM), or scale horizontally onto **ClickHouse + PostgreSQL + S3/MinIO** via the identical `storage.Store` / `objectstore.Store` interfaces — serving Console 2.4, `caliper-gate`, AI-Native MCP (`2025-06-18`), webhooks, and async OTLP/HTTP export with zero SDK changes.
 
 ---
 

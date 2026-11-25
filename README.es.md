@@ -46,6 +46,22 @@ La mayoría de las apps móviles medianas y grandes combinan **código Nativo en
 
 ---
 
+## Arquitectura del Sistema
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.png" />
+    <img src="docs/assets/architecture-light.png" alt="Caliper APM — Arquitectura de Sistema de Extremo a Extremo" width="100%" />
+  </picture>
+</p>
+
+- **Plano de Datos y Bucle de Control**: Los SDK móviles envían telemetría comprimida (`POST /v1/ingest`, W3C `traceparent`) mientras reciben políticas deterministas FNV-1a (`GET /v1/policy`) y tareas acotadas de extracción remota de logs; el pipeline CI sube símbolos y el tamaño binario (`binary_size_bytes`).
+- **Motor Go Todo-en-Uno Sin CGO**: `server/cmd/caliper` (`CGO_ENABLED=0`) unifica RBAC multi-tenant fail-closed, analítica estadística Zero-Lie (`DDSketch ±2%`, Z-Test agrupado, KS y FDR) y simbolización en proceso para 5 formatos (R8, SourceMap v3, Mach-O `.dSYM`/ELF `.so` DWARF, Swift 5+ / C++, Breakpad) sin microservicios externos.
+- **Almacenamiento Dual Intercambiable**: Inicia en < 60 s con WAL embebido (~50–100 MiB RAM) o escala horizontalmente a **ClickHouse + PostgreSQL + S3/MinIO** sin tocar una línea en tus SDKs, alimentando Console 2.4, `caliper-gate`, MCP (`2025-06-18`), webhooks y exportación OTLP/HTTP.
+
+---
+
 ## Inicio Rápido (< 1 Minuto)
 
 ### Docker Compose (Recomendado)

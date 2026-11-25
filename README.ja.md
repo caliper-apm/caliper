@@ -46,6 +46,22 @@
 
 ---
 
+## システムアーキテクチャ
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/architecture-light.png" />
+    <img src="docs/assets/architecture-light.png" alt="Caliper APM — エンドツーエンド システムアーキテクチャ" width="100%" />
+  </picture>
+</p>
+
+- **データプレーンとコントロールループの分離**：モバイル SDK は gzip 圧縮・W3C `traceparent` 対応のテレメトリ（`POST /v1/ingest`）を送信しつつ、FNV-1a 決定論的サンプリングリース（`GET /v1/policy`）および監査付きリモートログ取得タスクを逆方向に取得します。
+- **純 Go ゼロ CGO オールインワンサーバー**：単一静的バイナリ（`CGO_ENABLED=0`）内に Fail-Closed マルチテナント RBAC、Zero-Lie `DDSketch (±2%)` 統計分析、および 5 形式内蔵シンボリケーター（R8・SourceMap v3・Mach-O `.dSYM`/ELF `.so` DWARF・Swift 5+ / C++・Breakpad）を統合。
+- **デュアルモードストレージ & オープンエコシステム**：Embedded WAL（~50–100 MiB RAM）から **ClickHouse + PostgreSQL + S3/MinIO** クラスターへ SDK 無変更で拡張でき、Console 2.4・`caliper-gate`・MCP Server（`2025-06-18`）・Webhook・OTLP Push を一貫提供します。
+
+---
+
 ## クイックスタート（1 分以内）
 
 ### Docker Compose（推奨）
