@@ -209,6 +209,22 @@ html, body, #root {
 }
 .lang-btn:hover { background: #2c313c; }
 
+.lang-select {
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid #3a404d;
+  background: #232730;
+  color: #e5e6eb;
+  font-size: 11px;
+  font-weight: 600;
+  outline: none;
+}
+.lang-select:hover, .lang-select:focus {
+  background: #2c313c;
+  border-color: #5b6374;
+}
+
 /* ===== Workspace Shell ===== */
 .workspace-body {
   display: grid;
@@ -421,7 +437,7 @@ select:focus, input:focus { border-color: var(--primary); }
 /* ===== KPI Cards with Sparklines ===== */
 .kpi-grid-5 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
   gap: 12px;
 }
 

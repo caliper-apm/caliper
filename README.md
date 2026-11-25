@@ -1,8 +1,36 @@
+<div align="center">
+
 # Caliper APM
 
-**Native-First, React Native Compatible, Evidence-First Open-Source Mobile APM.**
+**Native-First, React Native Compatible, Evidence-First (Zero-Lie) Open-Source Mobile APM.**
 
-[简体中文](README.zh-CN.md) · [Architecture](docs/architecture.md) · [Self-Hosting](docs/self-hosting.md) · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN Adapter](docs/sdk-react-native.md) · [Benchmarks](benchmarks/REPORT.md) · [Changelog](CHANGELOG.md)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/caliper-apm/caliper?color=165dff)](https://github.com/caliper-apm/caliper/releases)
+[![CI](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml/badge.svg)](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml)
+[![Docker E2E](https://github.com/caliper-apm/caliper/actions/workflows/docker-e2e.yml/badge.svg)](https://github.com/caliper-apm/caliper/actions/workflows/docker-e2e.yml)
+[![Go: Zero-CGO](https://img.shields.io/badge/Go-1.23%2B%20Zero--CGO-00ADD8.svg)](server/go.mod)
+
+**English** · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Deutsch](README.de.md)
+
+[Architecture](docs/architecture.md) · [Self-Hosting](docs/self-hosting.md) · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN Adapter](docs/sdk-react-native.md) · [Benchmarks](benchmarks/REPORT.md) · [Changelog](CHANGELOG.md)
+
+<br />
+
+<img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — App Overview (Dark Mode)" width="100%" />
+
+*Real-data Console 2.4 running on a single zero-CGO Go binary (~15 MiB idle / ~69 MiB at 30k events) with DDSketch (±2%) P50/P90/P95/P99 trends, release rollout markers, multi-dimension slicing, Native vs React Native comparison, Dark/Light themes, and 6-language UI.*
+
+</div>
+
+---
+
+## Console 2.4 Visual Tour (100% Real Ingested Data)
+
+| **Startup & Fluency Workbench** | **Network & Resources (5-Domain + Waterfall)** |
+| :---: | :---: |
+| <img src="docs/assets/console-fluency-dark.png" alt="3-Stage Cold Start & 19-Bucket Latency Histogram" width="100%" /> | <img src="docs/assets/console-network-dark.png" alt="Logical API Success Rate, 5-Domain Failure Donut & Latency Distribution" width="100%" /> |
+| **Deep Diagnostics (CPU Flamegraph & Heap Leak Diff)** | **Crashes, ANR & Auto-Symbolication (Light Mode)** |
+| <img src="docs/assets/console-diagnostics-dark.png" alt="Online CPU Flamegraph & Trimmed Heap Dominator Leak Diff" width="100%" /> | <img src="docs/assets/console-stability-light.png" alt="Daily Crash/ANR/Abnormal Exit Trend & Issue Explorer in Light Mode" width="100%" /> |
 
 ---
 
@@ -175,7 +203,7 @@ See [`docs/roadmap-v1.0.md`](docs/roadmap-v1.0.md):
 See [`CHANGELOG.md`](CHANGELOG.md):
 - **Pure-Go DDSketch ($\pm 2\%$) Tail Quantiles & `DDSketchKSTest` (`v1.10`)**: Clean-room, zero-dependency logarithmic `DDSketch` (`server/internal/contract/ddsketch.go`) delivering $\le 2\%$ relative-error `P50 / P90 / P95 / P99` quantiles across Startup, Resources, Network Transport, Custom Journeys, Daily Trends, Alerting, OTLP export, and Console 2.4, plus `ddsketch_ks` intra-bucket regression detection with automatic 19-bucket linear-interpolation fallback.
 - **Pure-Go Swift 5+ Demangler, W3C `traceparent` & AGP 8.7 + R8 Verification (`v1.9`)**: Zero-dependency Swift 5+ symbol demangler (covering common production frames, cross-verified on 32 unit vectors + 18 live `swiftc`-compiled symbols against Apple `xcrun swift-demangle`, with honest fallback on unrecognized syntax), end-to-end opt-in W3C `traceparent` propagation across Android (`CaliperOkHttpNetworkBridge`), iOS (`CaliperAutoURLSessionDelegate`), React Native (`wrapFetchForDenominator`), ClickHouse, Console 2.4 `trace:` badges, and `GET /v1/otlp/export/traces`, plus full AGP 8.7.3 + OkHttp 4.12 + NDK 27 + R8 8.7.18 `dexdump` verification (`examples/android-agp-r8-sample`).
-- **Console 2.4 (ECharts Multi-Dimension APM Workbench)**: Bilingual (`中文`/`EN`) **Dark & Light theme** enterprise console with **global Device Model / OS Version / Scene / Version / Adapter filter bar** (`GET /v1/ops/dimensions`), **shareable URL query state**, **1-click Export Diagnostic JSON Snapshot**, Vite vendor code-splitting (`33 KB` gz app shell), 14-day release rollout trends with P50/P90/P95/P99, 19-bucket histograms, 5-domain network error breakdown, HTTP status code distribution, clickable slow/error network sample waterfalls with W3C `trace:` badges, multi-stage custom business journey traces (`GET /v1/analytics/journeys`), cross-page drill-down, and visual single-user session timelines.
+- **Console 2.4 (ECharts Multi-Dimension APM Workbench)**: **6-language UI (`English / 简体中文 / 日本語 / 한국어 / Español / Deutsch`)** with **Dark & Light theme** toggle, **global Device Model / OS Version / Scene / Version / Adapter filter bar** (`GET /v1/ops/dimensions`), **shareable URL query state**, **1-click Export Diagnostic JSON Snapshot**, Vite vendor code-splitting (`39 KB` gz app shell), 14-day release rollout trends with P50/P90/P95/P99, 19-bucket histograms, 5-domain network error breakdown, HTTP status code distribution, clickable slow/error network sample waterfalls with W3C `trace:` badges, multi-stage custom business journey traces (`GET /v1/analytics/journeys`), cross-page drill-down, and visual single-user session timelines.
 - **CI/CD Zero-Lie Release Quality Gate (`caliper-gate` + GitHub Action)**: Automated canary promotion gate (`POST /v1/analytics/release-gate`) + composite PR Comment Action (`packages/github-action/release-gate/action.yml`) returning exit code `0` (`PASS`), `2` (`BLOCK` on statistically significant regression), or `3` (`GATED` when under-sampled):
   ```bash
   caliper-gate --server http://127.0.0.1:8080 --platform android --baseline 1.0.0 --candidate 1.1.0 --format markdown

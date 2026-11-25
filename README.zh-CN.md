@@ -1,8 +1,36 @@
+<div align="center">
+
 # Caliper APM
 
 **Native 优先、React Native 一等兼容、统计零谎言（Evidence-First）的开源移动端 APM 平台。**
 
-[English](README.md) · [系统架构](docs/architecture.md) · [自托管部署](docs/self-hosting.md) · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN 适配层](docs/sdk-react-native.md) · [评测报告](benchmarks/REPORT.md) · [更新日志](CHANGELOG.md)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/caliper-apm/caliper?color=165dff)](https://github.com/caliper-apm/caliper/releases)
+[![CI](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml/badge.svg)](https://github.com/caliper-apm/caliper/actions/workflows/ci.yml)
+[![Docker E2E](https://github.com/caliper-apm/caliper/actions/workflows/docker-e2e.yml/badge.svg)](https://github.com/caliper-apm/caliper/actions/workflows/docker-e2e.yml)
+[![Go: Zero-CGO](https://img.shields.io/badge/Go-1.23%2B%20Zero--CGO-00ADD8.svg)](server/go.mod)
+
+[English](README.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md) · [Deutsch](README.de.md)
+
+[系统架构](docs/architecture.md) · [自托管部署](docs/self-hosting.md) · [Android SDK](docs/sdk-android.md) · [iOS SDK](docs/sdk-ios.md) · [RN 适配层](docs/sdk-react-native.md) · [评测报告](benchmarks/REPORT.md) · [更新日志](CHANGELOG.md)
+
+<br />
+
+<img src="docs/assets/console-overview-dark.png" alt="Caliper APM Console 2.4 — 应用总览大盘（暗黑模式）" width="100%" />
+
+*基于纯 Go 零 CGO 单二进制运行的真数据 Console 2.4（闲置 ~15 MiB / 3 万事件 ~69 MiB 内存），内置 DDSketch（±2%）P50/P90/P95/P99 趋势、灰度版本放量标注、Native vs RN 切面对比、暗黑/亮色主题与 6 国语言界面。*
+
+</div>
+
+---
+
+## Console 2.4 控制台实拍（100% 真实入库数据）
+
+| **冷启动三阶段 & 19 桶耗时分布** | **网络监控（5 域失败归因 + 延迟分布）** |
+| :---: | :---: |
+| <img src="docs/assets/console-fluency-dark.png" alt="冷启动三阶段拆解与 19 桶直方图" width="100%" /> | <img src="docs/assets/console-network-dark.png" alt="逻辑 API 成功率、5 域失败占比与耗时分布" width="100%" /> |
+| **深度诊断（在线 CPU 火焰图 & 堆 Dominator 对比）** | **崩溃 / ANR 堆叠趋势与异常治理（亮色模式）** |
+| <img src="docs/assets/console-diagnostics-dark.png" alt="在线 CPU 火焰图与跨版本堆内存泄漏对比" width="100%" /> | <img src="docs/assets/console-stability-light.png" alt="每日崩溃 ANR 堆叠趋势与异常排查列表（亮色模式）" width="100%" /> |
 
 ---
 
@@ -101,7 +129,7 @@ docker compose up --build
 详见 [`CHANGELOG.md`](CHANGELOG.md)：
 - **纯 Go 零依赖 DDSketch（$\pm 2\%$）长尾分位与 `DDSketchKSTest`（`v1.10`）**：洁净室实现可合并对数分位草图（`server/internal/contract/ddsketch.go`），在启动、资源峰值、网络传输、自定义链路、14 天趋势、告警规则、OTLP 导出与 Console 2.4 全链路提供误差 $\le 2\%$ 的 `P50 / P90 / P95 / P99` 指标与桶内 `ddsketch_ks` 回归检测，并无缝回退兼容 19 桶直方图线性插值。
 - **纯 Go Swift 5+ Demangler、全链路 W3C `traceparent` 与 AGP 8.7 + R8 全混淆实测（`v1.9`）**：零 CGO Swift 5+ 符号还原（覆盖常见生产栈帧，经 32 组单元向量 + 18 个实编符号与 Apple `xcrun swift-demangle` 交叉验证匹配，未知语法诚实回退）；Android（`CaliperOkHttpNetworkBridge`）、iOS（`CaliperAutoURLSessionDelegate`）、RN（`wrapFetchForDenominator`）三端支持域名白名单注入 W3C `traceparent`，贯通 ClickHouse、Console 2.4 `trace:` 标签与 `GET /v1/otlp/export/traces`；通过 `examples/android-agp-r8-sample` 完成真实 AGP 8.7.3 + OkHttp 4.12 + NDK 27 + R8 8.7.18 `dexdump` 实测。
-- **Console 2.4 企业级多维可视化**：中英双语、**暗黑 / 亮色一键主题切换**、**全局机型 / 系统版本 / 场景 / 版本 / 适配层筛选栏（`GET /v1/ops/dimensions`）**、**可分享 URL 筛选状态**、**一键导出 JSON 诊断报告**、Vite vendor 拆包（首屏业务包约 `33 KB` gz）、14 天版本放量与 P50/P90/P95/P99 趋势标注、19 桶分布直方图、5 域网络失败占比、HTTP 状态码分布、**慢请求/异常请求单次瀑布与 W3C `trace:` 抽屉**、**核心业务链路自定义多阶段追踪（`GET /v1/analytics/journeys`）**、跨页下钻与可视化单用户会话时间线。
+- **Console 2.4 企业级多维可视化**：**6 国语言界面（`English / 简体中文 / 日本語 / 한국어 / Español / Deutsch`）**、**暗黑 / 亮色一键主题切换**、**全局机型 / 系统版本 / 场景 / 版本 / 适配层筛选栏（`GET /v1/ops/dimensions`）**、**可分享 URL 筛选状态**、**一键导出 JSON 诊断报告**、Vite vendor 拆包（首屏业务包约 `39 KB` gz）、14 天版本放量与 P50/P90/P95/P99 趋势标注、19 桶分布直方图、5 域网络失败占比、HTTP 状态码分布、**慢请求/异常请求单次瀑布与 W3C `trace:` 抽屉**、**核心业务链路自定义多阶段追踪（`GET /v1/analytics/journeys`）**、跨页下钻与可视化单用户会话时间线。
 - **CI/CD 灰度质量门禁（`caliper-gate` CLI + GitHub PR Comment Action）**：基于 Z 检验 + KS 检验 + 符号覆盖率的零谎言发版红绿灯（`POST /v1/analytics/release-gate`）及一键 PR 评论 Action（`packages/github-action/release-gate/action.yml`），退出码 `0`（PASS）、`2`（BLOCK 显著劣化）、`3`（GATED 样本不足）：
   ```bash
   caliper-gate --server http://127.0.0.1:8080 --platform android --baseline 1.0.0 --candidate 1.1.0 --format markdown

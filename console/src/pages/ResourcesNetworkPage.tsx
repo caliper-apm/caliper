@@ -63,8 +63,8 @@ export function ResourcesNetworkPage({ filters, refreshTick, lang, onTraceUser }
     const yMin = Math.max(80, Math.min(96, Math.floor(minRate - 1.2)));
     return {
       tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-      legend: { top: 0, right: 10, textStyle: { fontSize: 11 } },
-      grid: { top: 34, right: 48, bottom: 26, left: 48 },
+      legend: { top: 0, left: 'center', textStyle: { fontSize: 11 } },
+      grid: { top: 44, right: 48, bottom: 26, left: 48 },
       xAxis: { type: 'category', data: trends.map(p => p.day_utc.slice(5)), axisLabel: { color: '#86909c', fontSize: 11 } },
       yAxis: [
         { type: 'value', name: '%', min: yMin, max: 100, splitLine: { lineStyle: { color: '#f2f3f5' } } },

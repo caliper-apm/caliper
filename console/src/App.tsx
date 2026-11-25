@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from './api.ts';
-import { t, type Lang } from './i18n.ts';
+import { detectInitialLang, SUPPORTED_LANGS, t, type Lang } from './i18n.ts';
 import { OverviewPage } from './pages/OverviewPage.tsx';
 import { StabilityPage } from './pages/StabilityPage.tsx';
 import { FluencyPage } from './pages/FluencyPage.tsx';
@@ -28,6 +28,7 @@ function readInitialQuery() {
   const rawPlatform = sp.get('platform');
   const rawEnv = sp.get('env');
   const rawAdapter = sp.get('adapter');
+  const rawTheme = sp.get('theme');
   const rawRange = Number(sp.get('range') ?? '14');
   return {
     tab: rawTab && VALID_TABS.includes(rawTab) ? rawTab : ('overview' as Tab),
@@ -38,6 +39,10 @@ function readInitialQuery() {
     scene: sp.get('scene') ?? '',
     deviceModel: sp.get('device') ?? '',
     osVersion: sp.get('os') ?? '',
+    lang: detectInitialLang(sp.get('lang')),
+    theme: (rawTheme === 'dark' || rawTheme === 'light'
+      ? rawTheme
+      : (window.localStorage.getItem('caliper-theme') === 'dark' ? 'dark' : 'light')) as 'light' | 'dark',
     rangeDays: (rawRange === 0 || rawRange === 7 || rawRange === 14 ? rawRange : 14) as 0 | 7 | 14,
   };
 }
@@ -55,11 +60,8 @@ function computeDateWindow(rangeDays: 0 | 7 | 14, latestDay?: string): { startDa
 
 export function App() {
   const init = useMemo(() => readInitialQuery(), []);
-  const [lang, setLang] = useState<Lang>('zh');
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const saved = window.localStorage.getItem('caliper-theme');
-    return saved === 'dark' ? 'dark' : 'light';
-  });
+  const [lang, setLang] = useState<Lang>(init.lang);
+  const [theme, setTheme] = useState<'light' | 'dark'>(init.theme);
   const [tab, setTab] = useState<Tab>(init.tab);
   const [platform, setPlatform] = useState<Platform>(init.platform);
   const [env, setEnv] = useState<EnvName>(init.env);
@@ -86,6 +88,11 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
+    document.documentElement.lang = lang;
+    window.localStorage.setItem('caliper-lang', lang);
+  }, [lang]);
+
+  useEffect(() => {
     const sp = new URLSearchParams();
     sp.set('tab', tab);
     sp.set('platform', platform);
@@ -96,9 +103,11 @@ export function App() {
     if (deviceModel) sp.set('device', deviceModel);
     if (osVersion) sp.set('os', osVersion);
     if (rangeDays !== 14) sp.set('range', String(rangeDays));
+    sp.set('lang', lang);
+    if (theme === 'dark') sp.set('theme', 'dark');
     const qs = sp.toString();
     window.history.replaceState(null, '', qs ? `?${qs}` : '/');
-  }, [tab, platform, env, appVersion, adapter, scene, deviceModel, osVersion, rangeDays]);
+  }, [tab, platform, env, appVersion, adapter, scene, deviceModel, osVersion, rangeDays, lang, theme]);
 
   function openIssueDetail(fingerprint: string) {
     setFocusIssueFP(fingerprint);
@@ -257,7 +266,7 @@ export function App() {
             <span className="health-dot" />
             <span>
               {health
-                ? `${health.storage.total_events.toLocaleString('en-US')} ${lang === 'zh' ? '条实时事件' : 'events'}`
+                ? `${health.storage.total_events.toLocaleString('en-US')} ${t(lang, 'liveEventsUnit')}`
                 : 'Connecting…'}
             </span>
           </div>
@@ -269,9 +278,16 @@ export function App() {
           >
             {theme === 'dark' ? '☀' : '☾'}
           </button>
-          <button className="lang-btn" onClick={() => setLang(l => (l === 'zh' ? 'en' : 'zh'))}>
-            {lang === 'zh' ? 'EN' : '中文'}
-          </button>
+          <select
+            className="lang-select"
+            aria-label="Language"
+            value={lang}
+            onChange={e => setLang(e.target.value as Lang)}
+          >
+            {SUPPORTED_LANGS.map(item => (
+              <option key={item.code} value={item.code}>{item.label}</option>
+            ))}
+          </select>
         </div>
       </header>
 
@@ -299,7 +315,7 @@ export function App() {
             <div style={{ fontWeight: 600, color: 'var(--text)' }}>Zero-Lie Engine</div>
             <div className="mono">{health?.storage.engine ?? 'caliper-server'}</div>
             <div style={{ color: 'var(--muted)' }}>
-              {releases.length} {lang === 'zh' ? '个版本 · 零假数据' : 'releases · real data'}
+              {releases.length} {t(lang, 'releasesRealData')}
             </div>
           </div>
         </aside>
@@ -331,17 +347,17 @@ export function App() {
               </label>
 
               <label className="filter-chip">
-                <span>{lang === 'zh' ? '机型' : 'Device'}</span>
+                <span>{t(lang, 'filterDevice')}</span>
                 <select value={deviceModel} onChange={e => setDeviceModel(e.target.value)}>
-                  <option value="">{lang === 'zh' ? '全部机型' : 'All Devices'}</option>
+                  <option value="">{t(lang, 'allDevices')}</option>
                   {dims.devices.map(d => <option key={d} value={d}>{d}</option>)}
                 </select>
               </label>
 
               <label className="filter-chip">
-                <span>{lang === 'zh' ? '系统' : 'OS'}</span>
+                <span>{t(lang, 'filterOS')}</span>
                 <select value={osVersion} onChange={e => setOsVersion(e.target.value)}>
-                  <option value="">{lang === 'zh' ? '全部系统' : 'All OS'}</option>
+                  <option value="">{t(lang, 'allOS')}</option>
                   {dims.os_versions.map(o => <option key={o} value={o}>{o}</option>)}
                 </select>
               </label>
@@ -369,10 +385,10 @@ export function App() {
                 <button className="btn ghost" onClick={resetFilters}>{t(lang, 'reset')}</button>
               )}
               <button className="btn" onClick={copyShareLink}>
-                {copiedLink ? (lang === 'zh' ? '已复制链接 ✓' : 'Copied ✓') : (lang === 'zh' ? '分享视图' : 'Share')}
+                {copiedLink ? t(lang, 'copiedLink') : t(lang, 'shareView')}
               </button>
               <button className="btn" disabled={exporting} onClick={exportDiagnosticSnapshot}>
-                {exporting ? '…' : (lang === 'zh' ? '导出报告' : 'Export JSON')}
+                {exporting ? '…' : t(lang, 'exportJson')}
               </button>
               <button className="btn" onClick={() => setRefreshTick(n => n + 1)}>{t(lang, 'refresh')}</button>
             </div>

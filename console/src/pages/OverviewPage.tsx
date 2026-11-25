@@ -250,8 +250,8 @@ export function OverviewPage({ filters, releases, refreshTick, lang, onOpenIssue
 
   const dimChartOption: ECBasicOption = useMemo(() => ({
     tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    legend: { top: 0, right: 8, textStyle: { fontSize: 11 } },
-    grid: { top: 32, right: 48, bottom: 28, left: 48 },
+    legend: { top: 0, left: 'center', textStyle: { fontSize: 11 } },
+    grid: { top: 42, right: 48, bottom: 28, left: 48 },
     xAxis: {
       type: 'category',
       data: dimBreakdown.map(s => (dimMode === 'version' ? `v${s.key}` : s.key)),
